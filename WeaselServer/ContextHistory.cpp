@@ -4,19 +4,65 @@
 #include "DevConsole.h"
 #include <algorithm>
 #include <sstream>
-#include <locale>
-#include <codecvt>
 #include <thread>
 
 ContextHistory::ContextHistory(size_t max_size)
-    : m_max_size(max_size > 0 ? max_size : 50),
-      m_memory_compressor(nullptr),
-      m_compressing(false) {
-  m_history.reserve(m_max_size);
-}
+    : m_max_size(max_size > 0 ? max_size : 200),
+      m_memory_compressor(nullptr) {}
 
 ContextHistory::~ContextHistory() {
-  Clear(nullptr);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_buckets.clear();
+}
+
+bool ContextHistory::IsExpiredLocked(const Bucket& b) const {
+  return m_idle_ms > 0 && !b.segments.empty() && b.last_used > 0 &&
+         GetTickCount64() - b.last_used > m_idle_ms;
+}
+
+ContextHistory::Bucket* ContextHistory::ActiveBucketLocked() {
+  Bucket& b = m_buckets[m_active_key];
+  if (IsExpiredLocked(b)) {
+    b.segments.clear();
+    b.compressing = false;
+  }
+  return &b;
+}
+
+const ContextHistory::Bucket* ContextHistory::ActiveBucketLocked() const {
+  auto it = m_buckets.find(m_active_key);
+  if (it == m_buckets.end() || IsExpiredLocked(it->second))
+    return nullptr;
+  return &it->second;
+}
+
+void ContextHistory::SetActiveKey(const std::wstring& key, DevConsole* dev_console) {
+  bool switched = false;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (key == m_active_key)
+      return;
+    m_active_key = key;
+    m_buckets[key];  // 确保存在
+    switched = true;
+    // 超过上限时淘汰最久未使用的窗口（当前窗口除外）
+    while (m_buckets.size() > kMaxBuckets) {
+      auto oldest = m_buckets.end();
+      for (auto it = m_buckets.begin(); it != m_buckets.end(); ++it) {
+        if (it->first == m_active_key || it->second.compressing)
+          continue;
+        if (oldest == m_buckets.end() || it->second.last_used < oldest->second.last_used)
+          oldest = it;
+      }
+      if (oldest == m_buckets.end())
+        break;
+      m_buckets.erase(oldest);
+    }
+  }
+  if (switched && dev_console && dev_console->IsEnabled()) {
+    dev_console->WriteLine(L"[上下文] 切换窗口: " + key + L" | 该窗口已有 " +
+                           std::to_wstring(GetSize()) + L" 段");
+  }
 }
 
 void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) {
@@ -24,148 +70,152 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
     return;
   }
 
-  std::vector<std::wstring> words = SplitIntoWords(text);
-  size_t words_added = 0;
   size_t current_size = 0;
   bool should_trigger_compression = false;
+  std::wstring key;
 
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    for (const auto& word : words) {
-      if (word.empty()) continue;
-      m_history.push_back(word);
-      words_added++;
-    }
+    Bucket* b = ActiveBucketLocked();  // 闲置过期的旧内容会在这里被清掉
+    key = m_active_key;
+    b->segments.push_back(text);
+    b->last_used = GetTickCount64();
     if (!m_memory_compressor || !m_memory_compressor->IsAvailable()) {
       size_t batch = GetCompressWordCount();
       if (batch == 0) batch = 1;
-      while (m_history.size() > m_max_size) {
-        size_t erase_count = (std::min)(batch, m_history.size());
-        m_history.erase(m_history.begin(), m_history.begin() + erase_count);
+      while (b->segments.size() > m_max_size) {
+        size_t erase_count = (std::min)(batch, b->segments.size());
+        b->segments.erase(b->segments.begin(), b->segments.begin() + erase_count);
       }
     } else {
-      while (m_history.size() > m_max_size) {
-        m_history.erase(m_history.begin());
+      while (b->segments.size() > m_max_size) {
+        b->segments.erase(b->segments.begin());
       }
     }
-    current_size = m_history.size();
+    current_size = b->segments.size();
     if (current_size >= m_max_size && m_memory_compressor &&
-        m_memory_compressor->IsAvailable() && !m_compressing &&
-        m_history.size() >= GetCompressWordCount()) {
+        m_memory_compressor->IsAvailable() && !b->compressing &&
+        current_size >= GetCompressWordCount()) {
       should_trigger_compression = true;
     }
   }
 
   if (dev_console && dev_console->IsEnabled()) {
     std::wstringstream ss;
-    ss << L"[上下文更新] 添加文本: " << text;
-    if (words_added > 0) ss << L" -> 分割为 " << words_added << L" 个词";
-    ss << L" | 当前历史记录数: " << current_size;
+    ss << L"[上下文更新] 添加文本: " << text << L" | 当前窗口段数: " << current_size;
     dev_console->WriteLine(ss.str());
-    if (current_size > 0) {
-      std::wstring recent = GetRecentContext(10);
-      if (!recent.empty()) dev_console->WriteLine(L"  最近10个词: " + recent);
-    }
+    std::wstring recent = GetRecentContext(30);
+    if (!recent.empty()) dev_console->WriteLine(L"  最近30字: " + recent);
   }
 
   if (should_trigger_compression) {
-    TryTriggerCompression(dev_console);
+    TryTriggerCompression(key, dev_console);
   }
 }
 
-std::wstring ContextHistory::GetRecentContext(size_t count) const {
+std::wstring ContextHistory::GetRecentContext(size_t max_chars) const {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_history.empty()) return L"";
-  size_t actual_count = (std::min)(count, m_history.size());
-  size_t start = m_history.size() - actual_count;
-  std::wstringstream ss;
-  for (size_t i = start; i < m_history.size(); ++i) {
-    if (i > start) ss << L" ";
-    ss << m_history[i];
+  const Bucket* b = ActiveBucketLocked();
+  if (!b || b->segments.empty()) return L"";
+  // 从最新的段往回取，够 max_chars 个字就停
+  std::wstring result;
+  for (auto it = b->segments.rbegin(); it != b->segments.rend(); ++it) {
+    result.insert(0, *it);
+    if (max_chars > 0 && result.size() >= max_chars)
+      break;
   }
-  return ss.str();
+  if (max_chars > 0 && result.size() > max_chars)
+    result.erase(0, result.size() - max_chars);
+  return result;
 }
 
 std::vector<std::wstring> ContextHistory::GetAllHistory() const {
   std::lock_guard<std::mutex> lock(m_mutex);
-  return m_history;
+  const Bucket* b = ActiveBucketLocked();
+  return b ? b->segments : std::vector<std::wstring>();
 }
 
 void ContextHistory::Clear(DevConsole* dev_console) {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_history.clear();
-  m_compressing = false;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    Bucket& b = m_buckets[m_active_key];
+    b.segments.clear();
+    b.compressing = false;
+  }
   if (dev_console && dev_console->IsEnabled()) {
-    dev_console->WriteLine(L"[上下文更新] 历史记录已清空");
+    dev_console->WriteLine(L"[上下文更新] 当前窗口的历史记录已清空");
   }
 }
 
 size_t ContextHistory::GetSize() const {
   std::lock_guard<std::mutex> lock(m_mutex);
-  return m_history.size();
+  const Bucket* b = ActiveBucketLocked();
+  return b ? b->segments.size() : 0;
 }
 
 size_t ContextHistory::GetMaxSize() const {
   return m_max_size;
 }
 
-void ContextHistory::TryTriggerCompression(DevConsole* dev_console) {
+void ContextHistory::TryTriggerCompression(const std::wstring& key, DevConsole* dev_console) {
   size_t compress_count = GetCompressWordCount();
   std::vector<std::wstring> to_compress;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_compressing || m_history.size() < compress_count ||
+    auto it = m_buckets.find(key);
+    if (it == m_buckets.end())
+      return;
+    Bucket& b = it->second;
+    if (b.compressing || b.segments.size() < compress_count ||
         !m_memory_compressor || !m_memory_compressor->IsAvailable()) {
       return;
     }
-    to_compress = GetOldestWords(compress_count);
-    m_compressing = true;
+    to_compress.assign(b.segments.begin(), b.segments.begin() + compress_count);
+    b.compressing = true;
   }
   if (dev_console && dev_console->IsEnabled()) {
     dev_console->WriteLine(L"[记忆压缩] 异步压缩最旧 " +
-                           std::to_wstring(compress_count) + L" 个词");
+                           std::to_wstring(compress_count) + L" 段");
   }
-  m_memory_compressor->CompressAsync(to_compress, [this, dev_console](
+  m_memory_compressor->CompressAsync(to_compress, [this, key, dev_console](
       std::vector<std::wstring> compressed) {
     if (compressed.empty()) {
       std::lock_guard<std::mutex> lock(m_mutex);
-      m_compressing = false;
+      auto it = m_buckets.find(key);
+      if (it != m_buckets.end())
+        it->second.compressing = false;
       if (dev_console && dev_console->IsEnabled()) {
-        dev_console->WriteLine(L"[记忆压缩] 压缩失败或返回为空，保留原词");
+        dev_console->WriteLine(L"[记忆压缩] 压缩失败或返回为空，保留原文");
       }
       return;
     }
-    ReplaceOldestWithCompressed(compressed, dev_console);
+    ReplaceOldestWithCompressed(key, compressed, dev_console);
   });
 }
 
-std::vector<std::wstring> ContextHistory::GetOldestWords(size_t count) const {
-  std::vector<std::wstring> result;
-  size_t n = (std::min)(count, m_history.size());
-  result.reserve(n);
-  for (size_t i = 0; i < n; ++i) {
-    result.push_back(m_history[i]);
-  }
-  return result;
-}
-
 void ContextHistory::ReplaceOldestWithCompressed(
-    const std::vector<std::wstring>& compressed, DevConsole* dev_console) {
+    const std::wstring& key,
+    const std::vector<std::wstring>& compressed,
+    DevConsole* dev_console) {
   std::function<void()> on_compression_completed;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_buckets.find(key);
+    if (it == m_buckets.end())
+      return;  // 窗口已被淘汰
+    Bucket& b = it->second;
+    b.compressing = false;
     size_t compress_count = GetCompressWordCount();
-    if (m_history.size() < compress_count) return;
-    m_history.erase(m_history.begin(), m_history.begin() + compress_count);
-    m_history.insert(m_history.begin(), compressed.begin(), compressed.end());
-    while (m_history.size() > m_max_size) {
-      m_history.erase(m_history.begin());
+    if (b.segments.size() < compress_count) return;
+    b.segments.erase(b.segments.begin(), b.segments.begin() + compress_count);
+    b.segments.insert(b.segments.begin(), compressed.begin(), compressed.end());
+    while (b.segments.size() > m_max_size) {
+      b.segments.erase(b.segments.begin());
     }
-    m_compressing = false;
     if (dev_console && dev_console->IsEnabled()) {
       std::wstringstream ss;
-      ss << L"[记忆压缩] 完成，压缩为 " << compressed.size() << L" 个词，当前历史: "
-         << m_history.size();
+      ss << L"[记忆压缩] 完成，压缩为 " << compressed.size() << L" 段，当前窗口: "
+         << b.segments.size();
       dev_console->WriteLine(ss.str());
     }
     on_compression_completed = m_compression_completed_callback;
@@ -177,57 +227,3 @@ void ContextHistory::ReplaceOldestWithCompressed(
     }).detach();
   }
 }
-
-std::vector<std::wstring> ContextHistory::SplitIntoWords(
-    const std::wstring& text) const {
-  std::vector<std::wstring> words;
-  if (text.empty()) {
-    return words;
-  }
-
-  std::wstring current_word;
-  for (wchar_t ch : text) {
-    if (IsSeparator(ch)) {
-      if (!current_word.empty()) {
-        words.push_back(current_word);
-        current_word.clear();
-      }
-    } else {
-      current_word += ch;
-    }
-  }
-
-  // 添加最后一个词（如果有）
-  if (!current_word.empty()) {
-    words.push_back(current_word);
-  }
-
-  return words;
-}
-
-bool ContextHistory::IsSeparator(wchar_t ch) const {
-  // 空格、制表符、换行符
-  if (ch == L' ' || ch == L'\t' || ch == L'\n' || ch == L'\r') {
-    return true;
-  }
-
-  // 常见中文标点符号
-  if (ch == L'，' || ch == L'。' || ch == L'、' || ch == L'；' ||
-      ch == L'：' || ch == L'？' || ch == L'！' || ch == L'…' ||
-      ch == L'—' || ch == L'–' || ch == L'（' || ch == L'）' ||
-      ch == L'【' || ch == L'】' || ch == L'《' || ch == L'》') {
-    return true;
-  }
-
-  // 常见英文标点符号
-  if (ch == L',' || ch == L'.' || ch == L';' || ch == L':' ||
-      ch == L'?' || ch == L'!' || ch == L'-' || ch == L'_' ||
-      ch == L'(' || ch == L')' || ch == L'[' || ch == L']' ||
-      ch == L'{' || ch == L'}' || ch == L'"' || ch == L'\'' ||
-      ch == L'/' || ch == L'\\') {
-    return true;
-  }
-
-  return false;
-}
-

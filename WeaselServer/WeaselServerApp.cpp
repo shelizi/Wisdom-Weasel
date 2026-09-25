@@ -39,7 +39,7 @@ int WeaselServerApp::Run() {
   m_handler->SetDevConsole(&m_dev_console);
   
   // 创建上下文历史记录（最大50个词，超过时异步压缩旧25词，即一半）
-  m_context_history = std::make_unique<ContextHistory>(50);
+  m_context_history = std::make_unique<ContextHistory>(200);  // 每个窗口最多 200 段提交
   
   // 记忆压缩 LLM（从 weasel 配置 llm/memory/ 单独配置）
   m_memory_compressor = std::make_unique<MemoryCompressor>();

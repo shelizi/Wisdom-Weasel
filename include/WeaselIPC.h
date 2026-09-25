@@ -4,7 +4,13 @@
 #include <windows.h>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <KeyEvent.h>
+
+namespace weasel {
+// 服务端串行处理 IPC 请求的锁；在后台线程调用 handler / UI 前必须先取得
+std::mutex& ServerApiMutex();
+}  // namespace weasel
 
 #define WEASEL_IPC_WINDOW L"WeaselIPCWindow_1.0"
 #define WEASEL_IPC_PIPE_NAME L"WeaselNamedPipe"

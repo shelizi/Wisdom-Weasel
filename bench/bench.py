@@ -138,13 +138,46 @@ class LlamaServer:
         self.log.close()
 
 
+SEPARATORS = set(" \t\n\r，。、；：？！…—–（）【】《》,.;:?!-_")
+
+
+def build_context(cases, idx, history, fmt, max_chars):
+    """模擬輸入法組給模型的前文。
+
+    history>0 時在題目前面塞入其他題目的完整句子（不同主題），模擬所有程式共用一份
+    上下文造成的汙染。fmt="spaced" 模擬原本 ContextHistory 的格式（依標點切詞、去標點、
+    以空格連接）；"natural" 保留原文。max_chars>0 時只保留最後 N 個字。"""
+    n = len(cases)
+    parts = []
+    for j in range(1, history + 1):
+        other = cases[(idx + 7 * j) % n]
+        parts.append(other["context"] + other["expected"][0] + "。")
+    text = "".join(parts) + cases[idx]["context"]
+    if fmt == "spaced":
+        words, cur = [], ""
+        for ch in text:
+            if ch in SEPARATORS:
+                if cur:
+                    words.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        if cur:
+            words.append(cur)
+        text = " ".join(words)
+    if max_chars > 0:
+        text = text[-max_chars:]
+    return text
+
+
 def run_model(m, cases, args, out_dir):
     srv = LlamaServer(args.server, m["path"], args.port, args.ngl, args.ctx)
     rows = []
     try:
         srv.wait_ready()
-        for case in cases:
-            prompt = build_prompt(m["mode"], case["context"], args.samples, args.prefix)
+        for idx, case in enumerate(cases):
+            context = build_context(cases, idx, args.history, args.format, args.max_chars)
+            prompt = build_prompt(m["mode"], context, args.samples, args.prefix)
             raws, ms = [], []
             for i in range(args.samples):
                 text, t = srv.complete(prompt, args.tokens, args.temp, args.seed + i)
@@ -153,6 +186,7 @@ def run_model(m, cases, args, out_dir):
             cands = clean(raws)
             rows.append({
                 "id": case["id"], "category": case["category"], "context": case["context"],
+                "model_context": context,
                 "expected": case["expected"], "raw": raws, "candidates": cands,
                 "hit1": bool(cands) and is_hit(cands[0], case["expected"]),
                 "hit5": any(is_hit(c, case["expected"]) for c in cands),
@@ -206,6 +240,9 @@ def write_report(summaries, out_dir, args):
         "",
         f"Base 引導文字：{args.prefix!r}" if args.prefix else "Base 引導文字：（無）",
         "",
+        f"前文：汙染句數 {args.history}、格式 {args.format}、"
+        f"截斷 {args.max_chars if args.max_chars else '無'}",
+        "",
         "| 模型 | 模式 | 命中@1 | 命中@5 | 平均不重複候選 | 原始輸出雜訊 | 簡體比例 | 每次取樣 ms |",
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -242,6 +279,11 @@ def main():
     ap.add_argument("--port", type=int, default=18080)
     ap.add_argument("--prefix", default="", help="Base 模式接在前文前的引導文字（\\n 代表換行）")
     ap.add_argument("--tag", default="", help="這次測試的名稱，會加在結果資料夾名稱後面")
+    ap.add_argument("--history", type=int, default=0,
+                    help="在題目前塞入幾句其他主題的句子，模擬上下文汙染（預設 0 = 乾淨）")
+    ap.add_argument("--format", choices=["natural", "spaced"], default="natural",
+                    help="前文格式：natural 保留標點；spaced 模擬原本的空格拼接")
+    ap.add_argument("--max-chars", type=int, default=0, help="前文只保留最後 N 個字（0 = 不截斷）")
     args = ap.parse_args()
     args.prefix = args.prefix.replace("\\n", "\n")
 

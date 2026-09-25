@@ -202,7 +202,10 @@ void RimeWithWeaselHandler::Initialize() {
     _LoadAppOptions(&config, m_app_options);
     
     // 初始化LLM Provider (注意：此时m_dev_console可能还未初始化)
-    // 先释放旧 provider（重新部署时），避免新旧模型同时占用内存，或关闭 LLM 后旧模型仍驻留
+    // 先释放旧 provider（重新部署时），避免新旧模型同时占用内存，或关闭 LLM 后旧模型仍驻留。
+    // 作废排队中的预测，并等进行中的推理结束，避免后台线程用到已释放的模型
+    ++m_llm_request_seq;
+    std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
     m_llm_provider.reset();
     // 两种自动触发时机可分别关闭（未设置时默认开启）；关闭后仍可按 ` 键手动触发
     Bool llm_flag = true;
@@ -211,6 +214,17 @@ void RimeWithWeaselHandler::Initialize() {
     llm_flag = true;
     m_llm_while_typing =
         !rime_api->config_get_bool(&config, "llm/predict_while_typing", &llm_flag) || llm_flag;
+    // 前文：每个窗口各自一份；只给模型最后 max_chars 个字；窗口闲置 idle_minutes 后旧前文失效
+    int llm_int = 0;
+    m_llm_context_max_chars =
+        rime_api->config_get_int(&config, "llm/context/max_chars", &llm_int) && llm_int > 0
+            ? (size_t)llm_int
+            : 100;
+    llm_int = 0;
+    m_llm_context_idle_minutes =
+        rime_api->config_get_int(&config, "llm/context/idle_minutes", &llm_int) && llm_int >= 0
+            ? (unsigned)llm_int
+            : 10;
     Bool llm_enabled = false;
     if (rime_api->config_get_bool(&config, "llm/enabled", &llm_enabled)) {
       if (llm_enabled) {
@@ -396,9 +410,12 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
              << ", mask = " << keyEvent.mask << ", ipc_id = " << ipc_id;
   if (m_disabled)
     return FALSE;
-  
+
   RimeSessionId session_id = to_session_id(ipc_id);
-  
+  // 依目前前景窗口切换上下文（之后的提交记录与预测都用该窗口自己的前文）
+  if (!(keyEvent.mask & ibus::Modifier::RELEASE_MASK))
+    _UpdateContextKey(ipc_id);
+
   // 处理·键（反引号键）：触发LLM预测（仅在composing状态下）或清空上下文（双击）
   if (!(keyEvent.mask & ibus::Modifier::RELEASE_MASK) &&
       (keyEvent.keycode == ibus::Keycode::grave || keyEvent.keycode == 0x060)) {
@@ -636,9 +653,10 @@ void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
   
   if (m_disabled)
     return;
-  
+
   RimeSessionId session_id = to_session_id(ipc_id);
-  
+  _UpdateContextKey(ipc_id);
+
   // 如果处于LLM预测模式，检查是否选择的是LLM候选词
   if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
     RIME_STRUCT(RimeContext, ctx);
@@ -2110,7 +2128,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
   // 从上下文历史获取最近 50 词作为 LLM 上下文
   std::wstring context;
   if (m_context_history) {
-    context = m_context_history->GetRecentContext(50);
+    context = m_context_history->GetRecentContext(m_llm_context_max_chars);
     LOG(INFO) << "[LLM] Context from history, length=" << context.length();
   }
   // 输入中补全：把 Rime 当前的转换结果接在上下文后面，让模型续写它
@@ -2158,9 +2176,16 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
       if (request_seq != m_llm_request_seq.load())
         return;
     }
-    // 后台线程中执行同步 PredictCandidates，不阻塞用户输入线程
-    LOG(INFO) << "[LLM] Async thread calling LLMProvider::PredictCandidates, seq=" << request_seq;
-    auto candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
+    // 后台线程中执行同步 PredictCandidates，不阻塞用户输入线程。
+    // 同一时间只能有一个推理（llama.cpp context 非线程安全）；排到时若已有更新的请求就放弃。
+    std::vector<std::wstring> candidates;
+    {
+      std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
+      if (request_seq != m_llm_request_seq.load() || !m_llm_provider)
+        return;
+      LOG(INFO) << "[LLM] Async thread calling LLMProvider::PredictCandidates, seq=" << request_seq;
+      candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
+    }
 
     // 清洗模型输出：只保留第一行，去除控制字符与首尾引号/括号/标点，去重，丢弃空候选
     // （小模型常模仿 prompt 中的 "…" 格式，并在多路采样时给出相同结果）
@@ -2188,6 +2213,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
     candidates = std::move(cleaned);
 
     // 将结果写入共享状态；在锁内检查是否已有更新的请求（或已被取消），是则丢弃本次结果
+    size_t candidate_count = 0;
     {
       std::lock_guard<std::mutex> lock(m_llm_mutex);
       if (request_seq != m_llm_request_seq.load()) {
@@ -2196,9 +2222,9 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
         return;
       }
       m_current_llm_candidates = std::move(candidates);
+      candidate_count = m_current_llm_candidates.size();
     }
 
-    size_t candidate_count = m_current_llm_candidates.size();
     LOG(INFO) << "[LLM] Async LLMProvider returned " << candidate_count << " candidates, seq=" << request_seq;
 
     if (m_dev_console && m_dev_console->IsEnabled()) {
@@ -2208,8 +2234,14 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
       m_dev_console->WriteLine(L"[LLM] ========== 预测结束 ==========");
     }
 
-    // 更新UI显示LLM候选词
-    _UpdateUI(ipc_id);
+    // 更新UI显示LLM候选词。
+    // 必须在服务端的 IPC 锁下进行：按键处理线程同时在用 librime 与候选窗（Direct2D），
+    // 不加锁会在 d2d1.dll / 堆上崩溃。取得锁后若结果已过时（用户继续打字）就不再刷新。
+    {
+      std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
+      if (request_seq == m_llm_request_seq.load())
+        _UpdateUI(ipc_id);
+    }
   }).detach();
 }
 
@@ -2235,6 +2267,41 @@ void RimeWithWeaselHandler::_ExitLLMPredictionMode(WeaselSessionId ipc_id) {
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] 退出LLM预测模式");
   }
+}
+
+void RimeWithWeaselHandler::_UpdateContextKey(WeaselSessionId ipc_id) {
+  if (!m_context_history)
+    return;
+
+  // 应用名（Rime session 的 client_app）
+  std::wstring app;
+  char app_name[256] = {0};
+  if (rime_api->get_property(to_session_id(ipc_id), "client_app", app_name,
+                             sizeof(app_name) - 1))
+    app = u8tow(app_name);
+
+  // 前景窗口（顶层窗口）与标题：同一应用的不同窗口、浏览器不同分页、不同聊天室各自一份前文。
+  // 标题去掉数字与 * ● 等，避免未读数、「已修改」标记变化时被当成另一个窗口。
+  HWND hwnd = GetForegroundWindow();
+  if (hwnd) {
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root)
+      hwnd = root;
+  }
+  wchar_t title[256] = {0};
+  if (hwnd)
+    GetWindowTextW(hwnd, title, (int)(sizeof(title) / sizeof(title[0])) - 1);
+  std::wstring title_key;
+  for (const wchar_t* p = title; *p; ++p) {
+    if (iswdigit(*p) || *p == L'*' || *p == L'●' || *p == L'•')
+      continue;
+    title_key += *p;
+  }
+  wchar_t hwnd_buf[32] = {0};
+  swprintf_s(hwnd_buf, L"%p", (void*)hwnd);
+
+  m_context_history->SetIdleTimeout(m_llm_context_idle_minutes * 60ull * 1000ull);
+  m_context_history->SetActiveKey(app + L"|" + hwnd_buf + L"|" + title_key, m_dev_console);
 }
 
 void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD delay_ms) {

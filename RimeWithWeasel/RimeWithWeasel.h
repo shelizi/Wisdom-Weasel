@@ -167,8 +167,12 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
   bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
   bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
+  size_t m_llm_context_max_chars = 100;       // llm/context/max_chars：给模型的前文最多几个字
+  unsigned m_llm_context_idle_minutes = 10;   // llm/context/idle_minutes：窗口闲置多久后旧前文失效
+  void _UpdateContextKey(WeaselSessionId ipc_id);  // 依前景窗口切换上下文
   std::atomic<uint64_t> m_llm_request_seq{0};  // LLM异步预测请求序号（用于丢弃旧结果）
   std::mutex m_llm_mutex;                      // 保护 m_current_llm_candidates
+  std::mutex m_llm_infer_mutex;  // 串行化 LLM 推理：llama.cpp 的 context 不能被多个线程同时使用
   std::shared_mutex m_llm_warmup_gate_mutex;   // 推理共享锁；预热独占 try_lock
   
   // 双击·键检测（用于清空上下文）

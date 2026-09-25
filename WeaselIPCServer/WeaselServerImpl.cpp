@@ -172,7 +172,13 @@ int ServerImpl::Stop() {
   return 0;
 }
 
-static std::mutex g_api_mutex;
+// 所有 IPC 请求都在这把锁下串行处理（librime 与候选窗都不是线程安全的）。
+// 后台线程（如 LLM 异步预测完成后刷新候选窗）也必须先取得这把锁，见 weasel::ServerApiMutex()。
+std::mutex& weasel::ServerApiMutex() {
+  static std::mutex m;
+  return m;
+}
+#define g_api_mutex weasel::ServerApiMutex()
 
 int ServerImpl::Run() {
   // Guard against double Run invocation.
