@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <iterator>
+#include <shellapi.h>
+#include <unordered_map>
 #include <sstream>
 #include <unordered_set>
 
@@ -22,6 +25,13 @@ const size_t kExampleRecords = 20000;  // 一般精煉時，最多讀最近幾�
 const size_t kExampleLength = 100;   // 每個例句最多幾個字
 const int64_t kIdleSeconds = 300;    // 自動精煉：停止打字多久後才開始
 const unsigned long kTimeoutMs = 90000;
+// 匯出給 Rime 的詞：2～7 字（terra_pinyin 的 max_phrase_length）、全為漢字，最多幾個
+const size_t kRimeMinLength = 2, kRimeMaxLength = 7, kRimeMaxWords = 5000;
+
+bool IsHan(wchar_t c) {
+  return (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) ||
+         (c >= 0xF900 && c <= 0xFAFF);
+}
 
 int64_t Now() {
   return std::chrono::duration_cast<std::chrono::seconds>(
@@ -114,6 +124,30 @@ void PersonalRefiner::Start() {
   // 第一次使用：從現在開始算，一個週期後才自動精煉
   if (lexicon_->LastRefine() == 0)
     lexicon_->SetLastRefine(Now());
+  // 重新部署後輸入法會重建精煉器：從現有的 Rime 詞典檔讀回詞數與更新時間
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::error_code ec;
+    const fs::path dict(config_.rime_dict_path);
+    if (!config_.rime_dict_path.empty() && fs::exists(dict, ec)) {
+      std::ifstream in(dict, std::ios::binary);
+      bool body = false;
+      size_t words = 0;
+      for (std::string line; std::getline(in, line);) {
+        if (body && line.find('	') != std::string::npos)
+          ++words;
+        else if (line.rfind("...", 0) == 0)
+          body = true;
+      }
+      rime_words_ = words;
+      WIN32_FILE_ATTRIBUTE_DATA attr;
+      if (GetFileAttributesExW(dict.c_str(), GetFileExInfoStandard, &attr)) {
+        const ULONGLONG t = ((ULONGLONG)attr.ftLastWriteTime.dwHighDateTime << 32) |
+                            attr.ftLastWriteTime.dwLowDateTime;
+        rime_updated_ = (int64_t)((t - 116444736000000000ULL) / 10000000ULL);
+      }
+    }
+  }
   stop_ = false;
   scheduler_ = std::thread([this]() { SchedulerLoop(); });
   WriteStatus();
@@ -245,6 +279,116 @@ void PersonalRefiner::Run(bool full) {
   // 先寫好結果再標記結束，讓等 Running() 的人讀到的是最新的狀態
   WriteStatusAs(false);
   running_ = false;
+  // 精煉後詞庫有變，更新給 Rime 的詞典（有變動才重新部署）
+  if (ok)
+    ExportRimeDictAndDeploy();
+}
+
+int PersonalRefiner::ExportRimeDict() {
+  Config config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config = config_;
+  }
+  if (config.rime_dict_path.empty())
+    return -1;
+  // 挑詞：常用（分數 ≥ 2）或 LLM 審查過而保留（分數 ≥ 1）；單字交給 Rime 自己的排序
+  std::vector<std::pair<std::wstring, double>> picked;
+  for (const auto& info : lexicon_->WordInfos()) {
+    const size_t n = info.word.size();
+    if (n < kRimeMinLength || n > kRimeMaxLength)
+      continue;
+    if (!std::all_of(info.word.begin(), info.word.end(), IsHan))
+      continue;
+    if (info.score >= 2 || (info.reviewed && info.score >= 1))
+      picked.emplace_back(info.word, info.score);
+    if (picked.size() >= kRimeMaxWords)
+      break;
+  }
+  // 原本的詞頻（essay.txt）：在原有權重上加分，讓同音詞裡你常打的排前面
+  std::unordered_map<std::wstring, long long> essay;
+  if (!picked.empty() && !config.essay_path.empty()) {
+    std::unordered_set<std::wstring> wanted;
+    for (const auto& [w, s] : picked)
+      wanted.insert(w);
+    std::ifstream in(fs::path(config.essay_path), std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+      const size_t tab = line.find('\t');
+      if (tab == std::string::npos)
+        continue;
+      const std::wstring w = u8tow(line.substr(0, tab));
+      if (wanted.count(w))
+        essay[w] = _atoi64(line.c_str() + tab + 1);
+    }
+  }
+  std::ostringstream out;
+  out << u8"# 小狼毫個人詞庫：你常打的詞（由輸入法自動產生，請勿手動修改）\n"
+      << u8"# 在「小狼毫設定 → 個人詞庫」取消「讓常打的詞在注音選字時排前面」即可停用\n"
+      << "---\n"
+      << "name: terra_pinyin.personal\n"
+      << "version: \"1\"\n"
+      << "sort: by_weight\n"
+      << "use_preset_vocabulary: true\n"
+      << "max_phrase_length: 7\n"
+      << "min_phrase_weight: 100\n"
+      << "import_tables:\n"
+      << "  - terra_pinyin\n"
+      << "columns:\n"
+      << "  - text\n"
+      << "  - weight\n"
+      << "...\n\n";
+  for (const auto& [w, score] : picked) {
+    // 分數取整數再換算，小幅變動不會讓內容改變（避免每天都重新部署）
+    const long long bonus = 100000 + (long long)(std::min)(score, 50.0) * 20000;
+    out << wtou8(w) << "\t" << essay[w] + bonus << "\n";
+  }
+  const std::string content = out.str();
+  std::string old;
+  {
+    std::ifstream in(fs::path(config.rime_dict_path), std::ios::binary);
+    old.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rime_words_ = picked.size();
+  }
+  if (old == content)
+    return 0;
+  const fs::path path(config.rime_dict_path);
+  const fs::path tmp = path.wstring() + L".tmp";
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    if (!f)
+      return -1;
+    f.write(content.data(), (std::streamsize)content.size());
+  }
+  if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+    return -1;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rime_updated_ = Now();
+  }
+  Log(L"已更新給 Rime 的個人詞表：" + std::to_wstring(picked.size()) + L" 個詞");
+  return 1;
+}
+
+void PersonalRefiner::ExportRimeDictAndDeploy() {
+  Config config;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config = config_;
+  }
+  if (!config.rime_boost || ExportRimeDict() != 1) {
+    WriteStatus();
+    return;
+  }
+  WriteStatus();
+  // 重新部署讓 Rime 編譯新的詞典（和托盤的「重新部署」相同）
+  if (!config.deployer_path.empty()) {
+    Log(L"個人詞表有變動，重新部署");
+    ShellExecuteW(NULL, NULL, config.deployer_path.c_str(), L"/deploy", NULL, SW_SHOWNORMAL);
+  }
 }
 
 std::wstring PersonalRefiner::RefineWithLLM(
@@ -505,6 +649,9 @@ void PersonalRefiner::WriteStatusAs(bool running) {
         << "interval_days=" << config_.interval_days << "\n"
         << "method=" << Method() << "\n"
         << "progress=" << wtou8(progress_) << "\n"
+        << "rime_boost=" << (config_.rime_boost ? 1 : 0) << "\n"
+        << "rime_words=" << rime_words_ << "\n"
+        << "rime_updated=" << rime_updated_ << "\n"
         << "updated=" << Now() << "\n"
         << "last_result=" << wtou8(last_result_) << "\n";
   }

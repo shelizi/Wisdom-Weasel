@@ -281,6 +281,18 @@ void RimeWithWeaselHandler::Initialize() {
         if (refine.type.empty() && !refine.api_url.empty() &&
             read_string("llm/personal/refine/profile").empty())
           refine.type = "openai";
+        // 讓常打的詞影響注音選字排序（設定程式負責修改方案；這裡負責產生詞典）
+        Bool rime_boost = false;
+        refine.rime_boost =
+            rime_api->config_get_bool(&config, "llm/personal/rime_boost", &rime_boost) && rime_boost;
+        refine.rime_dict_path = (WeaselUserDataPath() / L"terra_pinyin.personal.dict.yaml").wstring();
+        refine.essay_path = (WeaselSharedDataPath() / L"essay.txt").wstring();
+        {
+          wchar_t exe[MAX_PATH] = {0};
+          GetModuleFileNameW(NULL, exe, _countof(exe));
+          refine.deployer_path =
+              (std::filesystem::path(exe).parent_path() / L"WeaselDeployer.exe").wstring();
+        }
         // 本機精煉沿用預測的 GPU / 執行緒設定
         int llama_int = 0;
         if (rime_api->config_get_int(&config, "llm/llamacpp/n_gpu_layers", &llama_int))
@@ -2241,7 +2253,8 @@ static std::vector<std::wstring> CleanLLMCandidates(const std::vector<std::wstri
 }
 
 void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
-  // 1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙 6 套用修改並匯出；狀態寫在 personal/status.txt
+  // 1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙 6 套用修改並匯出 7 產生 Rime 詞典；
+  // 狀態寫在 personal/status.txt
   if (!m_personal || !m_refiner) {
     const std::filesystem::path dir = WeaselUserDataPath() / L"personal";
     std::error_code ec;
@@ -2268,6 +2281,11 @@ void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
       std::filesystem::remove(edit, ec);
     }
       [[fallthrough]];
+    case 7:
+      // 設定程式開啟「注音排序」時：先產生 Rime 詞典，設定程式接著重新部署
+      m_refiner->ExportRimeDict();
+      m_refiner->WriteStatus();
+      break;
     case 5:
       // 匯出詞彙與精煉規則到 personal/export.dat（加密）
       m_personal->ExportTo(m_personal->Dir() / L"export.dat", 20000);

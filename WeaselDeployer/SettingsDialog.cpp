@@ -1211,6 +1211,14 @@ bool SettingsDialog::Save() {
     SetStatus(L"LLM 設定儲存失敗。");
     return false;
   }
+  // 注音排序有變更：修改注音方案並準備詞典（隨後的重新部署會編譯）
+  const bool rime_boost = IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED &&
+                          IsDlgButtonChecked(IDC_P4_RIME_BOOST) == BST_CHECKED;
+  std::wstring boost_error;
+  if (llm_modified_ && rime_boost != rime_boost_loaded_) {
+    ApplyRimeBoost(rime_boost, &boost_error);
+    rime_boost_loaded_ = rime_boost;
+  }
   if (style_modified_ || llm_modified_) {
     api_->save_settings(ui_settings_->settings());
     style_modified_ = llm_modified_ = personal_modified_ = false;
@@ -1226,7 +1234,7 @@ bool SettingsDialog::Save() {
     deploy_();
   }
   deployed_ = true;
-  SetStatus(L"已套用。");
+  SetStatus(boost_error.empty() ? L"已套用。" : L"已套用；注音排序：" + boost_error);
   // 等輸入法重新載入模型後更新「目前載入」
   status_polls_left_ = 15;
   SetTimer(kTimerStatusPoll, 1000);
@@ -1255,6 +1263,8 @@ void SettingsDialog::LoadPersonalSettings(RimeConfig* config) {
                  get_bool("llm/personal/enabled", true) ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(IDC_P4_KEEP_LOG,
                  get_bool("llm/personal/keep_raw_log", true) ? BST_CHECKED : BST_UNCHECKED);
+  rime_boost_loaded_ = get_bool("llm/personal/rime_boost", false);
+  CheckDlgButton(IDC_P4_RIME_BOOST, rime_boost_loaded_ ? BST_CHECKED : BST_UNCHECKED);
   const int max = get_int("llm/personal/max_candidates", 3);
   CComboBox(GetDlgItem(IDC_P4_MAX)).SetCurSel((std::max)(0, (std::min)(max, 5)));
   const int half_life = get_int("llm/personal/half_life_days", 30);
@@ -1281,6 +1291,9 @@ void SettingsDialog::SavePersonalSettings(RimeConfig* llm) {
   rime->config_set_bool(llm, "personal/enabled", IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED);
   rime->config_set_bool(llm, "personal/keep_raw_log",
                         IsDlgButtonChecked(IDC_P4_KEEP_LOG) == BST_CHECKED);
+  rime->config_set_bool(llm, "personal/rime_boost",
+                        IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED &&
+                            IsDlgButtonChecked(IDC_P4_RIME_BOOST) == BST_CHECKED);
   const int max = CComboBox(GetDlgItem(IDC_P4_MAX)).GetCurSel();
   rime->config_set_int(llm, "personal/max_candidates", max < 0 ? 3 : max);
   const int half_life = get_number(IDC_P4_HALFLIFE, 30);
@@ -1292,7 +1305,7 @@ void SettingsDialog::SavePersonalSettings(RimeConfig* llm) {
 void SettingsDialog::UpdatePersonalEnableState() {
   const bool enabled = IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED;
   for (int id : {IDC_P4_MAX_LABEL, IDC_P4_MAX, IDC_P4_HALFLIFE_LABEL, IDC_P4_HALFLIFE,
-                 IDC_P4_KEEP_LOG, IDC_P4_INTERVAL_LABEL, IDC_P4_INTERVAL, IDC_P4_PROFILE_LABEL,
+                 IDC_P4_KEEP_LOG, IDC_P4_RIME_BOOST, IDC_P4_INTERVAL_LABEL, IDC_P4_INTERVAL, IDC_P4_PROFILE_LABEL,
                  IDC_P4_PROFILE})
     GetDlgItem(id).EnableWindow(enabled);
   // 精煉按鈕要輸入法那邊的個人詞庫開著；清除永遠可以
@@ -1353,6 +1366,9 @@ void SettingsDialog::RefreshPersonalStatus() {
       text << L"　下次：" << FormatTime(last + (int64_t)(interval * 86400)) << L" 之後的閒置時間";
     else
       text << L"　（自動精煉已關閉，只手動）";
+    if (v["rime_boost"] == "1")
+      text << L"\n注音排序：已加入 " << num("rime_words") << L" 個常打的詞"
+           << (num("rime_updated") > 0 ? L"（更新於 " + FormatTime(num("rime_updated")) + L"）" : L"");
     const std::wstring method = u8tow(v["method"]);
     text << L"\n精煉方式：" << (method.empty() ? L"只做統計整理（未選擇精煉模型）" : method) << L"\n";
     if (personal_running_)
@@ -2431,6 +2447,137 @@ LRESULT SettingsDialog::OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&) {
   if (api_profile_ == profile_sel_)
     GetDlgItem(IDC_P5_REMOTE_HINT).SetWindowTextW(result.c_str());
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 注音排序：讓個人詞庫的常用詞影響 Rime 的選字
+//
+// 注音方案（bopomofo 系列）改用 terra_pinyin.personal 詞典：它匯入原本的 terra_pinyin，
+// 再加上輸入法產生的常用詞（權重較高）。使用者詞典仍是 terra_pinyin.userdb，學到的排序不受影響。
+// 方案的 custom.yaml 只增刪我們自己的標記區塊，保留使用者原有的設定與註解。
+
+namespace {
+
+const wchar_t* const kZhuyinSchemas[] = {L"bopomofo", L"bopomofo_express", L"bopomofo_tw"};
+const char kBoostBegin[] = "  # >>> weasel-personal-dict";
+const char kBoostEnd[] = "  # <<< weasel-personal-dict";
+
+// 改寫一個方案的 custom.yaml；回傳 false 表示無法安全修改（例如使用者自己改過詞典）
+bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* error) {
+  std::string text;
+  {
+    std::ifstream in(file, std::ios::binary);
+    if (in)
+      text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  if (text.empty() && !enable)
+    return true;
+  if (text.size() >= 3 && text.compare(0, 3, "\xEF\xBB\xBF") == 0)
+    text.erase(0, 3);
+  // 拆行並拿掉我們之前加的區塊
+  std::vector<std::string> lines;
+  {
+    std::istringstream in(text);
+    bool inside = false;
+    for (std::string line; std::getline(in, line);) {
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      if (line.rfind(kBoostBegin, 0) == 0) {
+        inside = true;
+        continue;
+      }
+      if (inside) {
+        if (line.rfind(kBoostEnd, 0) == 0)
+          inside = false;
+        continue;
+      }
+      lines.push_back(line);
+    }
+  }
+  if (enable) {
+    for (const auto& line : lines) {
+      if (line.find("translator/dictionary") != std::string::npos ||
+          line.find("translator/user_dict") != std::string::npos) {
+        *error = file.filename().wstring() + L" 已自行設定詞典，沒有修改";
+        return false;
+      }
+    }
+    auto patch = std::find_if(lines.begin(), lines.end(), [](const std::string& l) {
+      return l.rfind("patch:", 0) == 0;
+    });
+    if (patch != lines.end() && patch->find_first_not_of(" \t", 6) != std::string::npos &&
+        (*patch)[patch->find_first_not_of(" \t", 6)] != '#') {
+      *error = file.filename().wstring() + L" 的 patch 格式無法自動修改";
+      return false;
+    }
+    if (patch == lines.end()) {
+      lines.push_back("patch:");
+      patch = lines.end() - 1;
+    }
+    const std::vector<std::string> block = {
+        std::string(kBoostBegin) + u8"：個人詞庫的常用詞影響選字排序（小狼毫設定自動管理）",
+        "  translator/dictionary: terra_pinyin.personal",
+        "  translator/user_dict: terra_pinyin",
+        kBoostEnd,
+    };
+    lines.insert(patch + 1, block.begin(), block.end());
+  }
+  std::string result;
+  for (const auto& line : lines)
+    result += line + "\n";
+  std::ofstream out(file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    *error = L"無法寫入 " + file.filename().wstring();
+    return false;
+  }
+  out << result;
+  return true;
+}
+
+}  // namespace
+
+bool SettingsDialog::ApplyRimeBoost(bool enable, std::wstring* error) {
+  const fs::path user_dir = WeaselUserDataPath();
+  const fs::path dict = user_dir / L"terra_pinyin.personal.dict.yaml";
+  // 目前選用的方案
+  std::set<std::wstring> selected;
+  RimeSchemaList list = {0};
+  if (api_->get_selected_schema_list(switcher_settings_, &list)) {
+    for (size_t i = 0; i < list.size; ++i)
+      selected.insert(u8tow(list.list[i].schema_id));
+    api_->schema_list_destroy(&list);
+  }
+  if (enable) {
+    // 先準備詞典檔：請輸入法產生；輸入法沒回應時放一份空的，確保方案編譯得過
+    std::error_code ec;
+    fs::remove(dict, ec);
+    SendPersonalCommand(7);
+    if (!fs::exists(dict, ec)) {
+      std::ofstream f(dict, std::ios::binary | std::ios::trunc);
+      f << u8"# 小狼毫個人詞庫：你常打的詞（由輸入法自動產生，請勿手動修改）\n"
+           "---\nname: terra_pinyin.personal\nversion: \"1\"\nsort: by_weight\n"
+           "use_preset_vocabulary: true\nmax_phrase_length: 7\nmin_phrase_weight: 100\n"
+           "import_tables:\n  - terra_pinyin\ncolumns:\n  - text\n  - weight\n...\n";
+    }
+  }
+  bool ok = true;
+  for (const wchar_t* schema : kZhuyinSchemas) {
+    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
+    std::error_code ec;
+    if (enable && !selected.count(schema)) {
+      PatchSchemaDictionary(file, false, error);  // 沒選用的方案不改（之前改過的還原）
+      continue;
+    }
+    if (!enable && !fs::exists(file, ec))
+      continue;
+    if (!PatchSchemaDictionary(file, enable, error))
+      ok = false;
+  }
+  if (!enable) {
+    std::error_code ec;
+    fs::remove(dict, ec);
+  }
+  return ok;
 }
 
 // ---------------------------------------------------------------------------

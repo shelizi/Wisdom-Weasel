@@ -122,6 +122,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 個人詞庫
   COMMAND_ID_HANDLER(IDC_P4_ENABLED, OnPersonalEnabledClick)
   COMMAND_ID_HANDLER(IDC_P4_KEEP_LOG, OnPersonalChanged)
+  COMMAND_ID_HANDLER(IDC_P4_RIME_BOOST, OnPersonalChanged)
   COMMAND_HANDLER(IDC_P4_MAX, CBN_SELCHANGE, OnPersonalChanged)
   COMMAND_HANDLER(IDC_P4_HALFLIFE, EN_CHANGE, OnPersonalChanged)
   COMMAND_HANDLER(IDC_P4_INTERVAL, EN_CHANGE, OnPersonalChanged)
@@ -257,6 +258,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void LoadPersonalSettings(RimeConfig* llm_config);
   void SavePersonalSettings(RimeConfig* llm);
   void UpdatePersonalEnableState();
+  // 注音排序：修改注音方案的 custom.yaml 改用 terra_pinyin.personal，並準備好詞典檔
+  bool ApplyRimeBoost(bool enable, std::wstring* error);
   bool SendPersonalCommand(DWORD command);  // 見 WEASEL_IPC_PERSONAL
   void RefreshPersonalStatus();             // 讀 personal/status.txt
   // 詞庫管理
@@ -282,6 +285,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool style_modified_ = false;
   bool llm_modified_ = false;
   bool personal_modified_ = false;
+  bool rime_boost_loaded_ = false;  // 載入時的「注音排序」設定（變更時才改方案）
   int start_page_ = 0;
 
   // 語言模型

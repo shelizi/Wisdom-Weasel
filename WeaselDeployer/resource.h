@@ -127,6 +127,7 @@
 #define IDC_P4_CLEAR                    3419
 #define IDC_P4_WORDS                    3420
 #define IDC_P4_HINT                     3421
+#define IDC_P4_RIME_BOOST               3422
 #define IDC_P5_HINT                     3501
 #define IDC_P5_LIST                     3502
 #define IDC_P5_ADD                      3503

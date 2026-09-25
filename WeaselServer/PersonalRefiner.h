@@ -31,6 +31,11 @@ class PersonalRefiner {
     bool instruct = true;
     int n_gpu_layers = 0;
     int n_threads = 4;
+    // 讓常打的詞影響注音選字排序：匯出 Rime 詞典（terra_pinyin.personal），有變動就重新部署
+    bool rime_boost = false;
+    std::wstring rime_dict_path;   // 使用者資料夾\terra_pinyin.personal.dict.yaml
+    std::wstring essay_path;       // 共用資料夾\essay.txt（原本的詞頻）
+    std::wstring deployer_path;    // WeaselDeployer.exe
     bool UsesLLM() const {
       return (type == "openai" && !api_url.empty()) || (type == "llamacpp" && !model_path.empty());
     }
@@ -49,6 +54,11 @@ class PersonalRefiner {
 
   // 清除所有資料（精煉中時不做事，回傳 false）
   bool Clear();
+
+  // 匯出 Rime 詞典；回傳 -1 失敗、0 內容沒變、1 已更新（不部署）
+  int ExportRimeDict();
+  // 匯出並在內容有變時重新部署（背景精煉完成後呼叫）
+  void ExportRimeDictAndDeploy();
 
   // 重新寫 status.txt
   void WriteStatus() { WriteStatusAs(running_); }
@@ -77,7 +87,9 @@ class PersonalRefiner {
   std::mutex run_mutex_;      // worker_ 的啟動與結束
   Config config_;
   std::wstring last_result_;
-  std::wstring progress_;  // 分批進度（例如「第 3／17 批」），status.txt 顯示用
+  std::wstring progress_;      // 分批進度（例如「第 3／17 批」），status.txt 顯示用
+  size_t rime_words_ = 0;      // 上次匯出給 Rime 的詞數
+  int64_t rime_updated_ = 0;   // 上次匯出內容有變的時間
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_{false};
   std::condition_variable cv_;
