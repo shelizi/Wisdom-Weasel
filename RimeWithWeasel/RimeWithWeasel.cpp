@@ -49,6 +49,8 @@ static bool CommitHasMeaningfulContent(const std::wstring& text) {
 
 // 包含 ContextHistory 的完整定义（需要调用其方法）
 #include "../WeaselServer/ContextHistory.h"
+#include "../WeaselServer/PersonalLexicon.h"
+#include "../WeaselServer/PersonalRefiner.h"
 // 包含 LLMProvider 的完整定义
 #include "../WeaselServer/LLMProvider.h"
 // 包含 DevConsole 的完整定义（需要调用其方法）
@@ -224,12 +226,85 @@ void RimeWithWeaselHandler::Initialize() {
         rime_api->config_get_int(&config, "llm/context/max_chars", &llm_int) && llm_int > 0
             ? (size_t)llm_int
             : 100;
+    // 個人詞庫：從送出的文字學習常用詞與接續（預設開啟；資料以 DPAPI 加密存在使用者資料夾）
+    {
+      Bool personal_enabled = true;
+      if (!rime_api->config_get_bool(&config, "llm/personal/enabled", &personal_enabled))
+        personal_enabled = true;
+      int personal_int = 0;
+      m_personal_max =
+          rime_api->config_get_int(&config, "llm/personal/max_candidates", &personal_int) &&
+                  personal_int >= 0
+              ? (size_t)(std::min)(personal_int, 5)
+              : 3;
+      if (personal_enabled && !m_personal) {
+        m_personal = std::make_unique<PersonalLexicon>(WeaselUserDataPath() / L"personal");
+        m_personal->Load();
+      } else if (!personal_enabled && m_personal) {
+        m_refiner.reset();   // 先等進行中的精煉結束
+        m_personal.reset();  // 解構時存檔
+      }
+      if (m_personal) {
+        personal_int = 0;
+        if (rime_api->config_get_int(&config, "llm/personal/half_life_days", &personal_int) &&
+            personal_int > 0)
+          m_personal->SetHalfLifeDays(personal_int);
+        Bool keep_log = true;
+        if (!rime_api->config_get_bool(&config, "llm/personal/keep_raw_log", &keep_log))
+          keep_log = true;
+        m_personal->SetKeepRawLog(!!keep_log);
+
+        // 定時精煉：預設每 1 天（0 = 只手動）。精煉用的模型由設定程式從「語言模型」清單選用後
+        // 寫到 llm/personal/refine/*（type 為 llamacpp 或 openai；沒選時只做統計整理）
+        PersonalRefiner::Config refine;
+        char buf[1024] = {0};
+        if (rime_api->config_get_string(&config, "llm/personal/refine/interval_days", buf,
+                                        sizeof(buf)))
+          refine.interval_days = (std::max)(0.0, atof(buf));
+        auto read_string = [&](const char* key) {
+          char value[2048] = {0};
+          return rime_api->config_get_string(&config, key, value, sizeof(value))
+                     ? std::string(value)
+                     : std::string();
+        };
+        refine.type = read_string("llm/personal/refine/type");
+        refine.name = read_string("llm/personal/refine/name");
+        refine.api_url = read_string("llm/personal/refine/api_url");
+        refine.api_key = read_string("llm/personal/refine/api_key");
+        refine.model = read_string("llm/personal/refine/model");
+        refine.model_path = read_string("llm/personal/refine/model_path");
+        std::string refine_model_type = read_string("llm/personal/refine/model_type");
+        std::transform(refine_model_type.begin(), refine_model_type.end(),
+                       refine_model_type.begin(), ::tolower);
+        refine.instruct = refine_model_type != "base";
+        // 舊設定（只有 api_url）視為 OpenAI 相容 API
+        if (refine.type.empty() && !refine.api_url.empty() &&
+            read_string("llm/personal/refine/profile").empty())
+          refine.type = "openai";
+        // 本機精煉沿用預測的 GPU / 執行緒設定
+        int llama_int = 0;
+        if (rime_api->config_get_int(&config, "llm/llamacpp/n_gpu_layers", &llama_int))
+          refine.n_gpu_layers = llama_int;
+        if (rime_api->config_get_int(&config, "llm/llamacpp/n_threads", &llama_int) && llama_int > 0)
+          refine.n_threads = llama_int;
+        if (!m_refiner) {
+          m_refiner = std::make_unique<PersonalRefiner>(m_personal.get());
+          m_refiner->Configure(refine);
+          m_refiner->Start();
+        } else {
+          m_refiner->Configure(refine);
+          m_refiner->WriteStatus();
+        }
+      }
+    }
     llm_int = 0;
     m_llm_context_idle_minutes =
         rime_api->config_get_int(&config, "llm/context/idle_minutes", &llm_int) && llm_int >= 0
             ? (unsigned)llm_int
             : 10;
     Bool llm_enabled = false;
+    // 「啟用 LLM 智慧預測」是所有預測候選的總開關：關閉時個人詞庫只在背景學習，不跳出候選
+    m_llm_enabled = rime_api->config_get_bool(&config, "llm/enabled", &llm_enabled) && llm_enabled;
     if (rime_api->config_get_bool(&config, "llm/enabled", &llm_enabled)) {
       if (llm_enabled) {
         // 读取 provider_type 配置项，默认为 "openai"
@@ -311,6 +386,9 @@ void RimeWithWeaselHandler::Initialize() {
 }
 
 void RimeWithWeaselHandler::Finalize() {
+  // 個人詞庫解構時會存檔（服務結束或重新部署前）；Initialize 會重新載入
+  m_refiner.reset();
+  m_personal.reset();
   m_active_session = 0;
   m_disabled = true;
   m_session_status_map.clear();
@@ -607,8 +685,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
   // 输入中补全：正在组字时，停顿 300ms 后以 Rime 当前转换结果续写；组字结束则清除补全候选
-  if (handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK) && m_llm_provider &&
-      m_llm_provider->IsAvailable()) {
+  if (handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK) && _PredictionAvailable()) {
     bool composing = false;
     RIME_STRUCT(RimeStatus, st);
     if (rime_api->get_status(session_id, &st)) {
@@ -1316,11 +1393,14 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         if (m_context_history) {
           m_context_history->AddText(commit_text_w, m_dev_console);
         }
-        
+        if (m_personal)
+          m_personal->Record(m_context_history ? m_context_history->GetActiveKey() : L"",
+                             commit_text_w);
+
         LOG(INFO) << "[LLM] User committed text: " << commit.text;
         
         // 仅当 commit 包含有意义内容（非纯标点/符号）时才进入 LLM 预测模式，避免退出后输入标点又误入
-        if (m_llm_after_commit && m_llm_provider && m_llm_provider->IsAvailable() &&
+        if (m_llm_after_commit && _PredictionAvailable() &&
             !m_llm_prediction_mode && CommitHasMeaningfulContent(commit_text_w)) {
           if (m_dev_console && m_dev_console->IsEnabled()) {
             m_dev_console->WriteLine(L"[LLM] Detected user commit, entering LLM prediction mode");
@@ -2160,6 +2240,44 @@ static std::vector<std::wstring> CleanLLMCandidates(const std::vector<std::wstri
   return cleaned;
 }
 
+void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
+  // 1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙 6 套用修改並匯出；狀態寫在 personal/status.txt
+  if (!m_personal || !m_refiner) {
+    const std::filesystem::path dir = WeaselUserDataPath() / L"personal";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::ofstream f(dir / L"status.txt", std::ios::binary | std::ios::trunc);
+    f << "disabled=1\n";
+    return;
+  }
+  switch (command) {
+    case 2:
+    case 3:
+      if (!m_refiner->RunAsync(command == 3))
+        m_refiner->WriteStatus();
+      break;
+    case 4:
+      if (!m_refiner->Clear())
+        m_refiner->WriteStatus();
+      break;
+    case 6: {
+      // 設定程式的「詞庫管理」：套用 personal/edit.dat（加密）後重新匯出
+      const std::filesystem::path edit = m_personal->Dir() / L"edit.dat";
+      m_personal->ApplyEdits(edit);
+      std::error_code ec;
+      std::filesystem::remove(edit, ec);
+    }
+      [[fallthrough]];
+    case 5:
+      // 匯出詞彙與精煉規則到 personal/export.dat（加密）
+      m_personal->ExportTo(m_personal->Dir() / L"export.dat", 20000);
+      m_refiner->WriteStatus();
+      break;
+    default:
+      m_refiner->WriteStatus();
+  }
+}
+
 void RimeWithWeaselHandler::LLMTestRequest() {
   // 在后台线程执行：推理可能要几百毫秒，不能占住 IPC 锁卡住所有应用的打字
   std::thread([this]() {
@@ -2211,110 +2329,103 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
                                                   const std::wstring& current_input,
                                                   DWORD delay_ms,
                                                   const std::wstring& completion_prefix) {
-  if (!m_llm_provider || !m_llm_provider->IsAvailable()) {
-    LOG(WARNING) << "[LLM] LLM provider is not available or not initialized";
-    if (m_dev_console && m_dev_console->IsEnabled()) {
-      m_dev_console->WriteLine(L"[LLM] LLM提供者不可用，无法进行预测");
-    }
+  const bool llm_available = m_llm_provider && m_llm_provider->IsAvailable();
+  if (!llm_available && !m_personal) {
+    LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
     return;
   }
 
-  LOG(INFO) << "[LLM] Starting LLM prediction, ipc_id=" << ipc_id;
-
-  // 从上下文历史获取最近 50 词作为 LLM 上下文
-  std::wstring context;
-  if (m_context_history) {
-    context = m_context_history->GetRecentContext(m_llm_context_max_chars);
-    LOG(INFO) << "[LLM] Context from history, length=" << context.length();
+  // 个人词库（查内存，不到 1ms）：输入中补全 → 以 Rime 转换结果开头的常用词；
+  // 提交后 → 当前窗口最后一个词之后最常接的词
+  std::vector<std::wstring> personal;
+  if (m_personal) {
+    personal = completion_prefix.empty()
+                   ? m_personal->NextAfter(m_context_history ? m_context_history->GetActiveKey()
+                                                             : std::wstring(),
+                                           m_personal_max)
+                   : m_personal->CompleteFrom(completion_prefix, m_personal_max);
+    // 补全候选若和目前的字完全相同，没有意义
+    personal.erase(std::remove(personal.begin(), personal.end(), completion_prefix),
+                   personal.end());
   }
-  // 输入中补全：把 Rime 当前的转换结果接在上下文后面，让模型续写它
+  if (!llm_available && personal.empty())
+    return;
+
+  // LLM 上下文：当前窗口最近的前文 + 输入中补全时 Rime 当前的转换结果
+  std::wstring context;
+  if (m_context_history)
+    context = m_context_history->GetRecentContext(m_llm_context_max_chars);
   context += completion_prefix;
 
-  // 如果上下文仍然为空，记录警告但尝试继续预测
-  if (context.empty()) {
-    LOG(WARNING) << "[LLM] Context is empty, attempting prediction with empty context";
-    if (m_dev_console && m_dev_console->IsEnabled()) {
-      m_dev_console->WriteLine(L"[LLM] 警告：上下文为空，将使用空上下文进行预测");
-    }
-    // 不返回，继续尝试预测以支持冷启动
-  }
-
   if (m_dev_console && m_dev_console->IsEnabled()) {
-    m_dev_console->WriteLine(L"[LLM] ========== 开始LLM预测 ==========");
-    if (!context.empty()) {
-      m_dev_console->WriteLine(L"[LLM] 上下文长度: " + std::to_wstring(context.length()));
-      m_dev_console->WriteLine(L"[LLM] 上下文内容: " + context);
-    } else {
-      m_dev_console->WriteLine(L"[LLM] 使用空上下文进行预测");
-    }
-    if (!current_input.empty()) {
-      m_dev_console->WriteLine(L"[LLM] 当前输入（拼音）: " + current_input);
-    }
+    m_dev_console->WriteLine(L"[LLM] ========== 开始预测 ==========");
+    m_dev_console->WriteLine(L"[LLM] 上下文: " + context);
+    std::wstring joined;
+    for (const auto& p : personal)
+      joined += (joined.empty() ? L"" : L" / ") + p;
+    m_dev_console->WriteLine(L"[LLM] 个人词库候选: " + (joined.empty() ? L"(无)" : joined));
   }
-
-  LOG(INFO) << "[LLM] Context length: " << context.length();
-  LOG(INFO) << "[LLM] Current input: " << wtou8(current_input);
-  LOG(INFO) << "[LLM] Scheduling async LLMProvider::PredictCandidates";
 
   // 生成新的请求序号，用于标记“最新一次”预测请求
   const uint64_t request_seq = ++m_llm_request_seq;
 
-  // 拷贝必要参数到后台线程
   std::wstring context_copy = context;
   std::wstring current_input_copy = current_input;
   std::wstring prefix_copy = completion_prefix;
 
   std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
-               prefix_copy]() {
+               prefix_copy, personal, llm_available]() {
     // 防抖：等待期间若又有新请求（例如继续打字），直接放弃，不占用 GPU
     if (delay_ms > 0) {
       Sleep(delay_ms);
       if (request_seq != m_llm_request_seq.load())
         return;
     }
-    // 后台线程中执行同步 PredictCandidates，不阻塞用户输入线程。
-    // 同一时间只能有一个推理（llama.cpp context 非线程安全）；排到时若已有更新的请求就放弃。
+
+    // 写入候选并刷新候选窗。在锁内检查是否已有更新的请求（或已被取消），是则丢弃。
+    // 刷新 UI 必须在服务端的 IPC 锁下进行：按键处理线程同时在用 librime 与候选窗（Direct2D）。
+    auto publish = [&](std::vector<std::wstring> candidates) {
+      {
+        std::lock_guard<std::mutex> lock(m_llm_mutex);
+        if (request_seq != m_llm_request_seq.load())
+          return false;
+        m_current_llm_candidates = std::move(candidates);
+      }
+      std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
+      if (request_seq == m_llm_request_seq.load())
+        _UpdateUI(ipc_id);
+      return true;
+    };
+
+    // 1) 先显示个人词库的候选（几乎零延迟）
+    if (!personal.empty() && !publish(personal))
+      return;
+    if (!llm_available)
+      return;
+
+    // 2) 再用 LLM 补足：同一时间只能有一个推理（llama.cpp context 非线程安全），
+    //    排到时若已有更新的请求就放弃
     std::vector<std::wstring> candidates;
     {
       std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
       if (request_seq != m_llm_request_seq.load() || !m_llm_provider)
         return;
-      LOG(INFO) << "[LLM] Async thread calling LLMProvider::PredictCandidates, seq=" << request_seq;
       candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
     }
-
     candidates = CleanLLMCandidates(candidates, prefix_copy);
 
-    // 将结果写入共享状态；在锁内检查是否已有更新的请求（或已被取消），是则丢弃本次结果
-    size_t candidate_count = 0;
-    {
-      std::lock_guard<std::mutex> lock(m_llm_mutex);
-      if (request_seq != m_llm_request_seq.load()) {
-        LOG(INFO) << "[LLM] Discarding stale LLM result, seq=" << request_seq
-                  << ", latest_seq=" << m_llm_request_seq.load();
-        return;
-      }
-      m_current_llm_candidates = std::move(candidates);
-      candidate_count = m_current_llm_candidates.size();
+    // 个人词库排前面，LLM 接在后面，去重后最多 5 个（对应 Tab、Shift+2~5）
+    std::vector<std::wstring> merged = personal;
+    for (auto& c : candidates) {
+      if (merged.size() >= 5)
+        break;
+      if (std::find(merged.begin(), merged.end(), c) == merged.end())
+        merged.push_back(std::move(c));
     }
-
-    LOG(INFO) << "[LLM] Async LLMProvider returned " << candidate_count << " candidates, seq=" << request_seq;
-
-    if (m_dev_console && m_dev_console->IsEnabled()) {
-      std::wstringstream ss;
-      ss << L"[LLM] 异步预测完成，获得 " << candidate_count << L" 个候选词";
-      m_dev_console->WriteLine(ss.str());
-      m_dev_console->WriteLine(L"[LLM] ========== 预测结束 ==========");
-    }
-
-    // 更新UI显示LLM候选词。
-    // 必须在服务端的 IPC 锁下进行：按键处理线程同时在用 librime 与候选窗（Direct2D），
-    // 不加锁会在 d2d1.dll / 堆上崩溃。取得锁后若结果已过时（用户继续打字）就不再刷新。
-    {
-      std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
-      if (request_seq == m_llm_request_seq.load())
-        _UpdateUI(ipc_id);
-    }
+    if (m_dev_console && m_dev_console->IsEnabled())
+      m_dev_console->WriteLine(L"[LLM] 预测完成，共 " + std::to_wstring(merged.size()) +
+                               L" 个候选（个人词库 " + std::to_wstring(personal.size()) + L"）");
+    publish(std::move(merged));
   }).detach();
 }
 
@@ -2377,8 +2488,14 @@ void RimeWithWeaselHandler::_UpdateContextKey(WeaselSessionId ipc_id) {
   m_context_history->SetActiveKey(app + L"|" + hwnd_buf + L"|" + title_key, m_dev_console);
 }
 
+bool RimeWithWeaselHandler::_PredictionAvailable() const {
+  if (!m_llm_enabled)
+    return false;
+  return (m_llm_provider && m_llm_provider->IsAvailable()) || m_personal != nullptr;
+}
+
 void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD delay_ms) {
-  if (!m_llm_provider || !m_llm_provider->IsAvailable())
+  if (!_PredictionAvailable())
     return;
 
   // Rime 若此刻提交会得到的文字（整句转换）；没有时退回第一个候选
@@ -2440,6 +2557,8 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
   rime_api->clear_composition(to_session_id(ipc_id));
   if (m_context_history)
     m_context_history->AddText(selected, m_dev_console);
+  if (m_personal)
+    m_personal->Record(m_context_history ? m_context_history->GetActiveKey() : L"", selected);
   m_pending_llm_commit = selected;
   m_llm_completion_active = false;
 

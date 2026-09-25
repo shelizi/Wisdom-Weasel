@@ -5,6 +5,7 @@
 #include <rime_api.h>
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <sstream>
 
 // 包含 llama.cpp 头文件
@@ -1045,3 +1046,112 @@ bool LlamaCppProvider::IsAvailable() const {
   return m_enabled && m_model_loaded && !m_model_path.empty();
 }
 
+
+// ---------------------------------------------------------------------------
+// 一次性對話（個人詞庫精煉）
+
+bool LlamaCppProvider::LoadModelDirect(const LLMLocalModelSpec& spec, double temperature) {
+  m_enabled = true;
+  m_model_path = spec.model_path;
+  m_instruct_model = spec.instruct;
+  m_n_ctx = spec.n_ctx;
+  m_n_gpu_layers = spec.n_gpu_layers;
+  m_n_threads = spec.n_threads > 0 ? spec.n_threads : 4;
+  m_temperature = temperature;
+  m_top_k = 40;
+  m_top_p = 0.9;
+  m_min_p = 0.05;
+  m_typical_p = 1.0;
+  m_mirostat = 0;
+  m_repeat_penalty = 1.05;
+  return InitializeModel();
+}
+
+int LlamaCppProvider::CountTokens(const std::string& text) const {
+  if (!m_vocab)
+    return -1;
+  return -llama_tokenize((const llama_vocab*)m_vocab, text.c_str(), (int32_t)text.size(), NULL, 0,
+                         true, true);
+}
+
+std::string LlamaCppProvider::Chat(const std::string& system, const std::string& user,
+                                   int max_tokens) {
+  if (!m_model_loaded)
+    return "";
+  std::string prompt;
+  const char* tmpl =
+      m_instruct_model ? llama_model_chat_template((const llama_model*)m_model, nullptr) : nullptr;
+  if (tmpl) {
+    llama_chat_message messages[2] = {{"system", system.c_str()}, {"user", user.c_str()}};
+    std::vector<char> buf(system.size() + user.size() + 1024);
+    int n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
+    if (n > (int)buf.size()) {
+      buf.resize(n);
+      n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
+    }
+    if (n > 0)
+      prompt.assign(buf.data(), n);
+  }
+  if (prompt.empty())  // Base 模型或沒有 chat template：純文字續寫
+    prompt = system + "\n\n" + user + "\n\n整理結果：\n";
+  // 不沿用預測的 system prompt 快取
+  m_system_prompt_utf8.clear();
+  m_system_prompt_ready = false;
+  m_system_state.clear();
+  m_system_state_size = 0;
+  if (m_sampler)
+    llama_sampler_reset((llama_sampler*)m_sampler);
+  return GenerateText(prompt, (size_t)max_tokens);
+}
+
+LLMLocalChatSession::LLMLocalChatSession() = default;
+
+LLMLocalChatSession::~LLMLocalChatSession() {
+  delete provider_;
+}
+
+bool LLMLocalChatSession::Open(const LLMLocalModelSpec& spec, std::wstring* error) {
+  delete provider_;
+  provider_ = nullptr;
+  std::error_code ec;
+  if (spec.model_path.empty() || !std::filesystem::exists(u8tow(spec.model_path), ec)) {
+    *error = L"找不到模型檔：" + u8tow(spec.model_path);
+    return false;
+  }
+  provider_ = new LlamaCppProvider();
+  if (!provider_->LoadModelDirect(spec, 0.2)) {
+    delete provider_;
+    provider_ = nullptr;
+    *error = L"無法載入模型（記憶體不足或檔案格式不支援）";
+    return false;
+  }
+  return true;
+}
+
+bool LLMLocalChatSession::Chat(const std::string& system, const std::string& user,
+                               int max_tokens, std::string* output, std::wstring* error) {
+  output->clear();
+  if (!provider_) {
+    *error = L"模型尚未載入";
+    return false;
+  }
+  const int need = provider_->CountTokens(system + user) + max_tokens + 64;
+  if (need > provider_->ContextSize()) {
+    *error = L"提示太長（需要 " + std::to_wstring(need) + L" token，上下文 " +
+             std::to_wstring(provider_->ContextSize()) + L"）";
+    return false;
+  }
+  *output = provider_->Chat(system, user, max_tokens);
+  if (output->empty()) {
+    *error = L"模型沒有產生內容";
+    return false;
+  }
+  return true;
+}
+
+bool LLMLocalChat(const LLMLocalModelSpec& spec, const std::string& system,
+                  const std::string& user, int max_tokens, std::string* output,
+                  std::wstring* error) {
+  LLMLocalChatSession session;
+  return session.Open(spec, error) && session.Chat(system, user, max_tokens, output, error);
+}

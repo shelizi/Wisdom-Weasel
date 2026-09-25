@@ -86,6 +86,11 @@ static int Run(LPTSTR lpCmdLine) {
     return configurator.UpdateWorkspace();
   }
 
+  // 原本獨立的用戶詞典管理視窗
+  if (!wcscmp(L"/dict_legacy", lpCmdLine)) {
+    return configurator.LegacyDictManagement();
+  }
+
   bool dict_management = !wcscmp(L"/dict", lpCmdLine);
   if (dict_management) {
     return configurator.DictManagement();

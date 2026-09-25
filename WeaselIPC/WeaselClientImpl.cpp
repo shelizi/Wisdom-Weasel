@@ -146,6 +146,10 @@ void ClientImpl::LLMTestRequest() {
   _SendMessage(WEASEL_IPC_LLM_TEST, 0, 0);
 }
 
+void ClientImpl::PersonalCommand(DWORD command) {
+  _SendMessage(WEASEL_IPC_PERSONAL, command, 0);
+}
+
 void ClientImpl::StartSession() {
   if (_Active() && Echo())
     return;
@@ -282,6 +286,10 @@ void Client::TrayCommand(UINT menuId) {
 
 void Client::LLMTestRequest() {
   m_pImpl->LLMTestRequest();
+}
+
+void Client::PersonalCommand(DWORD command) {
+  m_pImpl->PersonalCommand(command);
 }
 
 bool Client::Echo() {

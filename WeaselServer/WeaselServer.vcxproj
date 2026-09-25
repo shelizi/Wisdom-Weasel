@@ -496,6 +496,8 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="ContextHistory.cpp" />
+    <ClCompile Include="PersonalLexicon.cpp" />
+    <ClCompile Include="PersonalRefiner.cpp" />
     <ClCompile Include="DevConsole.cpp" />
     <ClCompile Include="MemoryCompressor.cpp" />
     <ClCompile Include="HFConstraintProvider.cpp" />
@@ -509,6 +511,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ContextHistory.h" />
+    <ClInclude Include="PersonalLexicon.h" />
+    <ClInclude Include="PersonalRefiner.h" />
     <ClInclude Include="DevConsole.h" />
     <ClInclude Include="MemoryCompressor.h" />
     <ClInclude Include="resource.h" />

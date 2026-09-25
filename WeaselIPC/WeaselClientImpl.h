@@ -28,6 +28,7 @@ class ClientImpl {
   void FocusOut();
   void TrayCommand(UINT menuId);
   void LLMTestRequest();
+  void PersonalCommand(DWORD command);
   bool GetResponseData(ResponseHandler const& handler);
 
  protected:

@@ -66,6 +66,28 @@ inline std::wstring LLMInstructUser(const std::wstring& context, const std::wstr
   return L"上下文：「" + context + L"」\n目前輸入：「" + current_input + L"」\n候選詞：";
 }
 
+// 共用工具（LLMProvider.cpp）
+std::string LLMJsonEscape(const std::string& s);
+// 從 chat/completions 回應取出第一個 message content（found 表示是否找到）
+std::wstring LLMExtractChatContent(const std::string& json_response, bool* found);
+// 單次 POST JSON；HTTP 2xx 才回傳 true。status_code 可為 nullptr
+bool LLMHttpPostJson(const std::string& url, const std::string& api_key,
+                     const std::string& body, std::string* response,
+                     unsigned long timeout_ms, unsigned long* status_code = nullptr);
+
+// 本機模型的一次性對話（LlamaCppProvider.cpp）：載入模型 → 以 chat template 生成 → 釋放。
+// 給個人詞庫精煉這類偶爾執行、需要較長上下文的工作用，不佔用預測用的模型。
+struct LLMLocalModelSpec {
+  std::string model_path;
+  bool instruct = true;
+  int n_ctx = 8192;
+  int n_gpu_layers = 0;
+  int n_threads = 4;
+};
+bool LLMLocalChat(const LLMLocalModelSpec& spec, const std::string& system_utf8,
+                  const std::string& user_utf8, int max_tokens, std::string* output,
+                  std::wstring* error);
+
 // OpenAI兼容接口提供者
 class OpenAICompatibleProvider : public LLMProvider {
  public:
@@ -121,6 +143,14 @@ class LlamaCppProvider : public LLMProvider {
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
+  // 不經 rime 設定，直接指定模型載入（LLMLocalChat 用）
+  bool LoadModelDirect(const LLMLocalModelSpec& spec, double temperature);
+  // 一次對話：Instruct 模型套用模型內建的 chat template，Base 模型用純文字續寫
+  std::string Chat(const std::string& system_utf8, const std::string& user_utf8, int max_tokens);
+  // 目前模型可用的上下文長度（token）與文字的 token 數
+  int ContextSize() const { return m_ctx_size; }
+  int CountTokens(const std::string& text_utf8) const;
+
  private:
   // 初始化模型
   bool InitializeModel();
@@ -163,6 +193,19 @@ class LlamaCppProvider : public LLMProvider {
   size_t m_system_state_size;
   bool m_system_prompt_ready;
   bool m_model_loaded;             // 模型是否已加载
+};
+
+// 本機模型的對話工作階段：載入一次，連續多次對話（個人詞庫分批精煉用）
+class LLMLocalChatSession {
+ public:
+  LLMLocalChatSession();
+  ~LLMLocalChatSession();
+  bool Open(const LLMLocalModelSpec& spec, std::wstring* error);
+  bool Chat(const std::string& system_utf8, const std::string& user_utf8, int max_tokens,
+            std::string* output, std::wstring* error);
+
+ private:
+  LlamaCppProvider* provider_ = nullptr;
 };
 
 // HF Constraint 接口提供者（/v1/generate/completions）

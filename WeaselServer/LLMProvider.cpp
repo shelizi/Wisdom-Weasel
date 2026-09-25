@@ -314,27 +314,7 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   }
 
   // 构建 prompt：提示词（与 llama.cpp 共用）+ 任务说明放 system，上下文放 user
-  auto escape_json = [](const std::string& s) {
-    std::string out;
-    for (unsigned char c : s) {
-      switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-          if (c < 0x20) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "\\u%04x", c);
-            out += buf;
-          } else {
-            out += (char)c;
-          }
-      }
-    }
-    return out;
-  };
+  auto escape_json = LLMJsonEscape;
   const std::string system_json = escape_json(wtou8(LLMInstructSystem(m_prompt, max_candidates)));
   const std::string user_json = escape_json(wtou8(LLMInstructUser(context, current_input)));
 
@@ -534,8 +514,65 @@ std::vector<std::wstring> OpenAICompatibleProvider::ParseResponse(
     const std::string& json_response) {
   std::vector<std::wstring> candidates;
 
-  // 在 choices 之后找 "content": "..."（跳过 content 为 null 的情况），
-  // 并正确解码 JSON 字串（\" \\ \n 以及许多服务用来输出中文的 \uXXXX / 代理对）
+  bool found = false;
+  const std::wstring content_w = LLMExtractChatContent(json_response, &found);
+  if (!found)
+    return candidates;
+
+  // 以空白、逗號、頓號、分號分隔；去掉「1.」「2、」之类的编号
+  std::wstring word;
+  auto flush = [&]() {
+    size_t k = 0;
+    while (k < word.size() && iswdigit(word[k]))
+      ++k;
+    if (k > 0 && k < word.size() &&
+        (word[k] == L'.' || word[k] == L'、' || word[k] == L')' || word[k] == L'．'))
+      word.erase(0, k + 1);
+    if (!word.empty())
+      candidates.push_back(word);
+    word.clear();
+  };
+  for (wchar_t c : content_w) {
+    if (iswspace(c) || c == L',' || c == L'，' || c == L'、' || c == L';' ||
+        c == L'；' || c == L'　')
+      flush();
+    else
+      word += c;
+  }
+  flush();
+
+  return candidates;
+}
+
+
+// ---------------------------------------------------------------------------
+// 共用工具（OpenAI 相容 API、個人詞庫精煉）
+
+std::string LLMJsonEscape(const std::string& s) {
+  std::string out;
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (c < 0x20) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "\\u%04x", c);
+          out += buf;
+        } else {
+          out += (char)c;
+        }
+    }
+  }
+  return out;
+}
+
+// 在 choices 之后找 "content": "..."（跳过 content 为 null 的情况），
+// 并正确解码 JSON 字串（\" \\ \n 以及许多服务用来输出中文的 \uXXXX / 代理对）
+std::wstring LLMExtractChatContent(const std::string& json_response, bool* found_out) {
   size_t pos = json_response.find("\"choices\"");
   if (pos == std::string::npos)
     pos = 0;
@@ -602,32 +639,73 @@ std::vector<std::wstring> OpenAICompatibleProvider::ParseResponse(
     if (found)
       content_w = u8tow(raw);
   }
-  if (!found)
-    return candidates;
+  if (found_out)
+    *found_out = found;
+  return content_w;
+}
 
-  // 以空白、逗號、頓號、分號分隔；去掉「1.」「2、」之类的编号
-  std::wstring word;
-  auto flush = [&]() {
-    size_t k = 0;
-    while (k < word.size() && iswdigit(word[k]))
-      ++k;
-    if (k > 0 && k < word.size() &&
-        (word[k] == L'.' || word[k] == L'、' || word[k] == L')' || word[k] == L'．'))
-      word.erase(0, k + 1);
-    if (!word.empty())
-      candidates.push_back(word);
-    word.clear();
-  };
-  for (wchar_t c : content_w) {
-    if (iswspace(c) || c == L',' || c == L'，' || c == L'、' || c == L';' ||
-        c == L'；' || c == L'　')
-      flush();
-    else
-      word += c;
+// 單次 POST（每次開新連線；給不常呼叫、可等較久的用途，例如個人詞庫精煉）
+bool LLMHttpPostJson(const std::string& url, const std::string& api_key,
+                     const std::string& body, std::string* response,
+                     unsigned long timeout_ms, unsigned long* status_code) {
+  URL_COMPONENTS uc = {0};
+  uc.dwStructSize = sizeof(uc);
+  wchar_t host[256] = {0};
+  wchar_t path[2048] = {0};
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = _countof(host);
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = _countof(path);
+  const std::wstring url_w = u8tow(url);
+  if (!WinHttpCrackUrl(url_w.c_str(), (DWORD)url_w.length(), 0, &uc))
+    return false;
+  const bool https = uc.nScheme == INTERNET_SCHEME_HTTPS;
+  const std::wstring host_s(host, uc.dwHostNameLength);
+  const bool local = host_s == L"localhost" || host_s == L"127.0.0.1";
+  HINTERNET session = WinHttpOpen(L"Weasel IME/1.0",
+                                  local ? WINHTTP_ACCESS_TYPE_NO_PROXY
+                                        : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session)
+    return false;
+  const int t = (int)timeout_ms;
+  WinHttpSetTimeouts(session, t, t, t, t);
+  bool ok = false;
+  HINTERNET connect = WinHttpConnect(session, host_s.c_str(), uc.nPort, 0);
+  HINTERNET request = connect ? WinHttpOpenRequest(connect, L"POST", path, NULL,
+                                                   WINHTTP_NO_REFERER,
+                                                   WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                   https ? WINHTTP_FLAG_SECURE : 0)
+                              : NULL;
+  if (request) {
+    std::wstring headers = L"Content-Type: application/json\r\n";
+    if (!api_key.empty())
+      headers += L"Authorization: Bearer " + u8tow(api_key) + L"\r\n";
+    if (WinHttpSendRequest(request, headers.c_str(), (DWORD)-1, (LPVOID)body.data(),
+                           (DWORD)body.size(), (DWORD)body.size(), 0) &&
+        WinHttpReceiveResponse(request, NULL)) {
+      DWORD code = 0, size = sizeof(code);
+      WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                          WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
+      if (status_code)
+        *status_code = code;
+      response->clear();
+      DWORD avail = 0;
+      while (WinHttpQueryDataAvailable(request, &avail) && avail > 0) {
+        std::vector<char> buf(avail);
+        DWORD read = 0;
+        if (!WinHttpReadData(request, buf.data(), avail, &read))
+          break;
+        response->append(buf.data(), read);
+      }
+      ok = code >= 200 && code < 300;
+    }
+    WinHttpCloseHandle(request);
   }
-  flush();
-
-  return candidates;
+  if (connect)
+    WinHttpCloseHandle(connect);
+  WinHttpCloseHandle(session);
+  return ok;
 }
 
 // 全局开发终端实例（供LLMProvider使用）

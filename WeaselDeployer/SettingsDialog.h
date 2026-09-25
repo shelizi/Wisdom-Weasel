@@ -4,13 +4,16 @@
 #include "UIStyleSettings.h"
 #include <CDialogDpiAware.h>
 #include <rime_levers_api.h>
+#include <atomic>
 #include <functional>
+#include <mutex>
+#include <thread>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
-// 合併後的「小狼毫設定」視窗：左側分頁（輸入方案／外觀／LLM 智慧預測），右側內容。
+// 合併後的「小狼毫設定」視窗：左側分頁（輸入方案／外觀／智慧預測／語言模型／個人詞庫／詞庫管理），右側內容。
 // 所有分頁的控制項都在同一個對話框範本裡（依 ID 範圍分頁、切換時顯示/隱藏），
 // 讓 CDialogDpiAware 的 DPI 縮放能正確套用到每個控制項。
 class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
@@ -26,11 +29,37 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 是否已在視窗內套用並重新部署過
   bool deployed() const { return deployed_; }
 
+  // 分頁（左側導覽的順序）
+  enum Page {
+    kPageSchemas = 0,
+    kPageStyle,
+    kPagePredict,
+    kPageModels,
+    kPagePersonal,
+    kPageDict,
+  };
+  // 開啟時顯示的分頁（例如托盤的「用戶詞典管理」直接開到詞庫管理）
+  void SetStartPage(int page) { start_page_ = page; }
+
+  // 一組模型設定（本機 llama.cpp 或 OpenAI 相容 API）；預測與個人詞庫精煉各自選用一組
+  struct ModelProfile {
+    std::wstring name;
+    bool remote = false;
+    std::wstring model_path;           // 本機
+    std::wstring model_type = L"Base";  // Base / Instruct
+    std::wstring api_url;              // OpenAI 相容 API
+    std::wstring api_key;
+    std::wstring model;
+  };
+
  protected:
   enum {
     WM_APP_REFONT = WM_APP + 1,  // DPI 變更後重新套用自訂字型
+    WM_APP_FILE_PROGRESS,        // 模型檔下載／複製進度（wParam：0 進行中、1 完成、2 失敗）
+    WM_APP_API_TEST,             // API 連線測試完成
     kTimerTestPoll = 1,          // 等待輸入法回覆預測測試
     kTimerStatusPoll = 2,        // 重新部署後，等輸入法載入模型
+    kTimerPersonalPoll = 3,      // 個人詞庫頁：更新狀態（精煉進度）
   };
 
   BEGIN_MSG_MAP(SettingsDialog)
@@ -40,6 +69,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   MESSAGE_HANDLER(WM_CLOSE, OnClose)
   MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
   MESSAGE_HANDLER(WM_APP_REFONT, OnRefont)
+  MESSAGE_HANDLER(WM_APP_FILE_PROGRESS, OnFileProgress)
+  MESSAGE_HANDLER(WM_APP_API_TEST, OnApiTestDone)
   MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
   MESSAGE_HANDLER(WM_CTLCOLORDLG, OnCtlColorDlg)
   MESSAGE_HANDLER(WM_CTLCOLORSTATIC, OnCtlColorStatic)
@@ -49,13 +80,6 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChange)
   COMMAND_HANDLER(IDC_THEME, CBN_SELCHANGE, OnThemeChange)
   COMMAND_HANDLER(IDC_P3_PREFIX, EN_CHANGE, OnLLMChanged)
-  COMMAND_HANDLER(IDC_P3_API_URL, EN_CHANGE, OnLLMChanged)
-  COMMAND_HANDLER(IDC_P3_API_KEY, EN_CHANGE, OnLLMChanged)
-  COMMAND_HANDLER(IDC_P3_API_MODEL, EN_CHANGE, OnLLMChanged)
-  COMMAND_ID_HANDLER(IDC_P3_LOCAL, OnProviderChange)
-  COMMAND_ID_HANDLER(IDC_P3_REMOTE, OnProviderChange)
-  COMMAND_HANDLER(IDC_P3_LOCAL_LABEL, STN_CLICKED, OnProviderLabelClick)
-  COMMAND_HANDLER(IDC_P3_REMOTE_LABEL, STN_CLICKED, OnProviderLabelClick)
   MESSAGE_HANDLER(WM_MEASUREITEM, OnMeasureItem)
   MESSAGE_HANDLER(WM_DRAWITEM, OnDrawItem)
   MESSAGE_HANDLER(WM_TIMER, OnTimer)
@@ -70,10 +94,57 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_P3_ENABLED, OnLLMEnabledClick)
   COMMAND_ID_HANDLER(IDC_P3_AFTER_COMMIT, OnLLMChanged)
   COMMAND_ID_HANDLER(IDC_P3_WHILE_TYPING, OnLLMChanged)
-  COMMAND_HANDLER(IDC_P3_MODEL, CBN_SELCHANGE, OnModelChange)
-  COMMAND_HANDLER(IDC_P3_TYPE, CBN_SELCHANGE, OnLLMChanged)
-  COMMAND_ID_HANDLER(IDC_P3_BROWSE, OnBrowseModel)
+  COMMAND_HANDLER(IDC_P3_PROFILE, CBN_SELCHANGE, OnProfileChoice)
+  COMMAND_ID_HANDLER(IDC_P3_MANAGE, OnGoModels)
   COMMAND_ID_HANDLER(IDC_P3_TEST_RUN, OnTestRun)
+  // 語言模型
+  COMMAND_HANDLER(IDC_P5_LIST, LBN_SELCHANGE, OnProfileSelect)
+  COMMAND_ID_HANDLER(IDC_P5_ADD, OnProfileAdd)
+  COMMAND_ID_HANDLER(IDC_P5_COPY, OnProfileAdd)
+  COMMAND_ID_HANDLER(IDC_P5_DELETE, OnProfileDelete)
+  COMMAND_HANDLER(IDC_P5_NAME, EN_CHANGE, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_API_URL, EN_CHANGE, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_API_KEY, EN_CHANGE, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_API_MODEL, EN_CHANGE, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_TYPE, CBN_SELCHANGE, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_MODEL, CBN_SELCHANGE, OnModelChange)
+  COMMAND_ID_HANDLER(IDC_P5_BROWSE, OnBrowseModel)
+  COMMAND_HANDLER(IDC_P5_FILES, LBN_SELCHANGE, OnModelFileSel)
+  COMMAND_ID_HANDLER(IDC_P5_FILE_ADD, OnModelFileAdd)
+  COMMAND_ID_HANDLER(IDC_P5_FILE_DELETE, OnModelFileDelete)
+  COMMAND_ID_HANDLER(IDC_P5_FILE_OPEN, OnModelFileOpen)
+  COMMAND_ID_HANDLER(IDC_P5_DOWNLOAD, OnModelDownload)
+  COMMAND_ID_HANDLER(IDC_P5_API_TEST, OnApiTest)
+  COMMAND_ID_HANDLER(IDC_P5_LOCAL, OnProviderChange)
+  COMMAND_ID_HANDLER(IDC_P5_REMOTE, OnProviderChange)
+  COMMAND_HANDLER(IDC_P5_LOCAL_LABEL, STN_CLICKED, OnProviderLabelClick)
+  COMMAND_HANDLER(IDC_P5_REMOTE_LABEL, STN_CLICKED, OnProviderLabelClick)
+  // 個人詞庫
+  COMMAND_ID_HANDLER(IDC_P4_ENABLED, OnPersonalEnabledClick)
+  COMMAND_ID_HANDLER(IDC_P4_KEEP_LOG, OnPersonalChanged)
+  COMMAND_HANDLER(IDC_P4_MAX, CBN_SELCHANGE, OnPersonalChanged)
+  COMMAND_HANDLER(IDC_P4_HALFLIFE, EN_CHANGE, OnPersonalChanged)
+  COMMAND_HANDLER(IDC_P4_INTERVAL, EN_CHANGE, OnPersonalChanged)
+  COMMAND_HANDLER(IDC_P4_PROFILE, CBN_SELCHANGE, OnProfileChoice)
+  COMMAND_ID_HANDLER(IDC_P4_MANAGE, OnGoModels)
+  COMMAND_ID_HANDLER(IDC_P4_WORDS, OnGoDict)
+  COMMAND_ID_HANDLER(IDC_P4_REFINE, OnPersonalCommand)
+  COMMAND_ID_HANDLER(IDC_P4_REFINE_ALL, OnPersonalCommand)
+  COMMAND_ID_HANDLER(IDC_P4_CLEAR, OnPersonalCommand)
+  // 詞庫管理
+  COMMAND_HANDLER(IDC_P6_FILTER, EN_CHANGE, OnWordFilter)
+  COMMAND_ID_HANDLER(IDC_P6_ADD, OnWordEdit)
+  COMMAND_ID_HANDLER(IDC_P6_MERGE, OnWordEdit)
+  COMMAND_ID_HANDLER(IDC_P6_BLOCK, OnWordEdit)
+  COMMAND_ID_HANDLER(IDC_P6_UNRULE, OnWordEdit)
+  COMMAND_ID_HANDLER(IDC_P6_REFRESH, OnWordRefresh)
+  NOTIFY_HANDLER(IDC_P6_WORDS, LVN_ITEMCHANGED, OnWordSelChanged)
+  NOTIFY_HANDLER(IDC_P6_WORDS, NM_DBLCLK, OnWordDblClick)
+  COMMAND_HANDLER(IDC_P6_DICTS, LBN_SELCHANGE, OnDictSelChange)
+  COMMAND_ID_HANDLER(IDC_P6_BACKUP, OnDictCommand)
+  COMMAND_ID_HANDLER(IDC_P6_RESTORE, OnDictCommand)
+  COMMAND_ID_HANDLER(IDC_P6_EXPORT, OnDictCommand)
+  COMMAND_ID_HANDLER(IDC_P6_IMPORT, OnDictCommand)
   END_MSG_MAP()
 
   LRESULT OnInitDialog(UINT, WPARAM, LPARAM, BOOL&);
@@ -81,6 +152,14 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnDestroy(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnDpiChangedPre(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnRefont(UINT, WPARAM, LPARAM, BOOL&);
+  LRESULT OnFileProgress(UINT, WPARAM, LPARAM, BOOL&);
+  LRESULT OnApiTest(WORD, WORD, HWND, BOOL&);
+  LRESULT OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&);
+  LRESULT OnModelFileSel(WORD, WORD, HWND, BOOL&);
+  LRESULT OnModelFileAdd(WORD, WORD, HWND, BOOL&);
+  LRESULT OnModelFileDelete(WORD, WORD, HWND, BOOL&);
+  LRESULT OnModelFileOpen(WORD, WORD, HWND, BOOL&);
+  LRESULT OnModelDownload(WORD, WORD, HWND, BOOL&);
   LRESULT OnEraseBkgnd(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnCtlColorDlg(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnCtlColorStatic(UINT, WPARAM, LPARAM, BOOL&);
@@ -106,6 +185,23 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnProviderLabelClick(WORD, WORD, HWND, BOOL&);
   LRESULT OnBrowseModel(WORD, WORD, HWND, BOOL&);
   LRESULT OnTestRun(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProfileChoice(WORD, WORD, HWND, BOOL&);
+  LRESULT OnGoModels(WORD, WORD, HWND, BOOL&);
+  LRESULT OnGoDict(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProfileSelect(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProfileAdd(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProfileDelete(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProfileEdit(WORD, WORD, HWND, BOOL&);
+  LRESULT OnWordFilter(WORD, WORD, HWND, BOOL&);
+  LRESULT OnWordEdit(WORD, WORD, HWND, BOOL&);
+  LRESULT OnWordRefresh(WORD, WORD, HWND, BOOL&);
+  LRESULT OnWordSelChanged(int, LPNMHDR, BOOL&);
+  LRESULT OnWordDblClick(int, LPNMHDR, BOOL&);
+  LRESULT OnDictSelChange(WORD, WORD, HWND, BOOL&);
+  LRESULT OnDictCommand(WORD, WORD, HWND, BOOL&);
+  LRESULT OnPersonalEnabledClick(WORD, WORD, HWND, BOOL&);
+  LRESULT OnPersonalChanged(WORD, WORD, HWND, BOOL&);
+  LRESULT OnPersonalCommand(WORD, WORD, HWND, BOOL&);
 
   // 版面與外觀
  public:
@@ -133,11 +229,43 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void PopulateModels(const std::wstring& current);
   int AddModel(const std::wstring& path);
   void UpdateLLMEnableState();
-  bool IsRemoteProvider() const;  // 選了 OpenAI 相容 API（否則為本機 llama.cpp）
+  bool IsRemoteProvider() const;  // 目前編輯的模型設定是 OpenAI 相容 API（否則為本機 llama.cpp）
+  void GoToPage(int page);
+  // 語言模型（多組設定）
+  void LoadProfiles(RimeConfig* config);
+  void SaveProfiles(RimeConfig* llm);
+  bool ValidateProfiles();
+  void PopulateProfileList();
+  void SelectProfile(int index);    // 顯示到右側編輯區
+  void CommitProfileEditor();       // 編輯區 → profiles_
+  // 預測與精煉的下拉選單；參數為要選的 profiles_ 索引（-1 = 不選，-2 = 維持目前的選擇）
+  void RefreshProfileCombos(int predict = -2, int refine = -2);
+  void UpdateProfileUsage();
+  // 模型檔案（使用者資料夾的 models）
+  void PopulateModelFiles(const std::wstring& select = L"");
+  void UpdateModelFileButtons();
+  // 在背景下載或複製模型檔（src 為網址或本機路徑）
+  void StartModelFileJob(const std::wstring& src, const std::wstring& dest, bool download);
+  void SetFileStatus(const std::wstring& text);
+  int ComboProfile(int combo_id) const;  // 下拉選單選到的 profiles_ 索引（-1 = 沒有 / 不使用）
+  static std::wstring ProfileLabel(const ModelProfile& p);
   bool SaveLLMSettings();
   // 預測測試（透過正在執行的輸入法）
   void SendLLMRequest(const std::wstring& context, bool is_test);
   bool PollLLMResponse();
+  // 個人詞庫
+  void LoadPersonalSettings(RimeConfig* llm_config);
+  void SavePersonalSettings(RimeConfig* llm);
+  void UpdatePersonalEnableState();
+  bool SendPersonalCommand(DWORD command);  // 見 WEASEL_IPC_PERSONAL
+  void RefreshPersonalStatus();             // 讀 personal/status.txt
+  // 詞庫管理
+  void LoadPersonalWords();                 // 請輸入法匯出詞彙與規則後讀回
+  void PopulateWordList();
+  void PopulateRuleList();
+  bool SendWordEdits(const std::vector<std::wstring>& lines);  // 格式見 PersonalLexicon::ApplyEdits
+  void PopulateDicts();
+  void UpdateDictButtons();
 
   // 儲存並重新部署；ok=true 時代表按下確定
   bool Save();
@@ -153,6 +281,45 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool schemas_modified_ = false;
   bool style_modified_ = false;
   bool llm_modified_ = false;
+  bool personal_modified_ = false;
+  int start_page_ = 0;
+
+  // 語言模型
+  std::vector<ModelProfile> profiles_;
+  int profile_sel_ = -1;
+  bool loading_profile_ = false;  // 載入編輯區時不觸發變更
+  CListBox model_files_;
+  std::vector<std::wstring> model_file_paths_;  // 與 model_files_ 的項目一一對應
+  std::thread file_worker_;
+  std::atomic<bool> file_busy_{false};
+  std::atomic<bool> file_cancel_{false};
+  std::mutex file_mutex_;
+  std::wstring file_message_;   // 背景工作的進度／結果文字（file_mutex_）
+  std::wstring file_result_;    // 完成的檔案路徑
+  std::thread api_worker_;      // API 連線測試
+  std::atomic<bool> api_busy_{false};
+  std::wstring api_result_;     // 測試結果（file_mutex_）
+  int api_profile_ = -1;        // 測試的是哪一組
+  CListBox profile_list_;
+  CComboBox predict_profile_;
+  CComboBox refine_profile_;
+
+  // 詞庫管理
+  struct WordRule {
+    enum Kind { kBlock, kMerge, kAdd } kind;
+    std::wstring from, to;
+  };
+  std::vector<std::pair<std::wstring, double>> words_;
+  std::vector<WordRule> rules_;
+  bool words_loaded_ = false;
+  bool personal_disabled_ = false;
+  CListViewCtrl words_list_;
+  CListViewCtrl rules_list_;
+  CListBox dicts_;
+  bool dicts_loaded_ = false;
+  bool dict_task_ready_ = false;
+  bool personal_running_ = false;
+  int personal_ticks_ = 0;
 
   int page_ = 0;
   CListBox nav_;

@@ -53,7 +53,7 @@ void Configurator::Initialize() {
   rime_api->deployer_initialize(NULL);
 }
 
-int Configurator::Run(bool installing) {
+int Configurator::Run(bool installing, int start_page) {
   RimeModule* levers = rime_get_api()->find_module("levers");
   if (!levers)
     return 1;
@@ -75,6 +75,7 @@ int Configurator::Run(bool installing) {
       api->load_settings(ui_style_settings.settings())) {
     SettingsDialog dialog(switcher_settings, &ui_style_settings,
                           [this] { UpdateWorkspace(true); });
+    dialog.SetStartPage(start_page);
     dialog.DoModal();
     deployed = dialog.deployed();
   }
@@ -130,6 +131,12 @@ int Configurator::UpdateWorkspace(bool report_errors) {
 }
 
 int Configurator::DictManagement() {
+  // 使用者詞典管理已整合到設定視窗的「詞庫管理」頁（操作時才讓輸入法暫停）
+  return Run(false, SettingsDialog::kPageDict);
+}
+
+// 原本獨立的「用戶詞典管理」視窗（保留備用）
+int Configurator::LegacyDictManagement() {
   HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
   if (!hMutex) {
     LOG(ERROR) << "Error creating WeaselDeployerMutex.";
