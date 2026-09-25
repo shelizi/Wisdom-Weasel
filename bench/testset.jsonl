@@ -1,0 +1,40 @@
+{"id": "daily-01", "category": "日常", "context": "今天天氣很好，我們一起去", "expected": ["公園", "散步", "爬山", "海邊", "吃", "玩", "逛街", "郊遊", "看電影", "野餐"]}
+{"id": "daily-02", "category": "日常", "context": "我肚子好餓，晚餐想吃", "expected": ["火鍋", "拉麵", "牛肉麵", "便當", "麥當勞", "義大利麵", "什麼", "壽司", "炒飯", "滷肉飯"]}
+{"id": "daily-03", "category": "日常", "context": "明天早上八點要開會，我得早點", "expected": ["起床", "睡", "出門", "休息", "到"]}
+{"id": "daily-04", "category": "日常", "context": "下雨了，出門記得帶", "expected": ["傘", "雨傘", "雨衣", "外套"]}
+{"id": "daily-05", "category": "日常", "context": "週末要不要一起去看", "expected": ["電影", "展覽", "演唱會", "球賽", "夜景", "海"]}
+{"id": "daily-06", "category": "日常", "context": "我剛搬家，新家離捷運站", "expected": ["很近", "不遠", "很遠", "走路", "只要", "大概"]}
+{"id": "daily-07", "category": "日常", "context": "這家店的珍珠奶茶", "expected": ["很好喝", "好喝", "超好喝", "很甜", "很有名", "不錯", "太甜"]}
+{"id": "daily-08", "category": "日常", "context": "睡前記得把手機", "expected": ["充電", "關機", "放", "關掉", "拿"]}
+{"id": "chat-01", "category": "聊天", "context": "哈哈哈你也太", "expected": ["好笑", "誇張", "可愛", "扯", "厲害", "搞笑", "強"]}
+{"id": "chat-02", "category": "聊天", "context": "謝謝你的幫忙，改天請你", "expected": ["吃飯", "喝咖啡", "喝飲料", "吃", "喝"]}
+{"id": "chat-03", "category": "聊天", "context": "不好意思，我今天可能會晚一點", "expected": ["到", "回", "回覆", "過去", "出發"]}
+{"id": "chat-04", "category": "聊天", "context": "生日快樂！祝你", "expected": ["天天開心", "心想事成", "身體健康", "萬事如意", "快樂", "生日快樂", "一切順利"]}
+{"id": "chat-05", "category": "聊天", "context": "你現在有空嗎？我想跟你", "expected": ["聊聊", "討論", "說", "商量", "講", "借"]}
+{"id": "chat-06", "category": "聊天", "context": "好久不見，最近過得", "expected": ["好嗎", "怎麼樣", "如何", "還好嗎", "還好"]}
+{"id": "chat-07", "category": "聊天", "context": "晚安，明天", "expected": ["見", "再聊", "還要", "早上", "記得"]}
+{"id": "work-01", "category": "工作", "context": "附件是本週的進度報告，請", "expected": ["查收", "參考", "過目", "確認", "查閱", "審閱"]}
+{"id": "work-02", "category": "工作", "context": "這個專案的截止日期是", "expected": ["下週", "月底", "明天", "星期五", "什麼時候", "下個月"]}
+{"id": "work-03", "category": "工作", "context": "如果有任何問題，歡迎隨時", "expected": ["聯絡", "聯繫", "詢問", "告訴", "提出", "跟我說"]}
+{"id": "work-04", "category": "工作", "context": "關於明天的會議，我想先確認一下", "expected": ["時間", "地點", "議程", "內容", "參加", "細節"]}
+{"id": "work-05", "category": "工作", "context": "主管要求我們下班前把報表", "expected": ["交", "完成", "做完", "寄", "送", "整理", "上傳"]}
+{"id": "work-06", "category": "工作", "context": "感謝您的來信，我們會盡快", "expected": ["回覆", "處理", "回信", "安排", "與您聯繫"]}
+{"id": "work-07", "category": "工作", "context": "面試結果會在一週內以電子郵件", "expected": ["通知", "寄", "告知", "發送", "的方式"]}
+{"id": "tech-01", "category": "技術", "context": "程式跑到一半就當掉了，可能是記憶體", "expected": ["不足", "不夠", "洩漏", "溢位", "問題", "用完"]}
+{"id": "tech-02", "category": "技術", "context": "請先把軟體更新到最新", "expected": ["版本", "版"]}
+{"id": "tech-03", "category": "技術", "context": "網路好慢，我要重新開啟", "expected": ["路由器", "電腦", "網路", "瀏覽器", "數據機", "Wi-Fi"]}
+{"id": "tech-04", "category": "技術", "context": "這個檔案太大了，沒辦法用電子郵件", "expected": ["寄", "傳", "寄送", "傳送", "發送", "附加"]}
+{"id": "tech-05", "category": "技術", "context": "手機的電池越來越不", "expected": ["耐用", "耐", "持久", "行", "夠用"]}
+{"id": "tech-06", "category": "技術", "context": "登入的時候要輸入帳號和", "expected": ["密碼"]}
+{"id": "idiom-01", "category": "成語俗語", "context": "他做事總是三心", "expected": ["二意"]}
+{"id": "idiom-02", "category": "成語俗語", "context": "這次比賽大家都全力以", "expected": ["赴"]}
+{"id": "idiom-03", "category": "成語俗語", "context": "學習要循序", "expected": ["漸進"]}
+{"id": "idiom-04", "category": "成語俗語", "context": "他們兩個真是一見", "expected": ["鍾情", "如故"]}
+{"id": "idiom-05", "category": "成語俗語", "context": "這件事情已經木已", "expected": ["成舟"]}
+{"id": "idiom-06", "category": "成語俗語", "context": "失敗為成功之", "expected": ["母"]}
+{"id": "tw-01", "category": "臺灣用語", "context": "我等一下要去便利商店繳", "expected": ["費", "帳單", "電費", "水費", "停車費", "罰單"]}
+{"id": "tw-02", "category": "臺灣用語", "context": "搭高鐵從台北到高雄大概要", "expected": ["一個半小時", "兩個小時", "多久", "九十分鐘", "一個多小時"]}
+{"id": "tw-03", "category": "臺灣用語", "context": "夜市裡最好吃的是雞排和", "expected": ["珍奶", "珍珠奶茶", "蚵仔煎", "臭豆腐", "鹽酥雞", "大腸包小腸", "滷味"]}
+{"id": "tw-04", "category": "臺灣用語", "context": "記得帶悠遊卡，搭捷運和", "expected": ["公車", "火車", "搭公車", "YouBike"]}
+{"id": "tw-05", "category": "臺灣用語", "context": "颱風要來了，明天可能會停班", "expected": ["停課"]}
+{"id": "tw-06", "category": "臺灣用語", "context": "這個週末是連假，高速公路一定會", "expected": ["塞車", "很塞", "大塞車", "塞爆"]}

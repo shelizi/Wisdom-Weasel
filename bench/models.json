@@ -1,0 +1,9 @@
+[
+  {"name": "minicpm5-2b-base-q8",  "path": "C:/Users/zex55/models/MiniCPM5-2B-Base.Q8_0.gguf",   "mode": "base"},
+  {"name": "minicpm5-2b-base-q5",  "path": "C:/Users/zex55/models/MiniCPM5-2B-Base.Q5_K_M.gguf", "mode": "base"},
+  {"name": "minicpm5-1b-base",  "path": "C:/Users/zex55/models/MiniCPM5-1B-Base.Q8_0.gguf",     "mode": "base"},
+  {"name": "qwen3-0.6b-base",   "path": "C:/Users/zex55/models/Qwen3-0.6B-Base.Q8_0.gguf",    "mode": "base"},
+  {"name": "qwen3-4b-base",     "path": "C:/Users/zex55/models/Qwen3-4B-Base.Q5_K_M.gguf",    "mode": "base"},
+  {"name": "lfm2.5-230m-base",  "path": "C:/Users/zex55/models/LFM2.5-230M-Base-Q8_0.gguf",   "mode": "base"},
+  {"name": "lfm2.5-230m-inst",  "path": "C:/Users/zex55/models/LFM2.5-230M-Q8_0.gguf",        "mode": "instruct"}
+]

@@ -20,20 +20,26 @@ ResponseParser::ResponseParser(std::wstring* commit,
 }
 
 bool ResponseParser::operator()(LPWSTR buffer, UINT length) {
-  WMemStream bs((wchar_t*)buffer, length);
-  std::wstring line;
-  while (bs.good()) {
-    std::getline(bs, line);
-    if (!bs.good())
-      return false;
+  try {
+    WMemStream bs((wchar_t*)buffer, length);
+    std::wstring line;
+    while (bs.good()) {
+      std::getline(bs, line);
+      if (!bs.good())
+        return false;
 
-    // file ends
-    if (line == L".")
-      break;
+      // file ends
+      if (line == L".")
+        break;
 
-    Feed(line);
+      Feed(line);
+    }
+    return bs.good();
+  } catch (...) {
+    // 运行在宿主应用进程内，绝不让异常逃逸
+    OutputDebugStringA("[weasel] IPC response dropped: exception while parsing\n");
+    return false;
   }
-  return bs.good();
 }
 
 void ResponseParser::Feed(const std::wstring& line) {
@@ -65,6 +71,16 @@ void ResponseParser::Feed(const std::wstring& line) {
   }
 
   // dispatch
+  // 本代码运行在宿主应用进程内（TSF/IME），任何异常都不能逃逸，否则会拖垮宿主应用；
+  // 解析失败时丢弃该行即可
   Deserializer::Ptr p = i->second;
-  p->Store(key, value);
+  try {
+    p->Store(key, value);
+  } catch (const std::exception& e) {
+    OutputDebugStringA("[weasel] IPC line dropped: ");
+    OutputDebugStringA(e.what());
+    OutputDebugStringA("\n");
+  } catch (...) {
+    OutputDebugStringA("[weasel] IPC line dropped: unknown exception\n");
+  }
 }

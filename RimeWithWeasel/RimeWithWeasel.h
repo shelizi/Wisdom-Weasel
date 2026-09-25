@@ -163,6 +163,10 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_prediction_mode;
   std::vector<std::wstring> m_current_llm_candidates;
   std::wstring m_pending_llm_commit;  // 待提交的LLM候选词
+  bool m_llm_completion_active = false;  // 当前 LLM 候选是输入中补全（Rime 首选 + 续写）
+  bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
+  bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
+  bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
   std::atomic<uint64_t> m_llm_request_seq{0};  // LLM异步预测请求序号（用于丢弃旧结果）
   std::mutex m_llm_mutex;                      // 保护 m_current_llm_candidates
   std::shared_mutex m_llm_warmup_gate_mutex;   // 推理共享锁；预热独占 try_lock
@@ -170,9 +174,17 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   // 双击·键检测（用于清空上下文）
   DWORD m_last_grave_key_time;  // 上次·键按下的时间（毫秒）
   static const DWORD GRAVE_DOUBLE_CLICK_TIMEOUT = 500;  // 双击时间间隔阈值（毫秒）
+  static const DWORD kLLMCompletionDelayMs = 300;  // 输入中停顿多久触发补全预测（毫秒）
 
   // LLM预测相关方法
-  void _TriggerLLMPrediction(WeaselSessionId ipc_id, const std::wstring& current_input = L"");
+  // delay_ms>0 时为防抖：延迟后若已有更新的请求则放弃；completion_prefix 非空时为输入中补全模式
+  void _TriggerLLMPrediction(WeaselSessionId ipc_id, const std::wstring& current_input = L"",
+                             DWORD delay_ms = 0, const std::wstring& completion_prefix = L"");
+  // 选中第 llm_index 个 LLM 候选：清空 composition、提交并继续预测下一个词
+  bool _CommitLLMCandidate(WeaselSessionId ipc_id, size_t llm_index, EatLine eat);
+  // 输入中补全：安排（防抖）或清除补全候选
+  void _ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD delay_ms);
+  void _CancelLLMCompletion();
   void _ExitLLMPredictionMode(WeaselSessionId ipc_id);
   void _WarmupLLMCacheAfterCompression();
 };

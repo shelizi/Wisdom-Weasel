@@ -243,6 +243,21 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     }
   }
 
+  // Base 模式引导文字（可选）：模型会跟随前文的字形与语气续写，可借此要求繁体/台湾用语
+  {
+    char prefix_buf[2048] = {0};
+    if (rime_api->config_get_string(&config, "llm/llamacpp/prompt_prefix", prefix_buf,
+                                    sizeof(prefix_buf) - 1)) {
+      m_prompt_prefix = u8tow(prefix_buf);
+    } else {
+      m_prompt_prefix.clear();
+    }
+    if (g_dev_console && g_dev_console->IsEnabled()) {
+      g_dev_console->WriteLine(L"[LLM] llm/llamacpp/prompt_prefix = " +
+                               (m_prompt_prefix.empty() ? L"(无)" : m_prompt_prefix));
+    }
+  }
+
   rime_api->config_close(&config);
 
   // 初始化模型
@@ -327,6 +342,9 @@ bool LlamaCppProvider::InitializeModel() {
   ctx_params.n_threads_batch = m_n_threads;
   // 批量解码需要多序列，seq_id 会用到 0..n_parallel-1，默认 1 会导致 "seq_id >= n_seq_max" 报错
   ctx_params.n_seq_max = 64;
+  // 所有序列共享同一 system prompt 前缀，使用统一 KV 缓存；
+  // 否则新版 llama.cpp 会把 n_ctx 平分给每个序列（2048/64 = 32 token）
+  ctx_params.kv_unified = true;
 
   llama_context* ctx = llama_init_from_model(model, ctx_params);
   if (!ctx) {
@@ -343,17 +361,20 @@ bool LlamaCppProvider::InitializeModel() {
   // 初始化采样器
   llama_sampler_chain_params smpl_params = llama_sampler_chain_default_params();
   llama_sampler* smpl = llama_sampler_chain_init(smpl_params);
+  const llama_vocab* vocab = llama_model_get_vocab(model);
+  const int n_vocab = llama_vocab_n_tokens(vocab);
 
   // 常用顺序：penalties -> top_k/top_p/min_p/typical -> temperature -> distribution
   // 其中 mirostat 为自适应采样，开启后通常不叠加 top_k/top_p/min_p/typical。
+  // 新版 llama.cpp 不再接受 penalty_last_n = -1，改为显式传入上下文长度
   llama_sampler_chain_add(smpl, llama_sampler_init_penalties(
-      -1,
+      n_vocab,
+      (int32_t)llama_n_ctx(ctx),
       (float)m_repeat_penalty,
       (float)m_frequency_penalty,
       (float)m_presence_penalty));
 
   if (m_mirostat == 1) {
-    const int n_vocab = llama_vocab_n_tokens((const llama_vocab*)m_vocab);
     llama_sampler_chain_add(smpl, llama_sampler_init_temp((float)m_temperature));
     llama_sampler_chain_add(smpl, llama_sampler_init_mirostat(
         n_vocab, LLAMA_DEFAULT_SEED, 5.0f, 0.1f, 100));
@@ -951,7 +972,17 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
     prompt_utf8 = wtou8(user_prompt);
   } else {
     // Base 模型：直接使用 context + current_input 作为补全前缀，无额外指令
-    std::wstring context_prefix = context + current_input;
+    // 注音方案的 current_input 是注音符号/声调（如 ㄨㄛˇ），接在中文后会干扰续写，去掉
+    std::wstring input_text = current_input;
+    input_text.erase(std::remove_if(input_text.begin(), input_text.end(),
+                                    [](wchar_t c) {
+                                      return (c >= 0x3100 && c <= 0x312F) ||  // 注音符号
+                                             (c >= 0x31A0 && c <= 0x31BF) ||  // 注音扩展
+                                             c == 0x02C9 || c == 0x02CA || c == 0x02C7 ||
+                                             c == 0x02CB || c == 0x02D9 || c == L' ' || c == L'\'';
+                                    }),
+                     input_text.end());
+    std::wstring context_prefix = m_prompt_prefix + context + input_text;
     system_prompt_utf8.clear();
     prompt_utf8 = wtou8(context_prefix);
   }

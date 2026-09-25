@@ -111,6 +111,7 @@ class LlamaCppProvider : public LLMProvider {
   double m_typical_p;             // typical sampling
   int m_n_threads;                // 线程数
   bool m_instruct_model;          // true=Instruct 使用指令 prompt，false=Base 仅用 context 补全
+  std::wstring m_prompt_prefix;   // llm/llamacpp/prompt_prefix：Base 模式接在上下文前的引导文字（如要求繁体）
 
   // llama.cpp 对象（使用前向声明避免包含头文件）
   void* m_model;                  // llama_model*

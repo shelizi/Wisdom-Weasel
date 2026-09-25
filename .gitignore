@@ -55,3 +55,10 @@ arm64x_wrapper/*.dll
 arm64x_wrapper/*.ime
 arm64x_wrapper/*.lib
 arm64x_wrapper/*.exp
+# local llama.cpp b11177 build (headers staged by make_llama_libs.ps1)
+llamatest/
+lib64/*.exp
+# local install markers and benchmark output
+*.done
+bench/results/
+bench/__pycache__/

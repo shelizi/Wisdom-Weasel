@@ -202,6 +202,15 @@ void RimeWithWeaselHandler::Initialize() {
     _LoadAppOptions(&config, m_app_options);
     
     // 初始化LLM Provider (注意：此时m_dev_console可能还未初始化)
+    // 先释放旧 provider（重新部署时），避免新旧模型同时占用内存，或关闭 LLM 后旧模型仍驻留
+    m_llm_provider.reset();
+    // 两种自动触发时机可分别关闭（未设置时默认开启）；关闭后仍可按 ` 键手动触发
+    Bool llm_flag = true;
+    m_llm_after_commit =
+        !rime_api->config_get_bool(&config, "llm/predict_after_commit", &llm_flag) || llm_flag;
+    llm_flag = true;
+    m_llm_while_typing =
+        !rime_api->config_get_bool(&config, "llm/predict_while_typing", &llm_flag) || llm_flag;
     Bool llm_enabled = false;
     if (rime_api->config_get_bool(&config, "llm/enabled", &llm_enabled)) {
       if (llm_enabled) {
@@ -500,8 +509,8 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
           }
         }
         
-        // 触发LLM预测，传入当前拼音
-        _TriggerLLMPrediction(ipc_id, current_preedit);
+        // 立即以 Rime 当前的转换结果做补全预测（注音的 preedit 是注音符号，不适合直接给模型）
+        _ScheduleLLMCompletion(ipc_id, 0);
         
         // 更新UI
         // _UpdateUI(ipc_id);
@@ -520,147 +529,37 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
       return TRUE;
     }
     
-    // 空格键：选择第一个候选词（索引0）
-    if (keyEvent.keycode == ibus::Keycode::space) {
-      // 获取Rime候选词数量
-      RIME_STRUCT(RimeContext, ctx);
-      size_t rime_candidate_count = 0;
-      if (rime_api->get_context(session_id, &ctx)) {
-        rime_candidate_count = ctx.menu.num_candidates;
-        rime_api->free_context(&ctx);
-      }
-      
-      // 计算总候选词数
-      size_t total_candidates = rime_candidate_count + m_current_llm_candidates.size();
-      
-      if (total_candidates > 0) {
-        // 选择第一个候选词（索引0）
-        size_t pressed_index = 0;
-        
-        if (m_dev_console && m_dev_console->IsEnabled()) {
-          std::wstringstream ss;
-          ss << L"[LLM] 空格键被按下，选择第一个候选词（索引0），Rime候选词=" 
-             << rime_candidate_count << L", LLM候选词=" << m_current_llm_candidates.size()
-             << L", 总候选词=" << total_candidates;
-          m_dev_console->WriteLine(ss.str());
-        }
-        
-        // 如果第一个候选词是LLM候选词（即没有Rime候选词，或者索引超出Rime候选词范围）
-        if (pressed_index >= rime_candidate_count && 
-            pressed_index < total_candidates) {
-          size_t llm_index = pressed_index - rime_candidate_count;
-          if (llm_index < m_current_llm_candidates.size()) {
-            // 选择LLM候选词
-            std::wstring selected = m_current_llm_candidates[llm_index];
-            
-            if (m_dev_console && m_dev_console->IsEnabled()) {
-              std::wstringstream ss;
-              ss << L"[LLM] 用户通过空格键选择LLM候选词: " << selected;
-              m_dev_console->WriteLine(ss.str());
-            }
-            
-            // 清空 ctx.composition.preedit 和 Rime 候选词
-            rime_api->clear_composition(session_id);
-            
-            // 记录到上下文历史（LLM 预测时从历史取最近上下文）
-            if (m_context_history) {
-              m_context_history->AddText(selected, m_dev_console);
-            }
-            
-            // 设置待提交的LLM候选词（将在_Respond中处理）
-            m_pending_llm_commit = selected;
-            
-            // 继续预测下一个词
-            _TriggerLLMPrediction(ipc_id);
-            
-            // 触发_Respond以发送commit消息
-            _Respond(ipc_id, eat);
-            _UpdateUI(ipc_id);
-            return TRUE;
-          }
-        } else {
-          // 第一个候选词是Rime候选词（pressed_index < rime_candidate_count），让Rime正常处理
-          // 不阻止按键，继续处理
-          if (m_dev_console && m_dev_console->IsEnabled()) {
-            m_dev_console->WriteLine(L"[LLM] 空格键：第一个候选词是Rime候选词，让Rime正常处理");
+    // Tab 选第一个 LLM 候选，Shift+1~5 选第几个。
+    // （原本用空格与数字键 1-9，但在注音大千键盘中这些键是注音符号与声调，会误选）
+    int llm_pick = -1;
+    const bool other_mods = (keyEvent.mask & (ibus::Modifier::CONTROL_MASK |
+                                              ibus::Modifier::MOD1_MASK |
+                                              ibus::Modifier::SUPER_MASK)) != 0;
+    if (!other_mods) {
+      if (keyEvent.keycode == ibus::Keycode::Tab &&
+          !(keyEvent.mask & ibus::Modifier::SHIFT_MASK)) {
+        llm_pick = 0;
+      } else if (keyEvent.mask & ibus::Modifier::SHIFT_MASK) {
+        static const UINT kShiftedDigits[] = {'!', '@', '#', '$', '%'};
+        for (int k = 0; k < 5; ++k) {
+          if (keyEvent.keycode == kShiftedDigits[k] || keyEvent.keycode == (UINT)('1' + k)) {
+            llm_pick = k;
+            break;
           }
         }
       }
     }
-    
-    // 数字键1-9：选择候选词（可能是Rime候选词或LLM候选词）
-    if (keyEvent.keycode >= '1' && 
-        keyEvent.keycode <= '9') {
-      size_t pressed_index = (size_t)(keyEvent.keycode - '1');  // 0-8
-      
-      // 获取Rime候选词数量
-      RIME_STRUCT(RimeContext, ctx);
-      size_t rime_candidate_count = 0;
-      if (rime_api->get_context(session_id, &ctx)) {
-        rime_candidate_count = ctx.menu.num_candidates;
-        rime_api->free_context(&ctx);
-      }
-      
-      // 计算总候选词数
-      size_t total_candidates = rime_candidate_count + m_current_llm_candidates.size();
-      
-      if (m_dev_console && m_dev_console->IsEnabled()) {
-        std::wstringstream ss;
-        ss << L"[LLM] 数字键 " << (pressed_index + 1) << L" 被按下，Rime候选词=" 
-           << rime_candidate_count << L", LLM候选词=" << m_current_llm_candidates.size()
-           << L", 总候选词=" << total_candidates;
-        m_dev_console->WriteLine(ss.str());
-      }
-      
-      // 如果按下的数字键对应的是LLM候选词
-      if (pressed_index >= rime_candidate_count && 
-          pressed_index < total_candidates) {
-        size_t llm_index = pressed_index - rime_candidate_count;
-        if (llm_index < m_current_llm_candidates.size()) {
-          // 选择LLM候选词
-          std::wstring selected = m_current_llm_candidates[llm_index];
-          
-          if (m_dev_console && m_dev_console->IsEnabled()) {
-            std::wstringstream ss;
-            ss << L"[LLM] 用户选择LLM候选词: " << (pressed_index + 1) << L". " << selected;
-            m_dev_console->WriteLine(ss.str());
-          }
-          
-          // 清空 ctx.composition.preedit 和 Rime 候选词
-          rime_api->clear_composition(session_id);
-          
-          // 记录到上下文历史（LLM 预测时从历史取最近上下文）
-          if (m_context_history) {
-            m_context_history->AddText(selected, m_dev_console);
-          }
-          
-          // 设置待提交的LLM候选词（将在_Respond中处理）
-          m_pending_llm_commit = selected;
-          
-          // 继续预测下一个词
-          _TriggerLLMPrediction(ipc_id);
-          
-          // 触发_Respond以发送commit消息
-          _Respond(ipc_id, eat);
-          _UpdateUI(ipc_id);
-          return TRUE;
-        }
-      } else if (pressed_index < rime_candidate_count) {
-        // 选择的是Rime候选词，让Rime正常处理
-        // 不阻止按键，继续处理
-      } else if (m_dev_console && m_dev_console->IsEnabled()) {
-        std::wstringstream ss;
-        ss << L"[LLM] 数字键 " << (pressed_index + 1) << L" 超出候选词范围（总候选词=" 
-           << total_candidates << L"）";
-        m_dev_console->WriteLine(ss.str());
-      }
+    if (llm_pick >= 0 && _CommitLLMCandidate(ipc_id, (size_t)llm_pick, eat)) {
+      return TRUE;
     }
     
     // 如果输入的是拼音（字母），退出LLM预测模式，回到正常输入
-    if ((keyEvent.keycode >= 'a' && 
-         keyEvent.keycode <= 'z') ||
-        (keyEvent.keycode >= 'A' && 
-         keyEvent.keycode <= 'Z')) {
+    // （输入中补全模式下字母是注音键，由 process_key 之后的补全逻辑接手，不在这里退出以免候选栏闪烁）
+    if (!m_llm_completion_active &&
+        ((keyEvent.keycode >= 'a' && 
+          keyEvent.keycode <= 'z') ||
+         (keyEvent.keycode >= 'A' && 
+          keyEvent.keycode <= 'Z'))) {
       _ExitLLMPredictionMode(ipc_id);
       // 继续处理按键，进入正常输入流程
     }
@@ -668,6 +567,27 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
+  // 输入中补全：正在组字时，停顿 300ms 后以 Rime 当前转换结果续写；组字结束则清除补全候选
+  if (handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK) && m_llm_provider &&
+      m_llm_provider->IsAvailable()) {
+    bool composing = false;
+    RIME_STRUCT(RimeStatus, st);
+    if (rime_api->get_status(session_id, &st)) {
+      composing = st.is_composing && !st.is_ascii_mode;
+      rime_api->free_status(&st);
+    }
+    if (composing && m_llm_while_typing) {
+      _ScheduleLLMCompletion(ipc_id, kLLMCompletionDelayMs);
+    } else if (composing && m_llm_prediction_mode) {
+      // 未开启输入中补全：开始打字后，提交后留下的下一词预测已不适用，直接清掉
+      m_llm_prediction_mode = false;
+      std::lock_guard<std::mutex> lock(m_llm_mutex);
+      ++m_llm_request_seq;
+      m_current_llm_candidates.clear();
+    } else if (!composing) {
+      _CancelLLMCompletion();
+    }
+  }
   // vim_mode when keydown only
   if (!handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK)) {
     bool isVimBackInCommandMode =
@@ -734,46 +654,15 @@ void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
     
     // 如果索引超出或等于Rime候选词范围，说明选择的是LLM候选词
     if (index >= rime_candidate_count) {
-      size_t llm_index = index - rime_candidate_count;
-      if (llm_index < m_current_llm_candidates.size()) {
-        std::wstring selected = m_current_llm_candidates[llm_index];
-        
-        if (m_dev_console && m_dev_console->IsEnabled()) {
-          std::wstringstream ss;
-          ss << L"[LLM] 通过SelectCandidateOnCurrentPage选择LLM候选词: " 
-             << llm_index + 1 << L". " << selected;
-          m_dev_console->WriteLine(ss.str());
-        }
-        
-        LOG(INFO) << "[LLM] Selected LLM candidate: " << llm_index + 1;
-        
-        // 清空Rime候选词和composition（和选择Rime候选词一样处理）
-        rime_api->clear_composition(session_id);
-        
-        // 记录到上下文历史（LLM 预测时从历史取最近上下文）
-        if (m_context_history) {
-          m_context_history->AddText(selected, m_dev_console);
-        }
-        
-        // 设置待提交的LLM候选词（将在_Respond中处理）
-        m_pending_llm_commit = selected;
-        
-        // // 触发_Respond以发送commit消息并更新UI
-        _Respond(ipc_id, nullptr);
-        
-        // 继续预测下一个词
-        _TriggerLLMPrediction(ipc_id);
-        
-        // 更新UI
-        _UpdateUI(ipc_id);
-        
+      LOG(INFO) << "[LLM] Selected LLM candidate: " << index - rime_candidate_count + 1;
+      if (_CommitLLMCandidate(ipc_id, index - rime_candidate_count, nullptr))
         return;
-      }
     }
   }
-  
+
   // 如果不是LLM候选词或不在LLM模式，按照正常流程处理Rime候选词
   LOG(INFO) << "[DEBUG] Processing as Rime candidate";
+  _CancelLLMCompletion();
   rime_api->select_candidate_on_current_page(session_id, index);
 }
 
@@ -921,8 +810,14 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
                                               RimeContext& ctx) {
   // 先保存LLM预测模式状态，因为后面可能会被修改
   bool llm_mode = m_llm_prediction_mode;
-  size_t llm_candidate_count = m_current_llm_candidates.size();
-  
+  // 后台预测线程会替换 m_current_llm_candidates，这里在锁内取快照再使用
+  std::vector<std::wstring> llm_candidates;
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    llm_candidates = m_current_llm_candidates;
+  }
+  size_t llm_candidate_count = llm_candidates.size();
+
   // 先清空候选词信息，避免重复添加
   cinfo.candies.clear();
   cinfo.comments.clear();
@@ -967,13 +862,14 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
     // 将LLM候选词追加到Rime候选词后面
     for (size_t i = 0; i < llm_candidate_count; ++i) {
       Text llm_text;
-      llm_text.str = m_current_llm_candidates[i];  // 不使用escape_string，因为已经是wstring
+      // 与 Rime 候选词一致必须 escape：IPC 按行传输，未转义的换行会截断消息，
+      // 导致客户端（加载在各应用进程内的 TSF）反序列化抛异常而使宿主应用崩溃
+      llm_text.str = escape_string(llm_candidates[i]);
       cinfo.candies.push_back(llm_text);
       
-      // 添加标签：计算实际的候选词编号（从1开始）
+      // 标签显示对应按键：Tab 选第一个，Shift+2~5 选其余（数字键在注音中是注音符号）
       Text label;
-      size_t label_index = rime_count + i + 1;  // 标签显示为编号
-      label.str = std::to_wstring(label_index % 10);
+      label.str = (i == 0) ? std::wstring(L"Tab") : L"⇧" + std::to_wstring(i + 1);
       cinfo.labels.push_back(label);
       
       // 添加空注释
@@ -1069,7 +965,10 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   bool has_llm_candidates = false;
 
 
-  has_llm_candidates = m_llm_prediction_mode && !m_current_llm_candidates.empty();
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    has_llm_candidates = m_llm_prediction_mode && !m_current_llm_candidates.empty();
+  }
 
   bool need_context = !is_tsf || has_llm_candidates;
   
@@ -1094,14 +993,22 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
     // 显示UI
     m_ui->Update(weasel_context, weasel_status);
     m_ui->Show();
+    // TSF 的候选窗由应用进程内的 TSF 绘制；这里弹出的是服务端候选窗（用于显示异步完成的 LLM 结果）
+    if (is_tsf)
+      m_llm_server_ui_shown = true;
   } else {
     // 检查是否有消息需要显示
     bool has_message = _ShowMessage(weasel_context, weasel_status);
-    
+
     // 如果没有消息且非TSF模式，隐藏UI
     if (!has_message && !is_tsf) {
     m_ui->Hide();
     m_ui->Update(weasel_context, weasel_status);
+    } else if (!has_message && is_tsf && m_llm_server_ui_shown) {
+      // TSF 下 LLM 候选已清除（继续打字/提交/取消）：收起服务端候选窗，交回 TSF 自己的候选窗，
+      // 否则旧窗会一直盖在 TSF 候选窗上面
+      m_ui->Hide();
+      m_llm_server_ui_shown = false;
     }
   }
 
@@ -1373,7 +1280,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         LOG(INFO) << "[LLM] User committed text: " << commit.text;
         
         // 仅当 commit 包含有意义内容（非纯标点/符号）时才进入 LLM 预测模式，避免退出后输入标点又误入
-        if (m_llm_provider && m_llm_provider->IsAvailable() &&
+        if (m_llm_after_commit && m_llm_provider && m_llm_provider->IsAvailable() &&
             !m_llm_prediction_mode && CommitHasMeaningfulContent(commit_text_w)) {
           if (m_dev_console && m_dev_console->IsEnabled()) {
             m_dev_console->WriteLine(L"[LLM] Detected user commit, entering LLM prediction mode");
@@ -2186,7 +2093,10 @@ void RimeWithWeaselHandler::SetDevConsole(DevConsole* dev_console) {
   }
 }
 
-void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id, const std::wstring& current_input) {
+void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
+                                                  const std::wstring& current_input,
+                                                  DWORD delay_ms,
+                                                  const std::wstring& completion_prefix) {
   if (!m_llm_provider || !m_llm_provider->IsAvailable()) {
     LOG(WARNING) << "[LLM] LLM provider is not available or not initialized";
     if (m_dev_console && m_dev_console->IsEnabled()) {
@@ -2203,6 +2113,8 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id, const 
     context = m_context_history->GetRecentContext(50);
     LOG(INFO) << "[LLM] Context from history, length=" << context.length();
   }
+  // 输入中补全：把 Rime 当前的转换结果接在上下文后面，让模型续写它
+  context += completion_prefix;
 
   // 如果上下文仍然为空，记录警告但尝试继续预测
   if (context.empty()) {
@@ -2236,22 +2148,53 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id, const 
   // 拷贝必要参数到后台线程
   std::wstring context_copy = context;
   std::wstring current_input_copy = current_input;
+  std::wstring prefix_copy = completion_prefix;
 
-  std::thread([this, ipc_id, request_seq, context_copy, current_input_copy]() {
+  std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
+               prefix_copy]() {
+    // 防抖：等待期间若又有新请求（例如继续打字），直接放弃，不占用 GPU
+    if (delay_ms > 0) {
+      Sleep(delay_ms);
+      if (request_seq != m_llm_request_seq.load())
+        return;
+    }
     // 后台线程中执行同步 PredictCandidates，不阻塞用户输入线程
     LOG(INFO) << "[LLM] Async thread calling LLMProvider::PredictCandidates, seq=" << request_seq;
     auto candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
 
-    // 如果有更新的请求已经发起，则丢弃本次结果
-    if (request_seq != m_llm_request_seq.load()) {
-      LOG(INFO) << "[LLM] Discarding stale LLM result, seq=" << request_seq
-                << ", latest_seq=" << m_llm_request_seq.load();
-      return;
+    // 清洗模型输出：只保留第一行，去除控制字符与首尾引号/括号/标点，去重，丢弃空候选
+    // （小模型常模仿 prompt 中的 "…" 格式，并在多路采样时给出相同结果）
+    static const wchar_t kTrimChars[] =
+        L" \t　\"'`“”‘’「」『』"
+        L"()[]{}<>（）【】《》"
+        L",.;:!?，。、；：！？…";
+    std::vector<std::wstring> cleaned;
+    for (const auto& raw : candidates) {
+      std::wstring s = raw.substr(0, raw.find_first_of(L"\r\n"));
+      s.erase(std::remove_if(s.begin(), s.end(),
+                             [](wchar_t c) { return c < 0x20 || c == 0x7f; }),
+              s.end());
+      const size_t b = s.find_first_not_of(kTrimChars);
+      s = (b == std::wstring::npos)
+              ? std::wstring()
+              : s.substr(b, s.find_last_not_of(kTrimChars) - b + 1);
+      // 补全模式：候选 = Rime 当前转换结果 + 续写，选中即整段提交
+      if (!s.empty())
+        s = prefix_copy + s;
+      if (!s.empty() &&
+          std::find(cleaned.begin(), cleaned.end(), s) == cleaned.end())
+        cleaned.push_back(std::move(s));
     }
+    candidates = std::move(cleaned);
 
-    // 将结果写入共享状态
+    // 将结果写入共享状态；在锁内检查是否已有更新的请求（或已被取消），是则丢弃本次结果
     {
       std::lock_guard<std::mutex> lock(m_llm_mutex);
+      if (request_seq != m_llm_request_seq.load()) {
+        LOG(INFO) << "[LLM] Discarding stale LLM result, seq=" << request_seq
+                  << ", latest_seq=" << m_llm_request_seq.load();
+        return;
+      }
       m_current_llm_candidates = std::move(candidates);
     }
 
@@ -2272,7 +2215,12 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id, const 
 
 void RimeWithWeaselHandler::_ExitLLMPredictionMode(WeaselSessionId ipc_id) {
   m_llm_prediction_mode = false;
-  m_current_llm_candidates.clear();
+  m_llm_completion_active = false;
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    ++m_llm_request_seq;  // 丢弃仍在进行中的预测
+    m_current_llm_candidates.clear();
+  }
   
   // 强制隐藏候选栏
   if (m_ui) {
@@ -2283,8 +2231,83 @@ void RimeWithWeaselHandler::_ExitLLMPredictionMode(WeaselSessionId ipc_id) {
   }
   
   _UpdateUI(ipc_id);
-  
+
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] 退出LLM预测模式");
   }
+}
+
+void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD delay_ms) {
+  if (!m_llm_provider || !m_llm_provider->IsAvailable())
+    return;
+
+  // Rime 若此刻提交会得到的文字（整句转换）；没有时退回第一个候选
+  std::wstring preview;
+  RIME_STRUCT(RimeContext, ctx);
+  if (rime_api->get_context(to_session_id(ipc_id), &ctx)) {
+    if (ctx.commit_text_preview && *ctx.commit_text_preview)
+      preview = u8tow(ctx.commit_text_preview);
+    else if (ctx.menu.num_candidates > 0 && ctx.menu.candidates[0].text)
+      preview = u8tow(ctx.menu.candidates[0].text);
+    rime_api->free_context(&ctx);
+  }
+  if (preview.empty()) {
+    _CancelLLMCompletion();
+    return;
+  }
+
+  // 旧候选（上一个键的补全或提交后的下一词预测）已不适用，先清掉
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    m_current_llm_candidates.clear();
+  }
+  m_llm_prediction_mode = true;
+  m_llm_completion_active = true;
+  if (m_dev_console && m_dev_console->IsEnabled()) {
+    m_dev_console->WriteLine(L"[LLM] 输入中补全（" + std::to_wstring(delay_ms) +
+                             L"ms 后）: " + preview);
+  }
+  _TriggerLLMPrediction(ipc_id, L"", delay_ms, preview);
+}
+
+void RimeWithWeaselHandler::_CancelLLMCompletion() {
+  if (!m_llm_completion_active)
+    return;
+  m_llm_completion_active = false;
+  m_llm_prediction_mode = false;
+  std::lock_guard<std::mutex> lock(m_llm_mutex);
+  ++m_llm_request_seq;  // 让尚未完成的补全请求作废
+  m_current_llm_candidates.clear();
+}
+
+bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
+                                                size_t llm_index,
+                                                EatLine eat) {
+  std::wstring selected;
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    if (llm_index >= m_current_llm_candidates.size())
+      return false;
+    selected = m_current_llm_candidates[llm_index];
+    m_current_llm_candidates.clear();
+  }
+  if (m_dev_console && m_dev_console->IsEnabled()) {
+    m_dev_console->WriteLine(L"[LLM] 选择LLM候选词: " + std::to_wstring(llm_index + 1) +
+                             L". " + selected);
+  }
+
+  // 补全候选已包含 Rime 的转换结果，丢弃 composition 后整段提交
+  rime_api->clear_composition(to_session_id(ipc_id));
+  if (m_context_history)
+    m_context_history->AddText(selected, m_dev_console);
+  m_pending_llm_commit = selected;
+  m_llm_completion_active = false;
+
+  // 继续预测下一个词（可用 llm/predict_after_commit 关闭）
+  m_llm_prediction_mode = m_llm_after_commit;
+  if (m_llm_after_commit)
+    _TriggerLLMPrediction(ipc_id);
+  _Respond(ipc_id, eat);
+  _UpdateUI(ipc_id);
+  return true;
 }
