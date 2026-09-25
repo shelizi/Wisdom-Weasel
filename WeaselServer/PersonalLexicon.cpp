@@ -700,6 +700,27 @@ void PersonalLexicon::AddWord(const std::wstring& word) {
   personal_crypto::WriteProtected(dir_ / L"refine.dat", plain);
 }
 
+void PersonalLexicon::DeleteWords(const std::vector<std::wstring>& words) {
+  std::string plain;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& word : words) {
+      words_.erase(word);
+      next_.erase(word);
+      for (auto& [prev, nexts] : next_)
+        nexts.erase(word);
+      for (auto& [window, last] : last_word_) {
+        if (last == word)
+          last.clear();
+      }
+      added_.erase(word);  // 手動加入的詞：刪除後重建也不補回
+    }
+    ++dirty_;
+    SaveRefinementLocked(&plain);
+  }
+  personal_crypto::WriteProtected(dir_ / L"refine.dat", plain);
+}
+
 void PersonalLexicon::RemoveRules(const std::vector<std::wstring>& unblock,
                                   const std::vector<std::wstring>& unmerge,
                                   const std::vector<std::wstring>& unadd) {
@@ -755,7 +776,7 @@ bool PersonalLexicon::ExportTo(const fs::path& path, size_t max_words) const {
 
 // 套用設定程式寫的修改（加密）：
 // A 詞（加入）、R 詞（刪除並封鎖）、U 詞（解除封鎖）、M 原寫法 正確寫法（合併）、X 原寫法（解除合併）、
-// Y 詞（取消手動加入的規則）
+// Y 詞（取消手動加入的規則）、D 詞（只刪除，不留規則）
 int PersonalLexicon::ApplyEdits(const fs::path& path) {
   std::string plain;
   if (!personal_crypto::ReadProtected(path, &plain))
@@ -764,7 +785,7 @@ int PersonalLexicon::ApplyEdits(const fs::path& path) {
   std::string line;
   if (!std::getline(lines, line) || line != "WWPE1")
     return -1;
-  std::vector<std::wstring> add, block, unblock, unmerge, unadd;
+  std::vector<std::wstring> add, block, unblock, unmerge, unadd, erase;
   std::vector<std::pair<std::wstring, std::wstring>> merges;
   int count = 0;
   while (std::getline(lines, line)) {
@@ -783,6 +804,7 @@ int PersonalLexicon::ApplyEdits(const fs::path& path) {
     else if (f[0] == L"U") unblock.push_back(f[1]);
     else if (f[0] == L"X") unmerge.push_back(f[1]);
     else if (f[0] == L"Y") unadd.push_back(f[1]);
+    else if (f[0] == L"D") erase.push_back(f[1]);
     else if (f[0] == L"M" && f.size() >= 3 && !f[2].empty()) merges.emplace_back(f[1], f[2]);
     else --count;
   }
@@ -790,6 +812,8 @@ int PersonalLexicon::ApplyEdits(const fs::path& path) {
     RemoveRules(unblock, unmerge, unadd);
   if (!block.empty() || !merges.empty())
     ApplyRefinement(block, merges);
+  if (!erase.empty())
+    DeleteWords(erase);
   for (const auto& w : add)
     AddWord(w);
   Save();

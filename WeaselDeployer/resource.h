@@ -184,6 +184,7 @@
 #define IDC_P6_EXPORT                   3619
 #define IDC_P6_IMPORT                   3620
 #define IDC_P6_DICT_HINT                3621
+#define IDC_P6_DELETE                   3622
 
 // Next default values for new objects
 // 

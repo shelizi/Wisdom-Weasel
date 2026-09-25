@@ -2626,7 +2626,8 @@ void SettingsDialog::LoadPersonalWords() {
   }
   fs::remove(file, ec);
   // 清單本身不停用（深色主題下停用的清單會變成淺灰底），只停用操作
-  for (int id : {IDC_P6_FILTER, IDC_P6_WORD, IDC_P6_ADD, IDC_P6_MERGE, IDC_P6_BLOCK, IDC_P6_UNRULE})
+  for (int id : {IDC_P6_FILTER, IDC_P6_WORD, IDC_P6_ADD, IDC_P6_MERGE, IDC_P6_DELETE, IDC_P6_BLOCK,
+                 IDC_P6_UNRULE})
     GetDlgItem(id).EnableWindow(!personal_disabled_);
   PopulateWordList();
   PopulateRuleList();
@@ -2721,13 +2722,13 @@ LRESULT SettingsDialog::OnWordEdit(WORD, WORD id, HWND, BOOL&) {
       if (w != word)
         lines.push_back(L"M\t" + w + L"\t" + word);
     }
-  } else if (id == IDC_P6_BLOCK) {
+  } else if (id == IDC_P6_BLOCK || id == IDC_P6_DELETE) {
     if (selected.empty()) {
-      SetStatus(L"請先選取要封鎖的詞（可多選）。");
+      SetStatus(id == IDC_P6_BLOCK ? L"請先選取要封鎖的詞（可多選）。" : L"請先選取要刪除的詞（可多選）。");
       return 0;
     }
     for (const auto& w : selected)
-      lines.push_back(L"R\t" + w);
+      lines.push_back((id == IDC_P6_BLOCK ? L"R\t" : L"D\t") + w);
   } else if (id == IDC_P6_UNRULE) {
     for (int i = rules_list_.GetNextItem(-1, LVNI_SELECTED); i >= 0;
          i = rules_list_.GetNextItem(i, LVNI_SELECTED)) {
@@ -2770,8 +2771,68 @@ LRESULT SettingsDialog::OnWordSelChanged(int, LPNMHDR, BOOL&) {
 LRESULT SettingsDialog::OnWordDblClick(int, LPNMHDR, BOOL&) {
   const int i = words_list_.GetNextItem(-1, LVNI_SELECTED);
   if (i >= 0)
-    GetDlgItem(IDC_P6_WORD).SetWindowTextW(words_[words_list_.GetItemData(i)].first.c_str());
+    words_list_.EditLabel(i);
   return 0;
+}
+
+// 在編輯框關閉之後才重新整理清單（在 LVN_ENDLABELEDIT 裡重建清單會讓 ListView 出錯）
+LRESULT SettingsDialog::OnWordRename(UINT, WPARAM, LPARAM, BOOL&) {
+  const auto [old_word, new_word] = pending_rename_;
+  pending_rename_ = {};
+  if (old_word.empty())
+    return 0;
+  if (SendWordEdits({L"M\t" + old_word + L"\t" + new_word})) {
+    LoadPersonalWords();
+    SetStatus(L"已把「" + old_word + L"」改成「" + new_word + L"」。");
+  }
+  return 0;
+}
+
+LRESULT SettingsDialog::OnWordKeyDown(int, LPNMHDR pnmh, BOOL&) {
+  const auto* key = (NMLVKEYDOWN*)pnmh;
+  const int i = words_list_.GetNextItem(-1, LVNI_FOCUSED | LVNI_SELECTED);
+  if (i < 0)
+    return 0;
+  if (key->wVKey == VK_F2) {
+    words_list_.EditLabel(i);
+  } else if (key->wVKey == VK_DELETE) {
+    BOOL handled = TRUE;
+    OnWordEdit(0, IDC_P6_DELETE, NULL, handled);
+  }
+  return 0;
+}
+
+LRESULT SettingsDialog::OnWordBeginEdit(int, LPNMHDR, BOOL&) {
+  if (personal_disabled_)
+    return TRUE;  // 取消編輯
+  word_edit_cancel_ = false;
+  if (HWND edit = (HWND)words_list_.SendMessage(LVM_GETEDITCONTROL))
+    ::SendMessageW(edit, EM_LIMITTEXT, 40, 0);
+  return FALSE;
+}
+
+// 直接修改詞彙：以「合併」完成（原寫法 → 新寫法），之後再打原寫法也會算到新寫法
+LRESULT SettingsDialog::OnWordEndEdit(int, LPNMHDR pnmh, BOOL&) {
+  const auto* info = (NMLVDISPINFOW*)pnmh;
+  if (!info->item.pszText || word_edit_cancel_) {
+    word_edit_cancel_ = false;
+    return FALSE;  // 按 Esc 取消
+  }
+  const int row = info->item.iItem;
+  if (row < 0 || row >= words_list_.GetItemCount())
+    return FALSE;
+  const std::wstring old_word = words_[words_list_.GetItemData(row)].first;
+  const std::wstring new_word = LLMTrim(info->item.pszText);
+  if (new_word.empty() || new_word == old_word)
+    return FALSE;
+  if (new_word.find_first_of(L"\t\r\n") != std::wstring::npos) {
+    SetStatus(L"詞彙不能包含 Tab 或換行。");
+    return FALSE;
+  }
+  // 清單在修改完成後整個重新讀取，這裡回 FALSE 讓 ListView 不自己改字
+  PostMessage(WM_APP_WORD_RENAME, 0, 0);
+  pending_rename_ = {old_word, new_word};
+  return FALSE;
 }
 
 // ---------------------------------------------------------------------------
@@ -2944,13 +3005,29 @@ LRESULT SettingsDialog::OnApply(WORD, WORD, HWND, BOOL&) {
   return 0;
 }
 
+// 詞彙清單正在就地編輯時，對話框會把 Enter／Esc 轉成「確定」／「取消」：
+// 這時只結束編輯（Enter 確認、Esc 放棄），不要關閉視窗
+bool SettingsDialog::EndWordLabelEdit(bool save) {
+  if (!words_list_.m_hWnd || !words_list_.GetEditControl())
+    return false;
+  // 編輯框失去焦點時 ListView 會結束編輯（LVN_ENDLABELEDIT）；放棄時先標記，收到通知時忽略內容
+  // （LVM_CANCELEDITLABEL 在這個視窗裡沒有作用，所以不依賴它）
+  word_edit_cancel_ = !save;
+  words_list_.SetFocus();
+  return true;
+}
+
 LRESULT SettingsDialog::OnOK(WORD, WORD, HWND, BOOL&) {
+  if (EndWordLabelEdit(true))
+    return 0;
   if (Save())
     EndDialog(IDOK);
   return 0;
 }
 
 LRESULT SettingsDialog::OnCancel(WORD, WORD, HWND, BOOL&) {
+  if (EndWordLabelEdit(false))
+    return 0;
   EndDialog(IDCANCEL);
   return 0;
 }

@@ -82,6 +82,8 @@ class PersonalLexicon {
 
   // ---- 手動維護（設定程式的「詞庫管理」）----
   void AddWord(const std::wstring& word);  // 加入詞（解除封鎖/合併，給起始分數）
+  // 只刪除（不留規則）：之後再打到、或從原始紀錄重建時還會再學到
+  void DeleteWords(const std::vector<std::wstring>& words);
   void RemoveRules(const std::vector<std::wstring>& unblock,
                    const std::vector<std::wstring>& unmerge,
                    const std::vector<std::wstring>& unadd = {});

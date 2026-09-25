@@ -57,6 +57,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
     WM_APP_REFONT = WM_APP + 1,  // DPI 變更後重新套用自訂字型
     WM_APP_FILE_PROGRESS,        // 模型檔下載／複製進度（wParam：0 進行中、1 完成、2 失敗）
     WM_APP_API_TEST,             // API 連線測試完成
+    WM_APP_WORD_RENAME,          // 詞彙清單的就地編輯結束後，送出修改
     kTimerTestPoll = 1,          // 等待輸入法回覆預測測試
     kTimerStatusPoll = 2,        // 重新部署後，等輸入法載入模型
     kTimerPersonalPoll = 3,      // 個人詞庫頁：更新狀態（精煉進度）
@@ -71,6 +72,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   MESSAGE_HANDLER(WM_APP_REFONT, OnRefont)
   MESSAGE_HANDLER(WM_APP_FILE_PROGRESS, OnFileProgress)
   MESSAGE_HANDLER(WM_APP_API_TEST, OnApiTestDone)
+  MESSAGE_HANDLER(WM_APP_WORD_RENAME, OnWordRename)
   MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
   MESSAGE_HANDLER(WM_CTLCOLORDLG, OnCtlColorDlg)
   MESSAGE_HANDLER(WM_CTLCOLORSTATIC, OnCtlColorStatic)
@@ -137,10 +139,14 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_P6_ADD, OnWordEdit)
   COMMAND_ID_HANDLER(IDC_P6_MERGE, OnWordEdit)
   COMMAND_ID_HANDLER(IDC_P6_BLOCK, OnWordEdit)
+  COMMAND_ID_HANDLER(IDC_P6_DELETE, OnWordEdit)
   COMMAND_ID_HANDLER(IDC_P6_UNRULE, OnWordEdit)
   COMMAND_ID_HANDLER(IDC_P6_REFRESH, OnWordRefresh)
   NOTIFY_HANDLER(IDC_P6_WORDS, LVN_ITEMCHANGED, OnWordSelChanged)
   NOTIFY_HANDLER(IDC_P6_WORDS, NM_DBLCLK, OnWordDblClick)
+  NOTIFY_HANDLER(IDC_P6_WORDS, LVN_KEYDOWN, OnWordKeyDown)
+  NOTIFY_HANDLER(IDC_P6_WORDS, LVN_BEGINLABELEDIT, OnWordBeginEdit)
+  NOTIFY_HANDLER(IDC_P6_WORDS, LVN_ENDLABELEDIT, OnWordEndEdit)
   COMMAND_HANDLER(IDC_P6_DICTS, LBN_SELCHANGE, OnDictSelChange)
   COMMAND_ID_HANDLER(IDC_P6_BACKUP, OnDictCommand)
   COMMAND_ID_HANDLER(IDC_P6_RESTORE, OnDictCommand)
@@ -156,6 +162,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnFileProgress(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnApiTest(WORD, WORD, HWND, BOOL&);
   LRESULT OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&);
+  LRESULT OnWordRename(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnModelFileSel(WORD, WORD, HWND, BOOL&);
   LRESULT OnModelFileAdd(WORD, WORD, HWND, BOOL&);
   LRESULT OnModelFileDelete(WORD, WORD, HWND, BOOL&);
@@ -198,6 +205,9 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnWordRefresh(WORD, WORD, HWND, BOOL&);
   LRESULT OnWordSelChanged(int, LPNMHDR, BOOL&);
   LRESULT OnWordDblClick(int, LPNMHDR, BOOL&);
+  LRESULT OnWordKeyDown(int, LPNMHDR, BOOL&);
+  LRESULT OnWordBeginEdit(int, LPNMHDR, BOOL&);
+  LRESULT OnWordEndEdit(int, LPNMHDR, BOOL&);
   LRESULT OnDictSelChange(WORD, WORD, HWND, BOOL&);
   LRESULT OnDictCommand(WORD, WORD, HWND, BOOL&);
   LRESULT OnPersonalEnabledClick(WORD, WORD, HWND, BOOL&);
@@ -267,6 +277,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void PopulateWordList();
   void PopulateRuleList();
   bool SendWordEdits(const std::vector<std::wstring>& lines);  // 格式見 PersonalLexicon::ApplyEdits
+  bool EndWordLabelEdit(bool save);  // 詞彙清單正在就地編輯時結束編輯；沒在編輯時回傳 false
   void PopulateDicts();
   void UpdateDictButtons();
 
@@ -316,6 +327,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   std::vector<std::pair<std::wstring, double>> words_;
   std::vector<WordRule> rules_;
   bool words_loaded_ = false;
+  std::pair<std::wstring, std::wstring> pending_rename_;  // 就地編輯：原寫法 → 新寫法
+  bool word_edit_cancel_ = false;  // 就地編輯按了 Esc：結束時不套用
   bool personal_disabled_ = false;
   CListViewCtrl words_list_;
   CListViewCtrl rules_list_;
