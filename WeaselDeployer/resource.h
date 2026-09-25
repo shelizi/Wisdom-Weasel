@@ -108,6 +108,16 @@
 #define IDC_P3_PREFIX_LABEL             3316
 #define IDC_P3_PREFIX_HINT              3317
 #define IDC_P3_PREFIX                   3318
+#define IDC_P3_LOCAL                    3319
+#define IDC_P3_REMOTE                   3320
+#define IDC_P3_API_URL_LABEL            3321
+#define IDC_P3_API_URL                  3322
+#define IDC_P3_API_KEY_LABEL            3323
+#define IDC_P3_API_KEY                  3324
+#define IDC_P3_API_MODEL_LABEL          3325
+#define IDC_P3_API_MODEL                3326
+#define IDC_P3_LOCAL_LABEL              3327
+#define IDC_P3_REMOTE_LABEL             3328
 
 // Next default values for new objects
 // 

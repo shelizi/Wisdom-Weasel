@@ -49,6 +49,13 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChange)
   COMMAND_HANDLER(IDC_THEME, CBN_SELCHANGE, OnThemeChange)
   COMMAND_HANDLER(IDC_P3_PREFIX, EN_CHANGE, OnLLMChanged)
+  COMMAND_HANDLER(IDC_P3_API_URL, EN_CHANGE, OnLLMChanged)
+  COMMAND_HANDLER(IDC_P3_API_KEY, EN_CHANGE, OnLLMChanged)
+  COMMAND_HANDLER(IDC_P3_API_MODEL, EN_CHANGE, OnLLMChanged)
+  COMMAND_ID_HANDLER(IDC_P3_LOCAL, OnProviderChange)
+  COMMAND_ID_HANDLER(IDC_P3_REMOTE, OnProviderChange)
+  COMMAND_HANDLER(IDC_P3_LOCAL_LABEL, STN_CLICKED, OnProviderLabelClick)
+  COMMAND_HANDLER(IDC_P3_REMOTE_LABEL, STN_CLICKED, OnProviderLabelClick)
   MESSAGE_HANDLER(WM_MEASUREITEM, OnMeasureItem)
   MESSAGE_HANDLER(WM_DRAWITEM, OnDrawItem)
   MESSAGE_HANDLER(WM_TIMER, OnTimer)
@@ -95,6 +102,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnLLMEnabledClick(WORD, WORD, HWND, BOOL&);
   LRESULT OnLLMChanged(WORD, WORD, HWND, BOOL&);
   LRESULT OnModelChange(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProviderChange(WORD, WORD, HWND, BOOL&);
+  LRESULT OnProviderLabelClick(WORD, WORD, HWND, BOOL&);
   LRESULT OnBrowseModel(WORD, WORD, HWND, BOOL&);
   LRESULT OnTestRun(WORD, WORD, HWND, BOOL&);
 
@@ -124,6 +133,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void PopulateModels(const std::wstring& current);
   int AddModel(const std::wstring& path);
   void UpdateLLMEnableState();
+  bool IsRemoteProvider() const;  // 選了 OpenAI 相容 API（否則為本機 llama.cpp）
   bool SaveLLMSettings();
   // 預測測試（透過正在執行的輸入法）
   void SendLLMRequest(const std::wstring& context, bool is_test);

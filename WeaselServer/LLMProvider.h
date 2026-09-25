@@ -29,6 +29,43 @@ class LLMProvider {
   virtual std::string GetProviderName() const = 0;
 };
 
+// ---------------------------------------------------------------------------
+// 提示詞（llm/prompt）：Base 與 Instruct / OpenAI 共用同一段使用者可編輯的文字。
+// - Base：提示詞 + 前文，讓模型續寫
+// - Instruct / OpenAI：提示詞在前當作風格指引，後面接程式需要的任務說明
+// 舊設定 llm/llamacpp/prompt_prefix 仍可讀取。
+
+// 去掉首尾空白與換行
+inline std::wstring LLMTrimPrompt(const std::wstring& text) {
+  const wchar_t* ws = L" \t\r\n　";
+  const size_t b = text.find_first_not_of(ws);
+  if (b == std::wstring::npos)
+    return std::wstring();
+  return text.substr(b, text.find_last_not_of(ws) - b + 1);
+}
+
+// Base：接在前文前面的引導文字（以空行與前文隔開）
+inline std::wstring LLMBasePrefix(const std::wstring& prompt) {
+  const std::wstring p = LLMTrimPrompt(prompt);
+  return p.empty() ? std::wstring() : p + L"\n\n";
+}
+
+// Instruct / OpenAI：system 指令 = 提示詞 + 任務說明
+inline std::wstring LLMInstructSystem(const std::wstring& prompt, size_t max_candidates) {
+  const std::wstring p = LLMTrimPrompt(prompt);
+  const std::wstring n = std::to_wstring(max_candidates);
+  return (p.empty() ? std::wstring() : p + L"\n\n") +
+         L"你是中文輸入法的候選詞預測器。請根據上下文與目前輸入，預測接下來最可能出現的 " + n +
+         L" 個詞或短語。\n"
+         L"要求：只輸出候選詞本身，候選詞之間以一個空格分隔，依可能性由高到低排列，"
+         L"不要編號、解釋或標點，最多 " + n + L" 個。";
+}
+
+// Instruct / OpenAI：user 訊息 = 上下文與目前輸入
+inline std::wstring LLMInstructUser(const std::wstring& context, const std::wstring& current_input) {
+  return L"上下文：「" + context + L"」\n目前輸入：「" + current_input + L"」\n候選詞：";
+}
+
 // OpenAI兼容接口提供者
 class OpenAICompatibleProvider : public LLMProvider {
  public:
@@ -64,6 +101,7 @@ class OpenAICompatibleProvider : public LLMProvider {
   bool m_has_seed;
   int m_seed;
   std::string m_extra_body_json;  // 额外透传 JSON（对象字符串）
+  std::wstring m_prompt;          // llm/prompt：与 llama.cpp 共用的提示词
   void* m_hSession;       // HINTERNET，复用的 WinHTTP 会话
   void* m_hConnect;       // HINTERNET，复用的连接
   std::string m_cached_url;  // 当前连接对应的 URL，变化时重建连接
@@ -111,7 +149,7 @@ class LlamaCppProvider : public LLMProvider {
   double m_typical_p;             // typical sampling
   int m_n_threads;                // 线程数
   bool m_instruct_model;          // true=Instruct 使用指令 prompt，false=Base 仅用 context 补全
-  std::wstring m_prompt_prefix;   // llm/llamacpp/prompt_prefix：Base 模式接在上下文前的引导文字（如要求繁体）
+  std::wstring m_prompt_prefix;   // llm/prompt：Base 接在前文前的引导文字，Instruct 放在 system 指令前
 
   // llama.cpp 对象（使用前向声明避免包含头文件）
   void* m_model;                  // llama_model*

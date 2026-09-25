@@ -258,12 +258,22 @@ void RimeWithWeaselHandler::Initialize() {
                     << m_llm_provider->GetProviderName();
           // 记下目前载入的模型，供设定画面显示
           char model_buf[1024] = {0};
+          char url_buf[1024] = {0};
           if (provider_type == "llamacpp" &&
               rime_api->config_get_string(&config, "llm/llamacpp/model_path", model_buf,
-                                          sizeof(model_buf) - 1))
+                                          sizeof(model_buf) - 1)) {
             m_llm_loaded_model = u8tow(model_buf);
-          else
+          } else if (provider_type == "openai") {
+            // 顯示為「OpenAI 相容 API：模型（網址）」
+            rime_api->config_get_string(&config, "llm/openai/model", model_buf,
+                                        sizeof(model_buf) - 1);
+            rime_api->config_get_string(&config, "llm/openai/api_url", url_buf,
+                                        sizeof(url_buf) - 1);
+            m_llm_loaded_model = L"OpenAI 相容 API：" + u8tow(model_buf) + L"（" +
+                                 u8tow(url_buf) + L"）";
+          } else {
             m_llm_loaded_model = u8tow(m_llm_provider->GetProviderName());
+          }
         } else {
           LOG(ERROR) << "LLM Provider initialization failed: LoadConfig returned false";
           LOG(ERROR) << "Please check your weasel.yaml configuration:";

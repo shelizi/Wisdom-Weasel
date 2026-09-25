@@ -243,17 +243,18 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     }
   }
 
-  // Base 模式引导文字（可选）：模型会跟随前文的字形与语气续写，可借此要求繁体/台湾用语
+  // 提示词（Base 与 Instruct 共用）：llm/prompt；兼容旧的 llm/llamacpp/prompt_prefix
   {
-    char prefix_buf[2048] = {0};
-    if (rime_api->config_get_string(&config, "llm/llamacpp/prompt_prefix", prefix_buf,
+    char prefix_buf[4096] = {0};
+    if (rime_api->config_get_string(&config, "llm/prompt", prefix_buf, sizeof(prefix_buf) - 1) ||
+        rime_api->config_get_string(&config, "llm/llamacpp/prompt_prefix", prefix_buf,
                                     sizeof(prefix_buf) - 1)) {
       m_prompt_prefix = u8tow(prefix_buf);
     } else {
       m_prompt_prefix.clear();
     }
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] llm/llamacpp/prompt_prefix = " +
+      g_dev_console->WriteLine(L"[LLM] llm/prompt = " +
                                (m_prompt_prefix.empty() ? L"(无)" : m_prompt_prefix));
     }
   }
@@ -955,21 +956,9 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   std::string prompt_utf8;
 
   if (m_instruct_model) {
-    // Instruct 模型：使用指令式 system + user prompt
-    std::wstring system_prompt = L"你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出现的" +
-                                 std::to_wstring(max_candidates) + L"个候选词。\n\n"
-                                 L"要求：\n"
-                                 L"1. 只返回候选词，不要任何解释或标点\n"
-                                 L"2. 候选词之间用单个空格分隔\n"
-                                 L"3. 按可能性从高到低排列\n"
-                                 L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
-                                 L"5. 确保候选词都是有效的中文词汇或常用短语\n"
-                                 L"6. 返回词数严格不超过" + std::to_wstring(max_candidates) + L"个\n\n";
-    std::wstring user_prompt = L"上下文：\"" + context + L"\"\n"
-                               L"当前输入：\"" + current_input + L"\"\n"
-                               L"候选词：";
-    system_prompt_utf8 = wtou8(system_prompt);
-    prompt_utf8 = wtou8(user_prompt);
+    // Instruct 模型：提示词（与 Base 共用）+ 任务说明作为 system，上下文作为 user
+    system_prompt_utf8 = wtou8(LLMInstructSystem(m_prompt_prefix, max_candidates) + L"\n\n");
+    prompt_utf8 = wtou8(LLMInstructUser(context, current_input));
   } else {
     // Base 模型：直接使用 context + current_input 作为补全前缀，无额外指令
     // 注音方案的 current_input 是注音符号/声调（如 ㄨㄛˇ），接在中文后会干扰续写，去掉
@@ -982,7 +971,7 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
                                              c == 0x02CB || c == 0x02D9 || c == L' ' || c == L'\'';
                                     }),
                      input_text.end());
-    std::wstring context_prefix = m_prompt_prefix + context + input_text;
+    std::wstring context_prefix = LLMBasePrefix(m_prompt_prefix) + context + input_text;
     system_prompt_utf8.clear();
     prompt_utf8 = wtou8(context_prefix);
   }

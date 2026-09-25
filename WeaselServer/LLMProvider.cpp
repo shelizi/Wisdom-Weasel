@@ -6,6 +6,8 @@
 #include <winhttp.h>
 #include <sstream>
 #include <algorithm>
+#include <cstdio>
+#include <cwctype>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -280,6 +282,17 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
         std::wstring(m_extra_body_json.empty() ? L"(空)" : u8tow(m_extra_body_json)));
   }
 
+  // 提示词（与 llama.cpp 共用）：llm/prompt；兼容旧的 llm/llamacpp/prompt_prefix
+  {
+    char prompt_buf[4096] = {0};
+    if (rime_api->config_get_string(&config, "llm/prompt", prompt_buf, sizeof(prompt_buf) - 1) ||
+        rime_api->config_get_string(&config, "llm/llamacpp/prompt_prefix", prompt_buf,
+                                    sizeof(prompt_buf) - 1))
+      m_prompt = u8tow(prompt_buf);
+    else
+      m_prompt.clear();
+  }
+
   CloseConnection();  // URL 可能变化，下次请求时重建连接
   rime_api->config_close(&config);
 
@@ -300,47 +313,39 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
     return candidates;
   }
 
-  // 构建prompt
-  std::wstring prompt = L"你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出现的" +
-std::to_wstring(max_candidates) + L"个候选词。\n\n"
-L"要求：\n"
-L"1. 只返回候选词，不要任何解释或标点\n"
-L"2. 候选词之间用单个空格分隔\n"
-L"3. 按可能性从高到低排列\n"
-L"4. 如果上下文为空或无关，仅基于当前输入预测\n"
-L"5. 确保候选词都是有效的中文词汇或常用短语\n"
-L"6. 返回词数严格不超过" + std::to_wstring(max_candidates) + L"个\n\n"
-L"上下文：\"" + context + L"\"\n"
-L"当前输入：\"" + current_input + L"\"\n"
-L"候选词：";
-
-  // 构建JSON请求体
-  std::string prompt_utf8 = wtou8(prompt);
-  
-  // 转义JSON字符串中的特殊字符
-  std::string escaped_prompt;
-  for (char c : prompt_utf8) {
-    if (c == '"') {
-      escaped_prompt += "\\\"";
-    } else if (c == '\\') {
-      escaped_prompt += "\\\\";
-    } else if (c == '\n') {
-      escaped_prompt += "\\n";
-    } else if (c == '\r') {
-      escaped_prompt += "\\r";
-    } else if (c == '\t') {
-      escaped_prompt += "\\t";
-    } else {
-      escaped_prompt += c;
+  // 构建 prompt：提示词（与 llama.cpp 共用）+ 任务说明放 system，上下文放 user
+  auto escape_json = [](const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) {
+      switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+          if (c < 0x20) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\\u%04x", c);
+            out += buf;
+          } else {
+            out += (char)c;
+          }
+      }
     }
-  }
+    return out;
+  };
+  const std::string system_json = escape_json(wtou8(LLMInstructSystem(m_prompt, max_candidates)));
+  const std::string user_json = escape_json(wtou8(LLMInstructUser(context, current_input)));
+
   // 输出请求内容到开发终端
   extern DevConsole* g_dev_console;
   std::ostringstream json;
   json << "{"
-       << "\"model\":\"" << m_model << "\","
+       << "\"model\":\"" << escape_json(m_model) << "\","
        << "\"messages\":["
-       << "{\"role\":\"user\",\"content\":\"" << escaped_prompt << "\"}"
+       << "{\"role\":\"system\",\"content\":\"" << system_json << "\"},"
+       << "{\"role\":\"user\",\"content\":\"" << user_json << "\"}"
        << "],"
        << "\"max_tokens\":" << m_max_tokens << ","
        << "\"temperature\":" << m_temperature;
@@ -529,40 +534,98 @@ std::vector<std::wstring> OpenAICompatibleProvider::ParseResponse(
     const std::string& json_response) {
   std::vector<std::wstring> candidates;
 
-  // 简单的JSON解析（查找content字段）
-  // 实际应该使用JSON库，这里简化处理
-  size_t content_pos = json_response.find("\"content\"");
-  if (content_pos == std::string::npos) {
-    return candidates;
-  }
-
-  size_t colon_pos = json_response.find(':', content_pos);
-  if (colon_pos == std::string::npos) {
-    return candidates;
-  }
-
-  size_t quote_start = json_response.find('"', colon_pos);
-  if (quote_start == std::string::npos) {
-    return candidates;
-  }
-
-  size_t quote_end = json_response.find('"', quote_start + 1);
-  if (quote_end == std::string::npos) {
-    return candidates;
-  }
-
-  std::string content = json_response.substr(quote_start + 1,
-                                             quote_end - quote_start - 1);
-  std::wstring content_w = u8tow(content);
-
-  // 按空格分割
-  std::wstringstream ss(content_w);
-  std::wstring word;
-  while (ss >> word) {
-    if (!word.empty()) {
-      candidates.push_back(word);
+  // 在 choices 之后找 "content": "..."（跳过 content 为 null 的情况），
+  // 并正确解码 JSON 字串（\" \\ \n 以及许多服务用来输出中文的 \uXXXX / 代理对）
+  size_t pos = json_response.find("\"choices\"");
+  if (pos == std::string::npos)
+    pos = 0;
+  std::wstring content_w;
+  bool found = false;
+  while (!found && (pos = json_response.find("\"content\"", pos)) != std::string::npos) {
+    size_t p = json_response.find(':', pos);
+    if (p == std::string::npos)
+      break;
+    p = json_response.find_first_not_of(" \t\r\n", p + 1);
+    if (p == std::string::npos)
+      break;
+    if (json_response[p] != '"') {  // null 或其他型别
+      pos = p;
+      continue;
     }
+    std::string raw;
+    for (size_t i = p + 1; i < json_response.size(); ++i) {
+      const char c = json_response[i];
+      if (c == '"') {
+        found = true;
+        break;
+      }
+      if (c != '\\' || i + 1 >= json_response.size()) {
+        raw += c;
+        continue;
+      }
+      const char e = json_response[++i];
+      switch (e) {
+        case 'n': raw += '\n'; break;
+        case 't': raw += '\t'; break;
+        case 'r': raw += '\r'; break;
+        case 'b': case 'f': break;
+        case 'u': {
+          auto hex4 = [&](size_t at, unsigned& v) {
+            if (at + 4 > json_response.size())
+              return false;
+            v = (unsigned)strtoul(json_response.substr(at, 4).c_str(), nullptr, 16);
+            return true;
+          };
+          unsigned cp = 0;
+          if (!hex4(i + 1, cp))
+            break;
+          i += 4;
+          unsigned lo = 0;
+          if (cp >= 0xD800 && cp <= 0xDBFF && i + 2 < json_response.size() &&
+              json_response[i + 1] == '\\' && json_response[i + 2] == 'u' && hex4(i + 3, lo)) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+            i += 6;
+          }
+          std::wstring w;
+          if (cp >= 0x10000) {
+            w += (wchar_t)(0xD800 + ((cp - 0x10000) >> 10));
+            w += (wchar_t)(0xDC00 + ((cp - 0x10000) & 0x3FF));
+          } else {
+            w += (wchar_t)cp;
+          }
+          raw += wtou8(w);
+          break;
+        }
+        default: raw += e;  // \" \\ \/
+      }
+    }
+    if (found)
+      content_w = u8tow(raw);
   }
+  if (!found)
+    return candidates;
+
+  // 以空白、逗號、頓號、分號分隔；去掉「1.」「2、」之类的编号
+  std::wstring word;
+  auto flush = [&]() {
+    size_t k = 0;
+    while (k < word.size() && iswdigit(word[k]))
+      ++k;
+    if (k > 0 && k < word.size() &&
+        (word[k] == L'.' || word[k] == L'、' || word[k] == L')' || word[k] == L'．'))
+      word.erase(0, k + 1);
+    if (!word.empty())
+      candidates.push_back(word);
+    word.clear();
+  };
+  for (wchar_t c : content_w) {
+    if (iswspace(c) || c == L',' || c == L'，' || c == L'、' || c == L';' ||
+        c == L'；' || c == L'　')
+      flush();
+    else
+      word += c;
+  }
+  flush();
 
   return candidates;
 }

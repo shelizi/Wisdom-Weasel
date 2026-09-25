@@ -65,6 +65,15 @@ bool IsSubtleText(int id) {
   return false;
 }
 
+// LLM 頁的「本機模型」與「OpenAI 相容 API」兩組控制項疊在同一塊位置，依選擇顯示其一
+bool IsLocalOnly(int id) {
+  return id == IDC_P3_MODEL || id == IDC_P3_BROWSE || id == IDC_P3_TYPE_LABEL || id == IDC_P3_TYPE;
+}
+bool IsRemoteOnly(int id) {
+  return id == IDC_P3_API_URL_LABEL || id == IDC_P3_API_URL || id == IDC_P3_API_KEY_LABEL ||
+         id == IDC_P3_API_KEY || id == IDC_P3_API_MODEL_LABEL || id == IDC_P3_API_MODEL;
+}
+
 bool FontExists(const wchar_t* face) {
   LOGFONTW lf = {0};
   lf.lfCharSet = DEFAULT_CHARSET;
@@ -89,6 +98,21 @@ std::wstring ToLower(std::wstring s) {
 
 std::wstring FileNameOf(const std::wstring& path) {
   return fs::path(path).filename().wstring();
+}
+
+std::wstring LLMTrim(const std::wstring& s) {
+  const wchar_t* ws = L" \t\r\n　";
+  const size_t b = s.find_first_not_of(ws);
+  return b == std::wstring::npos ? std::wstring() : s.substr(b, s.find_last_not_of(ws) - b + 1);
+}
+
+// 輸入法回報的「目前載入」：本機模型是檔案路徑，只顯示檔名；OpenAI 相容 API 原樣顯示
+std::wstring LoadedModelDisplay(const std::wstring& model) {
+  if (model.empty())
+    return model;
+  if (ToLower(fs::path(model).extension().wstring()) == L".gguf")
+    return FileNameOf(model);
+  return model;
 }
 
 // 依檔名猜模型類型：含 base → Base；含 instruct / chat / -it → Instruct；否則維持原值
@@ -360,13 +384,41 @@ void SettingsDialog::ShowPage(int page) {
   page_ = page;
   GetDlgItem(IDC_PAGE_TITLE).SetWindowTextW(kPages[page].title);
   GetDlgItem(IDC_PAGE_DESC).SetWindowTextW(kPages[page].desc);
+  const bool remote = IsRemoteProvider();
   for (HWND child = ::GetWindow(m_hWnd, GW_CHILD); child;
        child = ::GetWindow(child, GW_HWNDNEXT)) {
-    const int owner = PageOfControl(::GetDlgCtrlID(child));
-    if (owner >= 0)
-      ::ShowWindow(child, owner == page ? SW_SHOW : SW_HIDE);
+    const int id = ::GetDlgCtrlID(child);
+    const int owner = PageOfControl(id);
+    if (owner < 0)
+      continue;
+    bool visible = owner == page;
+    if (IsLocalOnly(id))
+      visible = visible && !remote;
+    else if (IsRemoteOnly(id))
+      visible = visible && remote;
+    ::ShowWindow(child, visible ? SW_SHOW : SW_HIDE);
   }
   Invalidate();
+}
+
+bool SettingsDialog::IsRemoteProvider() const {
+  return IsDlgButtonChecked(IDC_P3_REMOTE) == BST_CHECKED;
+}
+
+LRESULT SettingsDialog::OnProviderChange(WORD, WORD, HWND, BOOL&) {
+  ShowPage(page_);
+  if (loaded_)
+    llm_modified_ = true;
+  return 0;
+}
+
+// 選項按鈕的文字另做成可點的標籤（深色主題不會把選項按鈕的文字畫成淺色）
+LRESULT SettingsDialog::OnProviderLabelClick(WORD, WORD id, HWND, BOOL& handled) {
+  if (!GetDlgItem(IDC_P3_LOCAL).IsWindowEnabled())
+    return 0;
+  CheckRadioButton(IDC_P3_LOCAL, IDC_P3_REMOTE,
+                   id == IDC_P3_REMOTE_LABEL ? IDC_P3_REMOTE : IDC_P3_LOCAL);
+  return OnProviderChange(0, 0, NULL, handled);
 }
 
 LRESULT SettingsDialog::OnNavChange(WORD, WORD, HWND, BOOL&) {
@@ -694,8 +746,20 @@ void SettingsDialog::LoadLLMSettings() {
   // 未設定時 LlamaCppProvider 預設 Instruct
   model_type_.SetCurSel(type == L"base" ? 0 : 1);
 
-  // 引導詞：設定裡用 \n 換行，編輯框要 \r\n；結尾的空行只是和前文隔開，不顯示
-  std::wstring prefix = get_string("llm/llamacpp/prompt_prefix");
+  // 執行位置：provider_type 為 openai 時是 OpenAI 相容 API，其餘視為本機 llama.cpp
+  const bool remote = ToLower(get_string("llm/provider_type")) == L"openai";
+  CheckRadioButton(IDC_P3_LOCAL, IDC_P3_REMOTE, remote ? IDC_P3_REMOTE : IDC_P3_LOCAL);
+  GetDlgItem(IDC_P3_API_URL).SetWindowTextW(get_string("llm/openai/api_url").c_str());
+  GetDlgItem(IDC_P3_API_KEY).SetWindowTextW(get_string("llm/openai/api_key").c_str());
+  GetDlgItem(IDC_P3_API_MODEL).SetWindowTextW(get_string("llm/openai/model").c_str());
+  if (GetDlgItem(IDC_P3_API_URL).GetWindowTextLengthW() == 0)
+    GetDlgItem(IDC_P3_API_URL).SetWindowTextW(L"https://api.openai.com/v1/chat/completions");
+
+  // 提示詞（Base 與 Instruct 共用）：llm/prompt，沒有時讀舊的 llm/llamacpp/prompt_prefix。
+  // 設定裡用 \n 換行，編輯框要 \r\n；結尾的空行只是和前文隔開，不顯示
+  std::wstring prefix = get_string("llm/prompt");
+  if (prefix.empty())
+    prefix = get_string("llm/llamacpp/prompt_prefix");
   while (!prefix.empty() && (prefix.back() == L'\n' || prefix.back() == L'\r'))
     prefix.pop_back();
   std::wstring display;
@@ -748,9 +812,10 @@ void SettingsDialog::PopulateModels(const std::wstring& current) {
 
 void SettingsDialog::UpdateLLMEnableState() {
   const bool enabled = IsDlgButtonChecked(IDC_P3_ENABLED) == BST_CHECKED;
-  for (int id : {IDC_P3_AFTER_COMMIT, IDC_P3_WHILE_TYPING, IDC_P3_MODEL_LABEL, IDC_P3_MODEL,
-                 IDC_P3_BROWSE, IDC_P3_TYPE_LABEL, IDC_P3_TYPE, IDC_P3_PREFIX_LABEL,
-                 IDC_P3_PREFIX})
+  for (int id : {IDC_P3_AFTER_COMMIT, IDC_P3_WHILE_TYPING, IDC_P3_MODEL_LABEL, IDC_P3_LOCAL,
+                 IDC_P3_REMOTE, IDC_P3_LOCAL_LABEL, IDC_P3_REMOTE_LABEL, IDC_P3_MODEL, IDC_P3_BROWSE, IDC_P3_TYPE_LABEL, IDC_P3_TYPE,
+                 IDC_P3_API_URL_LABEL, IDC_P3_API_URL, IDC_P3_API_KEY_LABEL, IDC_P3_API_KEY,
+                 IDC_P3_API_MODEL_LABEL, IDC_P3_API_MODEL, IDC_P3_PREFIX_LABEL, IDC_P3_PREFIX})
     GetDlgItem(id).EnableWindow(enabled);
 }
 
@@ -800,16 +865,27 @@ bool SettingsDialog::SaveLLMSettings() {
                         IsDlgButtonChecked(IDC_P3_AFTER_COMMIT) == BST_CHECKED);
   rime->config_set_bool(&llm, "predict_while_typing",
                         IsDlgButtonChecked(IDC_P3_WHILE_TYPING) == BST_CHECKED);
+  auto get_text = [&](int id) {
+    CString text;
+    GetDlgItem(id).GetWindowTextW(text);
+    return LLMTrim(std::wstring((LPCWSTR)text));
+  };
+  const bool remote = IsRemoteProvider();
+  rime->config_set_string(&llm, "provider_type", remote ? "openai" : "llamacpp");
+  // 兩邊的設定都保留，切換執行位置時不必重填
   const int sel = models_.GetCurSel();
   if (sel >= 0 && sel < (int)model_paths_.size()) {
     std::wstring path = model_paths_[sel];
     std::replace(path.begin(), path.end(), L'\\', L'/');
-    rime->config_set_string(&llm, "provider_type", "llamacpp");
     rime->config_set_string(&llm, "llamacpp/model_path", wtou8(path).c_str());
     rime->config_set_string(&llm, "llamacpp/model_type",
                             model_type_.GetCurSel() == 0 ? "Base" : "Instruct");
   }
-  // 引導詞：統一換行為 \n，非空時結尾補一個換行，和後面的前文分開
+  rime->config_set_string(&llm, "openai/api_url", wtou8(get_text(IDC_P3_API_URL)).c_str());
+  rime->config_set_string(&llm, "openai/api_key", wtou8(get_text(IDC_P3_API_KEY)).c_str());
+  rime->config_set_string(&llm, "openai/model", wtou8(get_text(IDC_P3_API_MODEL)).c_str());
+
+  // 提示詞（兩種模式共用）：統一換行為 \n；改存 llm/prompt，移除舊的 llamacpp/prompt_prefix
   CString text;
   GetDlgItem(IDC_P3_PREFIX).GetWindowTextW(text);
   std::wstring prefix;
@@ -817,11 +893,8 @@ bool SettingsDialog::SaveLLMSettings() {
     if (*p != L'\r')
       prefix += *p;
   }
-  while (!prefix.empty() && (prefix.back() == L'\n' || prefix.back() == L' '))
-    prefix.pop_back();
-  if (!prefix.empty())
-    prefix += L"\n";
-  rime->config_set_string(&llm, "llamacpp/prompt_prefix", wtou8(prefix).c_str());
+  rime->config_set_string(&llm, "prompt", wtou8(LLMTrim(prefix)).c_str());
+  rime->config_clear(&llm, "llamacpp/prompt_prefix");
   const bool ok = !!api_->customize_item(ui_settings_->settings(), "llm", &llm);
   rime->config_close(&llm);
   return ok;
@@ -884,7 +957,7 @@ bool SettingsDialog::PollLLMResponse() {
     return false;  // 還沒輪到這次的回覆
 
   KillTimer(kTimerTestPoll);
-  const std::wstring model_name = model.empty() ? L"" : FileNameOf(u8tow(model));
+  const std::wstring model_name = LoadedModelDisplay(u8tow(model));
   GetDlgItem(IDC_P3_LOADED)
       .SetWindowTextW(status == "disabled"
                           ? L"輸入法目前沒有載入 LLM 模型（LLM 智慧預測已關閉）。"
@@ -961,6 +1034,14 @@ bool SettingsDialog::Save() {
     api_->save_settings((RimeCustomSettings*)switcher_settings_);
     schemas_modified_ = false;
     saved = true;
+  }
+  if (llm_modified_ && IsDlgButtonChecked(IDC_P3_ENABLED) == BST_CHECKED && IsRemoteProvider() &&
+      GetDlgItem(IDC_P3_API_URL).GetWindowTextLengthW() == 0) {
+    nav_.SetCurSel(2);
+    ShowPage(2);
+    SetStatus(L"請填寫 OpenAI 相容 API 的網址。");
+    GetDlgItem(IDC_P3_API_URL).SetFocus();
+    return false;
   }
   if (llm_modified_ && !SaveLLMSettings()) {
     SetStatus(L"LLM 設定儲存失敗。");

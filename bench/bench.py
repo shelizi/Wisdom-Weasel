@@ -26,18 +26,14 @@ import requests
 HERE = Path(__file__).resolve().parent
 DEFAULT_SERVER = Path(r"C:\Users\zex55\src\llama-b11177\bin\llama-server.exe")
 
-# Same prompt as LlamaCppProvider::PredictCandidates (Instruct branch); Base uses raw context.
-INSTRUCT_SYSTEM = (
-    "你是一个智能中文输入法，请根据以下上下文和当前输入，预测接下来最可能出现的{n}个候选词。\n\n"
-    "要求：\n"
-    "1. 只返回候选词，不要任何解释或标点\n"
-    "2. 候选词之间用单个空格分隔\n"
-    "3. 按可能性从高到低排列\n"
-    "4. 如果上下文为空或无关，仅基于当前输入预测\n"
-    "5. 确保候选词都是有效的中文词汇或常用短语\n"
-    "6. 返回词数严格不超过{n}个\n\n"
+# Same prompt as LLMInstructSystem / LLMInstructUser / LLMBasePrefix in WeaselServer/LLMProvider.h:
+# the user prompt (llm/prompt, --prefix here) is shared by Base and Instruct.
+INSTRUCT_TASK = (
+    "你是中文輸入法的候選詞預測器。請根據上下文與目前輸入，預測接下來最可能出現的 {n} 個詞或短語。\n"
+    "要求：只輸出候選詞本身，候選詞之間以一個空格分隔，依可能性由高到低排列，"
+    "不要編號、解釋或標點，最多 {n} 個。"
 )
-INSTRUCT_USER = '上下文："{context}"\n当前输入："{current}"\n候选词：'
+INSTRUCT_USER = "上下文：「{context}」\n目前輸入：「{current}」\n候選詞："
 
 # Same trim set as RimeWithWeaselHandler (post-prediction cleanup).
 TRIM_CHARS = (" \t\u3000\"'`\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f"
@@ -48,10 +44,13 @@ S2T = opencc.OpenCC("s2tw")  # 臺灣標準字形；s2t 會把「床、台、吃
 
 
 def build_prompt(mode, context, n, prefix=""):
+    guide = prefix.strip()
     if mode == "instruct":
-        return INSTRUCT_SYSTEM.format(n=n) + INSTRUCT_USER.format(context=context, current="")
-    # Base：可選的引導文字（例如要求繁體）接在前文之前
-    return prefix + context
+        # 與 LlamaCppProvider 相同：system（提示詞 + 任務說明）與 user 直接串接，不套對話格式
+        system = (guide + "\n\n" if guide else "") + INSTRUCT_TASK.format(n=n)
+        return system + "\n\n" + INSTRUCT_USER.format(context=context, current="")
+    # Base：提示詞接在前文之前，以空行隔開
+    return (guide + "\n\n" if guide else "") + context
 
 
 def clean(raw_list):
