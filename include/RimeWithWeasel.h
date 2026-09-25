@@ -81,6 +81,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   virtual void UpdateInputPosition(RECT const& rc, WeaselSessionId ipc_id);
   virtual void StartMaintenance();
   virtual void EndMaintenance();
+  virtual void LLMTestRequest();
   virtual void SetOption(WeaselSessionId ipc_id,
                          const std::string& opt,
                          bool val);
@@ -172,6 +173,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   std::atomic<uint64_t> m_llm_request_seq{0};  // LLM异步预测请求序号（用于丢弃旧结果）
   std::mutex m_llm_mutex;                      // 保护 m_current_llm_candidates
   std::mutex m_llm_infer_mutex;  // 串行化 LLM 推理：llama.cpp 的 context 不能被多个线程同时使用
+  std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在 m_llm_infer_mutex 下读写）
   
   // 双击·键检测（用于清空上下文）
   DWORD m_last_grave_key_time;  // 上次·键按下的时间（毫秒）

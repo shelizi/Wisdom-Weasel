@@ -142,6 +142,10 @@ void ClientImpl::TrayCommand(UINT menuId) {
   _SendMessage(WEASEL_IPC_TRAY_COMMAND, menuId, session_id);
 }
 
+void ClientImpl::LLMTestRequest() {
+  _SendMessage(WEASEL_IPC_LLM_TEST, 0, 0);
+}
+
 void ClientImpl::StartSession() {
   if (_Active() && Echo())
     return;
@@ -274,6 +278,10 @@ void Client::EndMaintenance() {
 
 void Client::TrayCommand(UINT menuId) {
   m_pImpl->TrayCommand(menuId);
+}
+
+void Client::LLMTestRequest() {
+  m_pImpl->LLMTestRequest();
 }
 
 bool Client::Echo() {

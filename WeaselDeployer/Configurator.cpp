@@ -4,6 +4,7 @@
 #include "SwitcherSettingsDialog.h"
 #include "UIStyleSettings.h"
 #include "UIStyleSettingsDialog.h"
+#include "SettingsDialog.h"
 #include "DictManagementDialog.h"
 #include <WeaselConstants.h>
 #include <WeaselIPC.h>
@@ -52,36 +53,6 @@ void Configurator::Initialize() {
   rime_api->deployer_initialize(NULL);
 }
 
-static bool configure_switcher(RimeLeversApi* api,
-                               RimeSwitcherSettings* switchcer_settings,
-                               bool* reconfigured) {
-  RimeCustomSettings* settings = (RimeCustomSettings*)switchcer_settings;
-  if (!api->load_settings(settings))
-    return false;
-  SwitcherSettingsDialog dialog(switchcer_settings);
-  if (dialog.DoModal() == IDOK) {
-    if (api->save_settings(settings))
-      *reconfigured = true;
-    return true;
-  }
-  return false;
-}
-
-static bool configure_ui(RimeLeversApi* api,
-                         UIStyleSettings* ui_style_settings,
-                         bool* reconfigured) {
-  RimeCustomSettings* settings = ui_style_settings->settings();
-  if (!api->load_settings(settings))
-    return false;
-  UIStyleSettingsDialog dialog(ui_style_settings);
-  if (dialog.DoModal() == IDOK) {
-    if (api->save_settings(settings))
-      *reconfigured = true;
-    return true;
-  }
-  return false;
-}
-
 int Configurator::Run(bool installing) {
   RimeModule* levers = rime_get_api()->find_module("levers");
   if (!levers)
@@ -90,25 +61,28 @@ int Configurator::Run(bool installing) {
   if (!api)
     return 1;
 
-  bool reconfigured = false;
-
   RimeSwitcherSettings* switcher_settings = api->switcher_settings_init();
   UIStyleSettings ui_style_settings;
 
-  bool skip_switcher_settings =
-      installing && !api->is_first_run((RimeCustomSettings*)switcher_settings);
-  bool skip_ui_style_settings =
-      installing && !api->is_first_run(ui_style_settings.settings());
+  // 安裝時只有首次執行才顯示設定視窗（與原本逐一詢問的行為一致）
+  const bool skip_settings =
+      installing && !api->is_first_run((RimeCustomSettings*)switcher_settings) &&
+      !api->is_first_run(ui_style_settings.settings());
 
-  (skip_switcher_settings ||
-   configure_switcher(api, switcher_settings, &reconfigured)) &&
-      (skip_ui_style_settings ||
-       configure_ui(api, &ui_style_settings, &reconfigured));
+  // 輸入方案、外觀、LLM 智慧預測合併在同一個視窗；套用時在視窗內直接重新部署
+  bool deployed = false;
+  if (!skip_settings && api->load_settings((RimeCustomSettings*)switcher_settings) &&
+      api->load_settings(ui_style_settings.settings())) {
+    SettingsDialog dialog(switcher_settings, &ui_style_settings,
+                          [this] { UpdateWorkspace(true); });
+    dialog.DoModal();
+    deployed = dialog.deployed();
+  }
 
   api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
 
-  if (installing || reconfigured) {
-    return UpdateWorkspace(reconfigured);
+  if (installing && !deployed) {
+    return UpdateWorkspace(false);
   }
   return 0;
 }

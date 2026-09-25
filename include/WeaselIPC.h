@@ -38,6 +38,8 @@ enum WEASEL_IPC_COMMAND {
   WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE,
   WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE,
   WEASEL_IPC_CHANGE_PAGE,
+  // 设定程式请求用输入法目前载入的 LLM 做预测测试（内容经由用户资料夹中的文件传递）
+  WEASEL_IPC_LLM_TEST,
   WEASEL_IPC_LAST_COMMAND
 };
 
@@ -85,6 +87,8 @@ struct RequestHandler {
   virtual void UpdateInputPosition(RECT const& rc, DWORD session_id) {}
   virtual void StartMaintenance() {}
   virtual void EndMaintenance() {}
+  // 读取 llm_test_request.txt，异步预测后写入 llm_test_response.txt
+  virtual void LLMTestRequest() {}
   virtual void SetOption(DWORD session_id, const std::string& opt, bool val) {}
   virtual void UpdateColorTheme(BOOL darkMode) {}
 };
@@ -146,6 +150,8 @@ class Client {
   void FocusOut();
   // 托盤菜單
   void TrayCommand(UINT menuId);
+  // 请求服务用目前载入的 LLM 做预测测试（先写好 llm_test_request.txt）
+  void LLMTestRequest();
   // 读取server返回的数据
   bool GetResponseData(ResponseHandler handler);
 

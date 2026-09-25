@@ -330,6 +330,12 @@ DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
   return 0;
 }
 
+DWORD ServerImpl::OnLLMTest(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
+  if (m_pRequestHandler)
+    m_pRequestHandler->LLMTestRequest();
+  return 0;
+}
+
 DWORD ServerImpl::OnCommitComposition(WEASEL_IPC_COMMAND uMsg,
                                       DWORD wParam,
                                       DWORD lParam) {
@@ -419,6 +425,7 @@ void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
                   OnHighlightCandidateOnCurrentPage);
   PIPE_MSG_HANDLE(WEASEL_IPC_CHANGE_PAGE, OnChangePage);
   PIPE_MSG_HANDLE(WEASEL_IPC_TRAY_COMMAND, OnCommand);
+  PIPE_MSG_HANDLE(WEASEL_IPC_LLM_TEST, OnLLMTest);
   END_MAP_PIPE_MSG_HANDLE(result);
 
   resp(result);

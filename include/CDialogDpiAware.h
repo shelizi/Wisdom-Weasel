@@ -2,11 +2,20 @@
 #include <unordered_map>
 #include <shellscalingapi.h>
 
+// Per-monitor DPI support for dialog-template based dialogs.
+//
+// Windows lays out a dialog template at the *system* DPI, even for per-monitor
+// aware processes. So the only scaling needed is from the system DPI to the DPI
+// of the monitor the dialog is on (e.g. none at all on a single 200% display).
+// Scaling from 96 instead would enlarge everything twice on high-DPI systems.
 template <typename T>
 class CDialogDpiAware : public CDialogImpl<T> {
  public:
   CDialogDpiAware() {}
-  ~CDialogDpiAware() {}
+  ~CDialogDpiAware() {
+    if (m_currentFont)
+      DeleteObject(m_currentFont);
+  }
 
  protected:
   BEGIN_MSG_MAP(T)
@@ -14,30 +23,26 @@ class CDialogDpiAware : public CDialogImpl<T> {
   END_MSG_MAP()
 
   void InitCtrlRects() {
+    m_baseDpi = GetSystemDpi();
     ::GetWindowRect(m_hWnd, &m_rect);
-    EnumChildWindows(
-        m_hWnd,
-        [](HWND hWnd, LPARAM lParam) {
-          auto pThis = reinterpret_cast<T*>(lParam);
-          RECT rect, rcDlg;
-          ::GetClientRect(pThis->m_hWnd, &rcDlg);
-          ::ClientToScreen(pThis->m_hWnd, (LPPOINT)&rcDlg.left);
-          ::ClientToScreen(pThis->m_hWnd, (LPPOINT)&rcDlg.right);
-          ::GetWindowRect(hWnd, &rect);
-          rect.left -= rcDlg.left;
-          rect.right -= rcDlg.left;
-          rect.top -= rcDlg.top;
-          rect.bottom -= rcDlg.top;
-          pThis->m_controlOriginalRects[hWnd] = rect;
-          return TRUE;
-        },
-        reinterpret_cast<LPARAM>(this));
+    // Only direct children: grandchildren (e.g. a list view's header) are
+    // positioned by their own parent.
+    for (HWND child = ::GetWindow(m_hWnd, GW_CHILD); child;
+         child = ::GetWindow(child, GW_HWNDNEXT)) {
+      RECT rect;
+      ::GetWindowRect(child, &rect);
+      ::MapWindowPoints(HWND_DESKTOP, m_hWnd, (LPPOINT)&rect, 2);
+      m_controlOriginalRects[child] = rect;
+    }
+    HFONT font = (HFONT)::SendMessage(m_hWnd, WM_GETFONT, 0, 0);
+    m_hasBaseFont = font && ::GetObject(font, sizeof(m_baseFont), &m_baseFont);
 
-    UINT newDpi = GetWindowDpi();
-    if (newDpi != 96) {
-      float scaleFactor = (float)newDpi / (float)96.0f;
-      int width = (m_rect.right - m_rect.left) * scaleFactor;
-      int height = (m_rect.bottom - m_rect.top) * scaleFactor;
+    m_currentDpi = m_baseDpi;
+    const UINT newDpi = GetWindowDpi();
+    if (newDpi != m_baseDpi) {
+      const float scaleFactor = (float)newDpi / (float)m_baseDpi;
+      const int width = (int)((m_rect.right - m_rect.left) * scaleFactor);
+      const int height = (int)((m_rect.bottom - m_rect.top) * scaleFactor);
       SetWindowPos(nullptr, m_rect.left, m_rect.top, width, height,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
       ScaleControlsAndFonts(newDpi);
@@ -47,6 +52,14 @@ class CDialogDpiAware : public CDialogImpl<T> {
   }
 
  private:
+  static UINT GetSystemDpi() {
+    HDC hdc = ::GetDC(NULL);
+    const int dpi = hdc ? ::GetDeviceCaps(hdc, LOGPIXELSX) : 96;
+    if (hdc)
+      ::ReleaseDC(NULL, hdc);
+    return dpi > 0 ? (UINT)dpi : 96;
+  }
+
   UINT GetWindowDpi() {
     HMONITOR hMonitor = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
     UINT dpiX = 96, dpiY = 96;
@@ -60,7 +73,9 @@ class CDialogDpiAware : public CDialogImpl<T> {
   }
 
   void ScaleControlsAndFonts(UINT newDpi) {
-    const float scaleFactor = static_cast<float>(newDpi) / 96;
+    // Always scale from the original layout and font, so repeated monitor
+    // changes do not compound rounding or font growth.
+    const float scaleFactor = static_cast<float>(newDpi) / m_baseDpi;
     for (const auto& [hWnd, originalRect] : m_controlOriginalRects) {
       int newX = static_cast<int>(originalRect.left * scaleFactor);
       int newY = static_cast<int>(originalRect.top * scaleFactor);
@@ -71,19 +86,17 @@ class CDialogDpiAware : public CDialogImpl<T> {
       ::SetWindowPos(hWnd, nullptr, newX, newY, newWidth, newHeight,
                      SWP_NOZORDER | SWP_NOACTIVATE);
     }
-    HFONT oldFont = (HFONT)::SendMessage(m_hWnd, WM_GETFONT, 0, 0);
-    LOGFONT lf;
-    if (!GetObject(oldFont, sizeof(lf), &lf)) {
+    if (!m_hasBaseFont)
       return;
-    }
+    LOGFONT lf = m_baseFont;
     lf.lfHeight = static_cast<int>(lf.lfHeight * scaleFactor);
     HFONT hNewFont = CreateFontIndirect(&lf);
-    if (m_currentFont) {
-      DeleteObject(m_currentFont);
-    }
     ::SendMessage(m_hWnd, WM_SETFONT, (WPARAM)hNewFont, TRUE);
     for (const auto& [hWnd, rect] : m_controlOriginalRects) {
       ::SendMessage(hWnd, WM_SETFONT, (WPARAM)hNewFont, TRUE);
+    }
+    if (m_currentFont) {
+      DeleteObject(m_currentFont);
     }
     m_currentFont = hNewFont;
   }
@@ -104,8 +117,11 @@ class CDialogDpiAware : public CDialogImpl<T> {
     return 0;
   }
 
+  UINT m_baseDpi = 96;
   UINT m_currentDpi = 96;
   RECT m_rect;
   std::unordered_map<HWND, RECT> m_controlOriginalRects;
+  LOGFONT m_baseFont = {};
+  bool m_hasBaseFont = false;
   HFONT m_currentFont = nullptr;
 };

@@ -7,8 +7,11 @@
 #include <FixedWMemStreamBuf.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <regex>
+#include <sstream>
 #include <rime_api.h>
 
 // 判断字符是否为分隔符（仅空格/标点），用于决定 commit 是否触发进入 LLM 预测模式
@@ -207,6 +210,7 @@ void RimeWithWeaselHandler::Initialize() {
     ++m_llm_request_seq;
     std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
     m_llm_provider.reset();
+    m_llm_loaded_model.clear();
     // 两种自动触发时机可分别关闭（未设置时默认开启）；关闭后仍可按 ` 键手动触发
     Bool llm_flag = true;
     m_llm_after_commit =
@@ -252,6 +256,14 @@ void RimeWithWeaselHandler::Initialize() {
         if (m_llm_provider->LoadConfig("weasel")) {
           LOG(INFO) << "LLM Provider initialized successfully: "
                     << m_llm_provider->GetProviderName();
+          // 记下目前载入的模型，供设定画面显示
+          char model_buf[1024] = {0};
+          if (provider_type == "llamacpp" &&
+              rime_api->config_get_string(&config, "llm/llamacpp/model_path", model_buf,
+                                          sizeof(model_buf) - 1))
+            m_llm_loaded_model = u8tow(model_buf);
+          else
+            m_llm_loaded_model = u8tow(m_llm_provider->GetProviderName());
         } else {
           LOG(ERROR) << "LLM Provider initialization failed: LoadConfig returned false";
           LOG(ERROR) << "Please check your weasel.yaml configuration:";
@@ -2111,6 +2123,80 @@ void RimeWithWeaselHandler::SetDevConsole(DevConsole* dev_console) {
   }
 }
 
+// 清洗模型输出：只保留第一行，去除控制字符与首尾引号/括号/标点，去重，丢弃空候选
+// （小模型常模仿 prompt 中的 "…" 格式，并在多路采样时给出相同结果）。
+// prefix 非空时为输入中补全：候选 = Rime 当前转换结果 + 续写，选中即整段提交。
+static std::vector<std::wstring> CleanLLMCandidates(const std::vector<std::wstring>& raw_list,
+                                                    const std::wstring& prefix) {
+  static const wchar_t kTrimChars[] =
+      L" \t　\"'`“”‘’「」『』"
+      L"()[]{}<>（）【】《》"
+      L",.;:!?，。、；：！？…";
+  std::vector<std::wstring> cleaned;
+  for (const auto& raw : raw_list) {
+    std::wstring s = raw.substr(0, raw.find_first_of(L"\r\n"));
+    s.erase(std::remove_if(s.begin(), s.end(),
+                           [](wchar_t c) { return c < 0x20 || c == 0x7f; }),
+            s.end());
+    const size_t b = s.find_first_not_of(kTrimChars);
+    s = (b == std::wstring::npos)
+            ? std::wstring()
+            : s.substr(b, s.find_last_not_of(kTrimChars) - b + 1);
+    if (!s.empty())
+      s = prefix + s;
+    if (!s.empty() && std::find(cleaned.begin(), cleaned.end(), s) == cleaned.end())
+      cleaned.push_back(std::move(s));
+  }
+  return cleaned;
+}
+
+void RimeWithWeaselHandler::LLMTestRequest() {
+  // 在后台线程执行：推理可能要几百毫秒，不能占住 IPC 锁卡住所有应用的打字
+  std::thread([this]() {
+    const std::filesystem::path dir = WeaselUserDataPath();
+    std::string request;
+    {
+      std::ifstream in(dir / L"llm_test_request.txt", std::ios::binary);
+      request.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    // 第一行是请求编号，其余是前文（空 = 只查询状态）
+    const size_t nl = request.find('\n');
+    std::string id = request.substr(0, nl);
+    while (!id.empty() && (id.back() == '\r' || id.back() == ' '))
+      id.pop_back();
+    std::wstring context = nl == std::string::npos ? L"" : u8tow(request.substr(nl + 1));
+    while (!context.empty() && (context.back() == L'\r' || context.back() == L'\n'))
+      context.pop_back();
+
+    std::ostringstream out;
+    out << "id=" << id << "\n";
+    {
+      std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
+      out << "model=" << wtou8(m_llm_loaded_model) << "\n";
+      if (!m_llm_provider || !m_llm_provider->IsAvailable()) {
+        out << "status=disabled\n";
+      } else if (context.empty()) {
+        out << "status=ok\n";
+      } else {
+        const ULONGLONG t0 = GetTickCount64();
+        auto raw = m_llm_provider->PredictCandidates(context, L"", 5);
+        const ULONGLONG ms = GetTickCount64() - t0;
+        out << "status=ok\nms=" << ms << "\n";
+        for (const auto& c : CleanLLMCandidates(raw, L""))
+          out << "cand=" << wtou8(c) << "\n";
+      }
+    }
+    // 先写临时文件再替换，避免设定画面读到写了一半的内容
+    const std::filesystem::path tmp = dir / L"llm_test_response.tmp";
+    {
+      std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      f << out.str();
+    }
+    MoveFileExW(tmp.c_str(), (dir / L"llm_test_response.txt").c_str(),
+                MOVEFILE_REPLACE_EXISTING);
+  }).detach();
+}
+
 void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
                                                   const std::wstring& current_input,
                                                   DWORD delay_ms,
@@ -2187,30 +2273,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
       candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
     }
 
-    // 清洗模型输出：只保留第一行，去除控制字符与首尾引号/括号/标点，去重，丢弃空候选
-    // （小模型常模仿 prompt 中的 "…" 格式，并在多路采样时给出相同结果）
-    static const wchar_t kTrimChars[] =
-        L" \t　\"'`“”‘’「」『』"
-        L"()[]{}<>（）【】《》"
-        L",.;:!?，。、；：！？…";
-    std::vector<std::wstring> cleaned;
-    for (const auto& raw : candidates) {
-      std::wstring s = raw.substr(0, raw.find_first_of(L"\r\n"));
-      s.erase(std::remove_if(s.begin(), s.end(),
-                             [](wchar_t c) { return c < 0x20 || c == 0x7f; }),
-              s.end());
-      const size_t b = s.find_first_not_of(kTrimChars);
-      s = (b == std::wstring::npos)
-              ? std::wstring()
-              : s.substr(b, s.find_last_not_of(kTrimChars) - b + 1);
-      // 补全模式：候选 = Rime 当前转换结果 + 续写，选中即整段提交
-      if (!s.empty())
-        s = prefix_copy + s;
-      if (!s.empty() &&
-          std::find(cleaned.begin(), cleaned.end(), s) == cleaned.end())
-        cleaned.push_back(std::move(s));
-    }
-    candidates = std::move(cleaned);
+    candidates = CleanLLMCandidates(candidates, prefix_copy);
 
     // 将结果写入共享状态；在锁内检查是否已有更新的请求（或已被取消），是则丢弃本次结果
     size_t candidate_count = 0;

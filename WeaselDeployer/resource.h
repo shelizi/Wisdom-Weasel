@@ -66,6 +66,49 @@
 #define IDC_STATIC_PREVIEW       2011
 #define IDC_STATIC1                     -1
 
+// ---- Unified settings window (SettingsDialog) ----
+// Controls are grouped into pages by ID range:
+// 30xx shared, 31xx schemas, 32xx appearance, 33xx LLM prediction
+#define IDD_SETTINGS                    300
+#define IDC_NAV                         3001
+#define IDC_PAGE_TITLE                  3002
+#define IDC_PAGE_DESC                   3003
+#define IDC_APPLY                       3004
+#define IDC_STATUS                      3005
+#define IDC_SEPARATOR                   3006
+#define IDC_THEME_LABEL                 3007
+#define IDC_THEME                       3008
+#define IDC_P1_HINT                     3101
+#define IDC_P1_SCHEMA_LIST              3102
+#define IDC_P1_SCHEMA_DESC              3103
+#define IDC_P1_HOTKEY_LABEL             3104
+#define IDC_P1_HOTKEYS                  3105
+#define IDC_P1_GET_SCHEMATA             3106
+#define IDC_P2_SCHEME_LABEL             3201
+#define IDC_P2_COLOR_SCHEME             3202
+#define IDC_P2_PREVIEW                  3203
+#define IDC_P2_FONT_LABEL               3204
+#define IDC_P2_FONT_SUMMARY             3205
+#define IDC_P2_SELECT_FONT              3206
+#define IDC_P3_ENABLED                  3301
+#define IDC_P3_AFTER_COMMIT             3302
+#define IDC_P3_WHILE_TYPING             3303
+#define IDC_P3_MODEL_LABEL              3304
+#define IDC_P3_MODEL                    3305
+#define IDC_P3_BROWSE                   3306
+#define IDC_P3_TYPE                     3307
+#define IDC_P3_LOADED                   3308
+#define IDC_P3_TEST_LABEL               3309
+#define IDC_P3_TEST_HINT                3310
+#define IDC_P3_TEST_INPUT               3311
+#define IDC_P3_TEST_RUN                 3312
+#define IDC_P3_TEST_RESULT              3313
+#define IDC_P3_TEST_STATUS              3314
+#define IDC_P3_TYPE_LABEL               3315
+#define IDC_P3_PREFIX_LABEL             3316
+#define IDC_P3_PREFIX_HINT              3317
+#define IDC_P3_PREFIX                   3318
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
