@@ -73,6 +73,7 @@ bool IsSubtleText(int id) {
     case IDC_PAGE_DESC:
     case IDC_P1_HINT:
     case IDC_P1_HOTKEY_LABEL:
+    case IDC_P1_TYPO_HINT:
     case IDC_P3_LOADED:
     case IDC_P3_TEST_HINT:
     case IDC_P3_TEST_STATUS:
@@ -410,6 +411,12 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
     CComboBox personal_max(GetDlgItem(IDC_P4_MAX));
     for (int i = 0; i <= 5; ++i)
       personal_max.AddString(std::to_wstring(i).c_str());
+  }
+  {
+    CComboBox typo(GetDlgItem(IDC_P1_TYPO));
+    typo.AddString(L"不修正");
+    typo.AddString(L"方法一：Rime 容錯（找相近的注音）");
+    typo.AddString(L"方法二：Rime 容錯 + LLM 整句校正");
   }
   GetDlgItem(IDC_P3_TEST_INPUT).SetWindowTextW(L"今天天氣很好，我們一起去");
 
@@ -941,7 +948,30 @@ void SettingsDialog::LoadLLMSettings() {
   GetDlgItem(IDC_P3_PREFIX).SetWindowTextW(display.c_str());
   UpdateLLMEnableState();
   LoadPersonalSettings(&config);
-  llm_modified_ = false;
+
+  const std::wstring typo = get_string("llm/typo_correction");
+  typo_loaded_ = typo == L"rime" ? 1 : typo == L"llm" ? 2 : 0;
+  CComboBox(GetDlgItem(IDC_P1_TYPO)).SetCurSel(typo_loaded_);
+  UpdateTypoHint();
+  llm_modified_ = typo_modified_ = false;
+}
+
+void SettingsDialog::UpdateTypoHint() {
+  static const wchar_t* const kHints[] = {
+      L"打錯的注音不會自動修正。",
+      L"按到隔壁鍵、多打或少打一鍵時，Rime 會找相近的注音再選字。只作用在注音方案，套用後重新部署。",
+      L"除了 Rime 容錯，打字停頓時會把注音與前文交給 LLM 校正整句，結果是第一個 LLM 候選（按 Tab "
+      L"選用）。需要啟用「智慧預測」。",
+  };
+  const int sel = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel();
+  GetDlgItem(IDC_P1_TYPO_HINT).SetWindowTextW(kHints[sel >= 0 && sel <= 2 ? sel : 0]);
+}
+
+LRESULT SettingsDialog::OnTypoChange(WORD, WORD, HWND, BOOL&) {
+  UpdateTypoHint();
+  if (loaded_)
+    typo_modified_ = true;
+  return 0;
 }
 
 int SettingsDialog::AddModel(const std::wstring& path) {
@@ -1054,6 +1084,9 @@ bool SettingsDialog::SaveLLMSettings() {
   }
   rime->config_set_string(&llm, "prompt", wtou8(LLMTrim(prefix)).c_str());
   rime->config_clear(&llm, "llamacpp/prompt_prefix");
+  static const char* const kTypoModes[] = {"off", "rime", "llm"};
+  const int typo = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel();
+  rime->config_set_string(&llm, "typo_correction", kTypoModes[typo >= 0 && typo <= 2 ? typo : 0]);
   SavePersonalSettings(&llm);
   const bool ok = !!api_->customize_item(ui_settings_->settings(), "llm", &llm);
   rime->config_close(&llm);
@@ -1205,8 +1238,8 @@ bool SettingsDialog::Save() {
   CommitProfileEditor();
   if ((llm_modified_ || personal_modified_) && !ValidateProfiles())
     return false;
-  if (personal_modified_)
-    llm_modified_ = true;  // 個人詞庫的設定也在 llm 之下，一起儲存
+  if (personal_modified_ || typo_modified_)
+    llm_modified_ = true;  // 個人詞庫與注音容錯的設定也在 llm 之下，一起儲存
   if (llm_modified_ && !SaveLLMSettings()) {
     SetStatus(L"LLM 設定儲存失敗。");
     return false;
@@ -1217,11 +1250,21 @@ bool SettingsDialog::Save() {
   std::wstring boost_error;
   if (llm_modified_ && rime_boost != rime_boost_loaded_) {
     ApplyRimeBoost(rime_boost, &boost_error);
+    if (!boost_error.empty())
+      boost_error = L"注音排序：" + boost_error;
     rime_boost_loaded_ = rime_boost;
   }
+  // 注音容錯：方法一、二都要 Rime 容錯；開關有變才改方案
+  const int typo = (std::max)(0, CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel());
+  if (typo_modified_ && (typo > 0) != (typo_loaded_ > 0)) {
+    std::wstring typo_error;
+    if (!ApplyTypoCorrection(typo > 0, &typo_error))
+      boost_error += (boost_error.empty() ? L"" : L"；") + (L"注音容錯：" + typo_error);
+  }
+  typo_loaded_ = typo;
   if (style_modified_ || llm_modified_) {
     api_->save_settings(ui_settings_->settings());
-    style_modified_ = llm_modified_ = personal_modified_ = false;
+    style_modified_ = llm_modified_ = personal_modified_ = typo_modified_ = false;
     saved = true;
   }
   if (!saved) {
@@ -1234,7 +1277,7 @@ bool SettingsDialog::Save() {
     deploy_();
   }
   deployed_ = true;
-  SetStatus(boost_error.empty() ? L"已套用。" : L"已套用；注音排序：" + boost_error);
+  SetStatus(boost_error.empty() ? L"已套用。" : L"已套用；" + boost_error);
   // 等輸入法重新載入模型後更新「目前載入」
   status_polls_left_ = 15;
   SetTimer(kTimerStatusPoll, 1000);
@@ -2461,9 +2504,15 @@ namespace {
 const wchar_t* const kZhuyinSchemas[] = {L"bopomofo", L"bopomofo_express", L"bopomofo_tw"};
 const char kBoostBegin[] = "  # >>> weasel-personal-dict";
 const char kBoostEnd[] = "  # <<< weasel-personal-dict";
+const char kTypoBegin[] = "  # >>> weasel-typo-correction";
+const char kTypoEnd[] = "  # <<< weasel-typo-correction";
 
-// 改寫一個方案的 custom.yaml；回傳 false 表示無法安全修改（例如使用者自己改過詞典）
-bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* error) {
+// 改寫一個方案的 custom.yaml：拿掉 begin ~ end 標記的區塊，block 非空時再加在 patch: 下面。
+// 使用者自己設定過 conflict_keys 其中一項時不修改，回傳 false
+bool PatchSchemaBlock(const fs::path& file, const char* begin, const char* end,
+                      const std::vector<std::string>& block,
+                      const std::vector<std::string>& conflict_keys, std::wstring* error) {
+  const bool enable = !block.empty();
   std::string text;
   {
     std::ifstream in(file, std::ios::binary);
@@ -2482,12 +2531,12 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
     for (std::string line; std::getline(in, line);) {
       if (!line.empty() && line.back() == '\r')
         line.pop_back();
-      if (line.rfind(kBoostBegin, 0) == 0) {
+      if (line.rfind(begin, 0) == 0) {
         inside = true;
         continue;
       }
       if (inside) {
-        if (line.rfind(kBoostEnd, 0) == 0)
+        if (line.rfind(end, 0) == 0)
           inside = false;
         continue;
       }
@@ -2496,10 +2545,11 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
   }
   if (enable) {
     for (const auto& line : lines) {
-      if (line.find("translator/dictionary") != std::string::npos ||
-          line.find("translator/user_dict") != std::string::npos) {
-        *error = file.filename().wstring() + L" 已自行設定詞典，沒有修改";
-        return false;
+      for (const auto& key : conflict_keys) {
+        if (line.find(key) != std::string::npos) {
+          *error = file.filename().wstring() + L" 已自行設定 " + u8tow(key) + L"，沒有修改";
+          return false;
+        }
       }
     }
     auto patch = std::find_if(lines.begin(), lines.end(), [](const std::string& l) {
@@ -2514,12 +2564,6 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
       lines.push_back("patch:");
       patch = lines.end() - 1;
     }
-    const std::vector<std::string> block = {
-        std::string(kBoostBegin) + u8"：個人詞庫的常用詞影響選字排序（小狼毫設定自動管理）",
-        "  translator/dictionary: terra_pinyin.personal",
-        "  translator/user_dict: terra_pinyin",
-        kBoostEnd,
-    };
     lines.insert(patch + 1, block.begin(), block.end());
   }
   std::string result;
@@ -2532,6 +2576,33 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
   }
   out << result;
   return true;
+}
+
+// 注音排序：改用 terra_pinyin.personal 詞典
+bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* error) {
+  std::vector<std::string> block;
+  if (enable)
+    block = {
+        std::string(kBoostBegin) + u8"：個人詞庫的常用詞影響選字排序（小狼毫設定自動管理）",
+        "  translator/dictionary: terra_pinyin.personal",
+        "  translator/user_dict: terra_pinyin",
+        kBoostEnd,
+    };
+  return PatchSchemaBlock(file, kBoostBegin, kBoostEnd, block,
+                          {"translator/dictionary", "translator/user_dict"}, error);
+}
+
+// 注音容錯：打開 Rime 的拼寫糾錯（依鍵盤鄰鍵與編輯距離找相近的音節）
+bool PatchSchemaCorrection(const fs::path& file, bool enable, std::wstring* error) {
+  std::vector<std::string> block;
+  if (enable)
+    block = {
+        std::string(kTypoBegin) + u8"：打錯注音時找相近的音節（小狼毫設定自動管理）",
+        "  translator/enable_correction: true",
+        kTypoEnd,
+    };
+  return PatchSchemaBlock(file, kTypoBegin, kTypoEnd, block, {"translator/enable_correction"},
+                          error);
 }
 
 }  // namespace
@@ -2576,6 +2647,21 @@ bool SettingsDialog::ApplyRimeBoost(bool enable, std::wstring* error) {
   if (!enable) {
     std::error_code ec;
     fs::remove(dict, ec);
+  }
+  return ok;
+}
+
+bool SettingsDialog::ApplyTypoCorrection(bool enable, std::wstring* error) {
+  // 三個注音方案都改（沒選用的也改，之後改選時不必再套用一次）；關閉時只還原已有的檔案
+  const fs::path user_dir = WeaselUserDataPath();
+  bool ok = true;
+  for (const wchar_t* schema : kZhuyinSchemas) {
+    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
+    std::error_code ec;
+    if (!enable && !fs::exists(file, ec))
+      continue;
+    if (!PatchSchemaCorrection(file, enable, error))
+      ok = false;
   }
   return ok;
 }

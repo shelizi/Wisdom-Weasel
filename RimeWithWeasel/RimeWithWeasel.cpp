@@ -6,6 +6,7 @@
 #include <WeaselUtility.h>
 #include <FixedWMemStreamBuf.h>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -220,6 +221,13 @@ void RimeWithWeaselHandler::Initialize() {
     llm_flag = true;
     m_llm_while_typing =
         !rime_api->config_get_bool(&config, "llm/predict_while_typing", &llm_flag) || llm_flag;
+    // 注音容錯：rime = 只用 Rime 的拼寫糾錯（設定在注音方案裡）；llm = 另外請 LLM 校正整句
+    {
+      char typo[32] = {0};
+      m_typo_correction = 0;
+      if (rime_api->config_get_string(&config, "llm/typo_correction", typo, sizeof(typo) - 1))
+        m_typo_correction = strcmp(typo, "llm") == 0 ? 2 : strcmp(typo, "rime") == 0 ? 1 : 0;
+    }
     // 前文：每个窗口各自一份；只给模型最后 max_chars 个字；窗口闲置 idle_minutes 后旧前文失效
     int llm_int = 0;
     m_llm_context_max_chars =
@@ -704,7 +712,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
       composing = st.is_composing && !st.is_ascii_mode;
       rime_api->free_status(&st);
     }
-    if (composing && m_llm_while_typing) {
+    if (composing && (m_llm_while_typing || m_typo_correction == 2)) {
       _ScheduleLLMCompletion(ipc_id, kLLMCompletionDelayMs);
     } else if (composing && m_llm_prediction_mode) {
       // 未开启输入中补全：开始打字后，提交后留下的下一词预测已不适用，直接清掉
@@ -941,9 +949,11 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
   bool llm_mode = m_llm_prediction_mode;
   // 后台预测线程会替换 m_current_llm_candidates，这里在锁内取快照再使用
   std::vector<std::wstring> llm_candidates;
+  size_t correction_count = 0;
   {
     std::lock_guard<std::mutex> lock(m_llm_mutex);
     llm_candidates = m_current_llm_candidates;
+    correction_count = m_llm_correction_count;
   }
   size_t llm_candidate_count = llm_candidates.size();
 
@@ -1001,9 +1011,9 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
       label.str = (i == 0) ? std::wstring(L"Tab") : L"⇧" + std::to_wstring(i + 1);
       cinfo.labels.push_back(label);
       
-      // 添加空注释
+      // 整句校正的候选标示「校正」，其余为空注释
       Text comment;
-      comment.str = L"";
+      comment.str = i < correction_count ? L"校正" : L"";
       cinfo.comments.push_back(comment);
       
       if (m_dev_console && m_dev_console->IsEnabled()) {
@@ -2343,10 +2353,33 @@ void RimeWithWeaselHandler::LLMTestRequest() {
   }).detach();
 }
 
+// 整句校正结果：去掉首尾空白、引号与句末标点；与初稿相同（不必校正）或字数差太多（模型没照做）时丢弃
+static std::wstring CleanCorrection(const std::wstring& raw, const std::wstring& draft) {
+  static const wchar_t kTrimChars[] = L" \t　\"'`“”‘’「」『』。.";
+  std::wstring s = raw.substr(0, raw.find_first_of(L"\r\n"));
+  s.erase(std::remove_if(s.begin(), s.end(), [](wchar_t c) { return c < 0x20 || c == 0x7f; }),
+          s.end());
+  // 模型偶尔会把「校正：」一起输出
+  for (const wchar_t* label : {L"校正：", L"校正:"}) {
+    const size_t pos = s.find(label);
+    if (pos != std::wstring::npos)
+      s = s.substr(pos + wcslen(label));
+  }
+  const size_t b = s.find_first_not_of(kTrimChars);
+  s = b == std::wstring::npos ? std::wstring() : s.substr(b, s.find_last_not_of(kTrimChars) - b + 1);
+  if (s.empty() || s == draft)
+    return L"";
+  if (s.size() > draft.size() + 2 || s.size() + 2 < draft.size())
+    return L"";
+  return s;
+}
+
 void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
                                                   const std::wstring& current_input,
                                                   DWORD delay_ms,
-                                                  const std::wstring& completion_prefix) {
+                                                  const std::wstring& completion_prefix,
+                                                  const std::wstring& zhuyin,
+                                                  bool complete) {
   const bool llm_available = m_llm_provider && m_llm_provider->IsAvailable();
   if (!llm_available && !m_personal) {
     LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
@@ -2356,7 +2389,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
   // 个人词库（查内存，不到 1ms）：输入中补全 → 以 Rime 转换结果开头的常用词；
   // 提交后 → 当前窗口最后一个词之后最常接的词
   std::vector<std::wstring> personal;
-  if (m_personal) {
+  if (m_personal && complete) {
     personal = completion_prefix.empty()
                    ? m_personal->NextAfter(m_context_history ? m_context_history->GetActiveKey()
                                                              : std::wstring(),
@@ -2366,14 +2399,15 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
     personal.erase(std::remove(personal.begin(), personal.end(), completion_prefix),
                    personal.end());
   }
+  const bool correct = llm_available && !zhuyin.empty() && !completion_prefix.empty();
   if (!llm_available && personal.empty())
     return;
 
   // LLM 上下文：当前窗口最近的前文 + 输入中补全时 Rime 当前的转换结果
-  std::wstring context;
+  std::wstring history;
   if (m_context_history)
-    context = m_context_history->GetRecentContext(m_llm_context_max_chars);
-  context += completion_prefix;
+    history = m_context_history->GetRecentContext(m_llm_context_max_chars);
+  const std::wstring context = history + completion_prefix;
 
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] ========== 开始预测 ==========");
@@ -2392,7 +2426,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
   std::wstring prefix_copy = completion_prefix;
 
   std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
-               prefix_copy, personal, llm_available]() {
+               prefix_copy, personal, llm_available, history, zhuyin, correct, complete]() {
     // 防抖：等待期间若又有新请求（例如继续打字），直接放弃，不占用 GPU
     if (delay_ms > 0) {
       Sleep(delay_ms);
@@ -2402,48 +2436,81 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
 
     // 写入候选并刷新候选窗。在锁内检查是否已有更新的请求（或已被取消），是则丢弃。
     // 刷新 UI 必须在服务端的 IPC 锁下进行：按键处理线程同时在用 librime 与候选窗（Direct2D）。
-    auto publish = [&](std::vector<std::wstring> candidates) {
+    // corrections：开头几个候选是整句校正（候选窗标示「校正」）
+    auto publish = [&](std::vector<std::wstring> candidates, size_t corrections) {
       {
         std::lock_guard<std::mutex> lock(m_llm_mutex);
         if (request_seq != m_llm_request_seq.load())
           return false;
         m_current_llm_candidates = std::move(candidates);
+        m_llm_correction_count = corrections;
       }
       std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
       if (request_seq == m_llm_request_seq.load())
         _UpdateUI(ipc_id);
       return true;
     };
+    // 依序合并、去重，最多 5 个（对应 Tab、Shift+2~5）
+    auto merge = [](std::vector<std::wstring> merged, const std::vector<std::wstring>& more) {
+      for (const auto& c : more) {
+        if (merged.size() >= 5)
+          break;
+        if (std::find(merged.begin(), merged.end(), c) == merged.end())
+          merged.push_back(c);
+      }
+      return merged;
+    };
 
     // 1) 先显示个人词库的候选（几乎零延迟）
-    if (!personal.empty() && !publish(personal))
+    if (!personal.empty() && !publish(personal, 0))
       return;
     if (!llm_available)
       return;
 
-    // 2) 再用 LLM 补足：同一时间只能有一个推理（llama.cpp context 非线程安全），
+    // 2) 注音整句校正：LLM 依前文与注音推测真正要打的句子，放在第一个；之后的续写接在校正结果后面
+    std::vector<std::wstring> corrections;
+    std::wstring context = context_copy;
+    std::wstring prefix = prefix_copy;
+    if (correct) {
+      std::wstring corrected;
+      {
+        std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
+        if (request_seq != m_llm_request_seq.load() || !m_llm_provider)
+          return;
+        corrected = CleanCorrection(m_llm_provider->CorrectSentence(history, zhuyin, prefix_copy),
+                                    prefix_copy);
+      }
+      if (m_dev_console && m_dev_console->IsEnabled())
+        m_dev_console->WriteLine(L"[LLM] 整句校正: " + prefix_copy + L" → " +
+                                 (corrected.empty() ? L"(不需校正)" : corrected));
+      if (!corrected.empty()) {
+        corrections.push_back(corrected);
+        if (!publish(merge(corrections, personal), corrections.size()))
+          return;
+        context = history + corrected;
+        prefix = corrected;
+      }
+    }
+    if (!complete)
+      return;
+
+    // 3) 再用 LLM 补足：同一时间只能有一个推理（llama.cpp context 非线程安全），
     //    排到时若已有更新的请求就放弃
     std::vector<std::wstring> candidates;
     {
       std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
       if (request_seq != m_llm_request_seq.load() || !m_llm_provider)
         return;
-      candidates = m_llm_provider->PredictCandidates(context_copy, current_input_copy, 5);
+      candidates = m_llm_provider->PredictCandidates(context, current_input_copy, 5);
     }
-    candidates = CleanLLMCandidates(candidates, prefix_copy);
+    candidates = CleanLLMCandidates(candidates, prefix);
 
-    // 个人词库排前面，LLM 接在后面，去重后最多 5 个（对应 Tab、Shift+2~5）
-    std::vector<std::wstring> merged = personal;
-    for (auto& c : candidates) {
-      if (merged.size() >= 5)
-        break;
-      if (std::find(merged.begin(), merged.end(), c) == merged.end())
-        merged.push_back(std::move(c));
-    }
+    // 校正排最前，接着个人词库，LLM 续写接在后面
+    std::vector<std::wstring> merged = merge(merge(corrections, personal), candidates);
     if (m_dev_console && m_dev_console->IsEnabled())
       m_dev_console->WriteLine(L"[LLM] 预测完成，共 " + std::to_wstring(merged.size()) +
                                L" 个候选（个人词库 " + std::to_wstring(personal.size()) + L"）");
-    publish(std::move(merged));
+    publish(std::move(merged), corrections.size());
   }).detach();
 }
 
@@ -2531,6 +2598,17 @@ void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD
     return;
   }
 
+  // 续写：开启输入中补全，或按 ` 键手动触发（delay_ms 为 0）；整句校正：注音容错选 LLM
+  const bool complete = m_llm_while_typing || delay_ms == 0;
+  const std::wstring zhuyin = m_typo_correction == 2 && m_llm_provider &&
+                                      m_llm_provider->IsAvailable()
+                                  ? _ComposingZhuyin(ipc_id)
+                                  : std::wstring();
+  if (!complete && zhuyin.empty()) {
+    _CancelLLMCompletion();
+    return;
+  }
+
   // 旧候选（上一个键的补全或提交后的下一词预测）已不适用，先清掉
   {
     std::lock_guard<std::mutex> lock(m_llm_mutex);
@@ -2540,9 +2618,44 @@ void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD
   m_llm_completion_active = true;
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] 输入中补全（" + std::to_wstring(delay_ms) +
-                             L"ms 后）: " + preview);
+                             L"ms 后）: " + preview + (zhuyin.empty() ? L"" : L"，注音: " + zhuyin));
   }
-  _TriggerLLMPrediction(ipc_id, L"", delay_ms, preview);
+  _TriggerLLMPrediction(ipc_id, L"", delay_ms, preview, zhuyin, complete);
+}
+
+std::wstring RimeWithWeaselHandler::_ComposingZhuyin(WeaselSessionId ipc_id) {
+  const RimeSessionId session_id = to_session_id(ipc_id);
+  bool zhuyin_schema = false;
+  RIME_STRUCT(RimeStatus, status);
+  if (rime_api->get_status(session_id, &status)) {
+    zhuyin_schema = status.schema_id && strncmp(status.schema_id, "bopomofo", 8) == 0;
+    rime_api->free_status(&status);
+  }
+  const char* input = zhuyin_schema ? rime_api->get_input(session_id) : nullptr;
+  if (!input || !*input)
+    return L"";
+  // 注音方案（大千式）的按键 → 注音符号；声调之后断开，方便模型分辨音节
+  static const char kKeys[] = "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-";
+  static const wchar_t kSymbols[] = L"ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦ";
+  static const char kToneKeys[] = "6347";
+  static const wchar_t kTones[] = L"ˊˇˋ˙";
+  std::wstring zhuyin;
+  for (const char* p = input; *p; ++p) {
+    if (const char* k = strchr(kKeys, *p)) {
+      zhuyin += kSymbols[k - kKeys];
+    } else if (const char* t = strchr(kToneKeys, *p)) {
+      zhuyin += kTones[t - kToneKeys];
+      zhuyin += L' ';
+    } else if (*p == ' ' || *p == '\'') {
+      if (!zhuyin.empty() && zhuyin.back() != L' ')
+        zhuyin += L' ';
+    } else {
+      return L"";  // 不是大千键位（例如其他注音键盘布局），不校正
+    }
+  }
+  while (!zhuyin.empty() && zhuyin.back() == L' ')
+    zhuyin.pop_back();
+  return zhuyin;
 }
 
 void RimeWithWeaselHandler::_CancelLLMCompletion() {

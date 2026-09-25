@@ -527,7 +527,8 @@ bool LlamaCppProvider::PrepareSystemPrompt(const std::string& system_prompt_utf8
   return true;
 }
 
-std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max_tokens) {
+std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max_tokens,
+                                           bool stop_at_newline) {
   extern DevConsole* g_dev_console;
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
@@ -672,7 +673,9 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
       break;
     }
     response.append(buf, n);
-    
+    if (stop_at_newline && response.find('\n') != std::string::npos)
+      break;
+
     if (g_dev_console && g_dev_console->IsEnabled()) {
       std::string piece(buf, n);
       g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": convert耗时 " + std::to_wstring(t_convert) + L" ms (text=\"" + u8tow(piece) + L"\")");
@@ -1074,34 +1077,79 @@ int LlamaCppProvider::CountTokens(const std::string& text) const {
                          true, true);
 }
 
-std::string LlamaCppProvider::Chat(const std::string& system, const std::string& user,
-                                   int max_tokens) {
-  if (!m_model_loaded)
-    return "";
-  std::string prompt;
+std::string LlamaCppProvider::ApplyChatTemplate(const std::string& system,
+                                                const std::string& user) const {
   const char* tmpl =
       m_instruct_model ? llama_model_chat_template((const llama_model*)m_model, nullptr) : nullptr;
-  if (tmpl) {
-    llama_chat_message messages[2] = {{"system", system.c_str()}, {"user", user.c_str()}};
-    std::vector<char> buf(system.size() + user.size() + 1024);
-    int n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
-    if (n > (int)buf.size()) {
-      buf.resize(n);
-      n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
-    }
-    if (n > 0)
-      prompt.assign(buf.data(), n);
+  if (!tmpl)
+    return "";
+  llama_chat_message messages[2] = {{"system", system.c_str()}, {"user", user.c_str()}};
+  std::vector<char> buf(system.size() + user.size() + 1024);
+  int n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
+  if (n > (int)buf.size()) {
+    buf.resize(n);
+    n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
   }
-  if (prompt.empty())  // Base 模型或沒有 chat template：純文字續寫
-    prompt = system + "\n\n" + user + "\n\n整理結果：\n";
-  // 不沿用預測的 system prompt 快取
+  return n > 0 ? std::string(buf.data(), n) : std::string();
+}
+
+void LlamaCppProvider::DropSystemPromptCache() {
   m_system_prompt_utf8.clear();
   m_system_prompt_ready = false;
   m_system_state.clear();
   m_system_state_size = 0;
+}
+
+std::string LlamaCppProvider::Chat(const std::string& system, const std::string& user,
+                                   int max_tokens) {
+  if (!m_model_loaded)
+    return "";
+  std::string prompt = ApplyChatTemplate(system, user);
+  if (prompt.empty())  // Base 模型或沒有 chat template：純文字續寫
+    prompt = system + "\n\n" + user + "\n\n整理結果：\n";
+  // 不沿用預測的 system prompt 快取
+  DropSystemPromptCache();
   if (m_sampler)
     llama_sampler_reset((llama_sampler*)m_sampler);
   return GenerateText(prompt, (size_t)max_tokens);
+}
+
+std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
+                                               const std::wstring& zhuyin,
+                                               const std::wstring& draft) {
+  if (!IsAvailable() || zhuyin.empty() || draft.empty())
+    return L"";
+  std::string prompt;
+  if (m_instruct_model) {
+    const std::string system = wtou8(LLMCorrectSystem(m_prompt_prefix));
+    const std::string user = wtou8(LLMCorrectUser(context, zhuyin, draft));
+    prompt = ApplyChatTemplate(system, user);
+    if (prompt.empty())
+      prompt = system + "\n\n" + user;
+  } else {
+    prompt = wtou8(LLMCorrectBasePrompt(m_prompt_prefix, context, zhuyin, draft));
+  }
+
+  // 校正要穩定的結果：改用 greedy 取樣（不影響預測用的取樣設定）；
+  // 不沿用預測的 system prompt 快取，下一次預測會重新 prefill
+  DropSystemPromptCache();
+  llama_sampler* greedy = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(greedy, llama_sampler_init_greedy());
+  void* saved = m_sampler;
+  m_sampler = greedy;
+  // 中文大約一字一個 token，多留一些給模型改字數
+  const std::string output = GenerateText(prompt, draft.size() * 2 + 8, true);
+  m_sampler = saved;
+  llama_sampler_free(greedy);
+
+  extern DevConsole* g_dev_console;
+  if (g_dev_console && g_dev_console->IsEnabled())
+    g_dev_console->WriteLine(L"[LLM] 整句校正 (llama.cpp): " + draft + L" → " + u8tow(output));
+  std::wstring result = u8tow(output);
+  result = result.substr(0, result.find_first_of(L"\r\n"));
+  while (!result.empty() && result.back() == L'�')
+    result.pop_back();
+  return result;
 }
 
 LLMLocalChatSession::LLMLocalChatSession() = default;

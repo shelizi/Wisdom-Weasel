@@ -170,6 +170,8 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
   bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
   bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
+  int m_typo_correction = 0;        // llm/typo_correction：0 關閉、1 Rime 容錯、2 再加 LLM 整句校正
+  size_t m_llm_correction_count = 0;  // m_current_llm_candidates 開頭幾個是整句校正（m_llm_mutex 保護）
   size_t m_llm_context_max_chars = 100;       // llm/context/max_chars：给模型的前文最多几个字
   unsigned m_llm_context_idle_minutes = 10;   // llm/context/idle_minutes：窗口闲置多久后旧前文失效
   void _UpdateContextKey(WeaselSessionId ipc_id);  // 依前景窗口切换上下文
@@ -190,8 +192,12 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
 
   // LLM预测相关方法
   // delay_ms>0 时为防抖：延迟后若已有更新的请求则放弃；completion_prefix 非空时为输入中补全模式
+  // zhuyin 非空时先请 LLM 校正整句（注音打错字）；complete=false 时只校正、不续写
   void _TriggerLLMPrediction(WeaselSessionId ipc_id, const std::wstring& current_input = L"",
-                             DWORD delay_ms = 0, const std::wstring& completion_prefix = L"");
+                             DWORD delay_ms = 0, const std::wstring& completion_prefix = L"",
+                             const std::wstring& zhuyin = L"", bool complete = true);
+  // 目前组字的注音（大千键位的按键转回注音符号）；不是注音方案时回传空字串
+  std::wstring _ComposingZhuyin(WeaselSessionId ipc_id);
   // 选中第 llm_index 个 LLM 候选：清空 composition、提交并继续预测下一个词
   bool _CommitLLMCandidate(WeaselSessionId ipc_id, size_t llm_index, EatLine eat);
   // 输入中补全：安排（防抖）或清除补全候选

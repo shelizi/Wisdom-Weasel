@@ -314,52 +314,10 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   }
 
   // 构建 prompt：提示词（与 llama.cpp 共用）+ 任务说明放 system，上下文放 user
-  auto escape_json = LLMJsonEscape;
-  const std::string system_json = escape_json(wtou8(LLMInstructSystem(m_prompt, max_candidates)));
-  const std::string user_json = escape_json(wtou8(LLMInstructUser(context, current_input)));
-
-  // 输出请求内容到开发终端
   extern DevConsole* g_dev_console;
-  std::ostringstream json;
-  json << "{"
-       << "\"model\":\"" << escape_json(m_model) << "\","
-       << "\"messages\":["
-       << "{\"role\":\"system\",\"content\":\"" << system_json << "\"},"
-       << "{\"role\":\"user\",\"content\":\"" << user_json << "\"}"
-       << "],"
-       << "\"max_tokens\":" << m_max_tokens << ","
-       << "\"temperature\":" << m_temperature;
-
-  json << ",\"top_p\":" << m_top_p
-       << ",\"presence_penalty\":" << m_presence_penalty
-       << ",\"frequency_penalty\":" << m_frequency_penalty;
-  if (m_has_seed) {
-    json << ",\"seed\":" << m_seed;
-  }
-
-  // 透传额外 JSON（合并对象内部字段到根对象）
-  if (!m_extra_body_json.empty()) {
-    size_t start = m_extra_body_json.find_first_not_of(" \t\r\n");
-    size_t end = m_extra_body_json.find_last_not_of(" \t\r\n");
-    if (start != std::string::npos && end != std::string::npos &&
-        m_extra_body_json[start] == '{' && m_extra_body_json[end] == '}') {
-      std::string inner =
-          m_extra_body_json.substr(start + 1, end - start - 1);
-      if (!inner.empty()) {
-        json << "," << inner;
-      }
-    } else {
-      if (g_dev_console && g_dev_console->IsEnabled()) {
-        g_dev_console->WriteLine(
-            L"[LLM] extra_body_json 格式无效，需为 JSON 对象字符串，已忽略");
-      }
-    }
-  }
-
-  json << "}";
-
-  std::string request_body = json.str();
-
+  std::string request_body = BuildChatBody(LLMInstructSystem(m_prompt, max_candidates),
+                                           LLMInstructUser(context, current_input), m_max_tokens,
+                                           m_temperature);
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 发送预测请求");
@@ -398,6 +356,81 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   // }
 
   return candidates;
+}
+
+std::string OpenAICompatibleProvider::BuildChatBody(const std::wstring& system,
+                                                    const std::wstring& user, int max_tokens,
+                                                    double temperature) const {
+  auto escape_json = LLMJsonEscape;
+  extern DevConsole* g_dev_console;
+  std::ostringstream json;
+  json << "{"
+       << "\"model\":\"" << escape_json(m_model) << "\","
+       << "\"messages\":["
+       << "{\"role\":\"system\",\"content\":\"" << escape_json(wtou8(system)) << "\"},"
+       << "{\"role\":\"user\",\"content\":\"" << escape_json(wtou8(user)) << "\"}"
+       << "],"
+       << "\"max_tokens\":" << max_tokens << ","
+       << "\"temperature\":" << temperature;
+
+  json << ",\"top_p\":" << m_top_p
+       << ",\"presence_penalty\":" << m_presence_penalty
+       << ",\"frequency_penalty\":" << m_frequency_penalty;
+  if (m_has_seed) {
+    json << ",\"seed\":" << m_seed;
+  }
+
+  // 透传额外 JSON（合并对象内部字段到根对象）
+  if (!m_extra_body_json.empty()) {
+    size_t start = m_extra_body_json.find_first_not_of(" \t\r\n");
+    size_t end = m_extra_body_json.find_last_not_of(" \t\r\n");
+    if (start != std::string::npos && end != std::string::npos &&
+        m_extra_body_json[start] == '{' && m_extra_body_json[end] == '}') {
+      std::string inner =
+          m_extra_body_json.substr(start + 1, end - start - 1);
+      if (!inner.empty()) {
+        json << "," << inner;
+      }
+    } else {
+      if (g_dev_console && g_dev_console->IsEnabled()) {
+        g_dev_console->WriteLine(
+            L"[LLM] extra_body_json 格式无效，需为 JSON 对象字符串，已忽略");
+      }
+    }
+  }
+
+  json << "}";
+  return json.str();
+}
+
+std::wstring OpenAICompatibleProvider::CorrectSentence(const std::wstring& context,
+                                                       const std::wstring& zhuyin,
+                                                       const std::wstring& draft) {
+  if (!IsAvailable() || zhuyin.empty() || draft.empty())
+    return L"";
+  // 校正要穩定的結果：溫度 0；字數與初稿相近，多留一些 token
+  const std::string request_body =
+      BuildChatBody(LLMCorrectSystem(m_prompt), LLMCorrectUser(context, zhuyin, draft),
+                    (int)draft.size() * 3 + 16, 0.0);
+  std::string response_body;
+  if (!ExecuteRequest(m_api_url, request_body, response_body))
+    return L"";
+  bool found = false;
+  std::wstring result = LLMExtractChatContent(response_body, &found);
+  extern DevConsole* g_dev_console;
+  if (g_dev_console && g_dev_console->IsEnabled())
+    g_dev_console->WriteLine(L"[LLM] 整句校正 (OpenAI): " + draft + L" → " + result);
+  if (!found)
+    return L"";
+  // 推理模型可能先輸出 <think>…</think>
+  const size_t think_end = result.rfind(L"</think>");
+  if (think_end != std::wstring::npos)
+    result = result.substr(think_end + 8);
+  const size_t b = result.find_first_not_of(L" \t\r\n");
+  if (b == std::wstring::npos)
+    return L"";
+  result = result.substr(b);
+  return result.substr(0, result.find_first_of(L"\r\n"));
 }
 
 bool OpenAICompatibleProvider::IsAvailable() const {
