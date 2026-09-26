@@ -539,6 +539,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   m_ui->style() = get_session_status(m_active_session).style;
 }
 
+static ZhuyinSpeller _LoadZhuyinSpeller(RimeApi* api, const char* schema_id);
+
 BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
                                             WeaselSessionId ipc_id,
                                             EatLine eat) {
@@ -729,8 +731,34 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
     }
   }
   
+  // 组字中打标点：Rime 会把组字连同标点直接送出；改为留在组字区（像新注音），等 Enter 一起送出
+  bool punct_in_composition = false;
+  if (!(keyEvent.mask & (ibus::Modifier::RELEASE_MASK | ibus::Modifier::CONTROL_MASK |
+                         ibus::Modifier::MOD1_MASK | ibus::Modifier::SUPER_MASK)) &&
+      keyEvent.keycode > 0x20 && keyEvent.keycode <= 0x7e &&
+      !isalnum((int)keyEvent.keycode)) {
+    RIME_STRUCT(RimeStatus, punct_status);
+    if (rime_api->get_status(session_id, &punct_status)) {
+      if (punct_status.is_composing && !punct_status.is_ascii_mode) {
+        char schema_id[256] = {0};
+        rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
+        punct_in_composition = _LoadZhuyinSpeller(rime_api, schema_id)
+                                   .alphabet.find((char)keyEvent.keycode) == std::string::npos;
+      }
+      rime_api->free_status(&punct_status);
+    }
+  }
+
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
+  if (punct_in_composition) {
+    RIME_STRUCT(RimeCommit, punct_commit);
+    if (rime_api->get_commit(session_id, &punct_commit)) {
+      if (punct_commit.text)
+        get_session_status(ipc_id).mixed_text += u8tow(punct_commit.text);
+      rime_api->free_commit(&punct_commit);
+    }
+  }
   // 混打中 Rime 不處理的可見字元（例如組字空了之後的空白）也收進混打內容，不直接輸出
   {
     SessionStatus& mixed_status = get_session_status(ipc_id);
@@ -1578,6 +1606,8 @@ static ZhuyinSpeller _LoadZhuyinSpeller(RimeApi* api, const char* schema_id) {
     return sp;
   if (const char* finals = api->config_get_cstring(&config, "speller/finals"))
     sp.finals = finals;
+  if (const char* alphabet = api->config_get_cstring(&config, "speller/alphabet"))
+    sp.alphabet = alphabet;
   if (const char* delim = api->config_get_cstring(&config, "speller/delimiter"))
     if (*delim)
       sp.delimiter = *delim;

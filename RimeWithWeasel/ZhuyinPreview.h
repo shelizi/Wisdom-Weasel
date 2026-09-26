@@ -12,6 +12,7 @@ struct ZhuyinSpeller {
   std::string finals = " 6347";  // keys that end a syllable (tones)
   char delimiter = '\'';
   std::map<wchar_t, wchar_t> xlit;  // raw key -> zhuyin, from preedit_format
+  std::string alphabet;             // keys the speller takes (speller/alphabet)
 };
 
 struct ZhuyinPreview {
