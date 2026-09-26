@@ -73,7 +73,6 @@ bool IsSubtleText(int id) {
     case IDC_PAGE_DESC:
     case IDC_P1_HINT:
     case IDC_P1_HOTKEY_LABEL:
-    case IDC_P1_TYPO_HINT:
     case IDC_P3_LOADED:
     case IDC_P3_TEST_HINT:
     case IDC_P3_TEST_STATUS:
@@ -413,12 +412,6 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
     for (int i = 0; i <= 5; ++i)
       personal_max.AddString(std::to_wstring(i).c_str());
   }
-  {
-    CComboBox typo(GetDlgItem(IDC_P1_TYPO));
-    typo.AddString(L"不修正");
-    typo.AddString(L"方法一：Rime 容錯（找相近的注音）");
-    typo.AddString(L"方法二：Rime 容錯 + LLM 整句校正");
-  }
   GetDlgItem(IDC_P3_TEST_INPUT).SetWindowTextW(L"今天天氣很好，我們一起去");
 
   PopulateSchemas();
@@ -515,7 +508,7 @@ void SettingsDialog::ApplyFonts() {
   icon_font_ = ::CreateFontIndirectW(&icon);
 
   GetDlgItem(IDC_PAGE_TITLE).SetFont(title_font_);
-  for (int id : {IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
+  for (int id : {IDC_P1_TYPO_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
                  IDC_P3_PREFIX_LABEL, IDC_P3_ENABLED, IDC_P4_ENABLED, IDC_P4_REFINE_LABEL,
                  IDC_P4_DATA_LABEL, IDC_P6_WORDS_LABEL, IDC_P6_DICT_LABEL, IDC_P5_FILES_LABEL})
     GetDlgItem(id).SetFont(section_font_);
@@ -950,28 +943,24 @@ void SettingsDialog::LoadLLMSettings() {
   UpdateLLMEnableState();
   LoadPersonalSettings(&config);
 
-  const std::wstring typo = get_string("llm/typo_correction");
-  typo_loaded_ = typo == L"rime" ? 1 : typo == L"llm" ? 2 : 0;
-  CComboBox(GetDlgItem(IDC_P1_TYPO)).SetCurSel(typo_loaded_);
-  UpdateTypoHint();
+  // 注音容錯：兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
+  const std::wstring legacy = get_string("llm/typo_correction");
+  typo_rime_loaded_ = get_bool("llm/typo/rime", legacy == L"rime" || legacy == L"llm");
+  CheckDlgButton(IDC_P1_TYPO_RIME, typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P1_TYPO_LLM,
+                 get_bool("llm/typo/llm", legacy == L"llm") ? BST_CHECKED : BST_UNCHECKED);
+  UpdateTypoState();
   llm_modified_ = typo_modified_ = false;
 }
 
-void SettingsDialog::UpdateTypoHint() {
-  static const wchar_t* const kHints[] = {
-      L"打錯的注音不會自動修正。",
-      L"按到隔壁鍵、多打或少打一鍵時，Rime 會找相近的注音再選字。只作用在注音方案，套用後重新部署。",
-      L"除了 Rime 容錯，打字停頓時會把注音與前文交給上面選的模型校正整句，結果接在候選後面、"
-      L"標示「校正」（按 Tab 選用）。和「智慧預測」各自獨立。",
-  };
-  const int sel = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel();
-  GetDlgItem(IDC_P1_TYPO_HINT).SetWindowTextW(kHints[sel >= 0 && sel <= 2 ? sel : 0]);
-  GetDlgItem(IDC_P1_TYPO_PROFILE_LABEL).EnableWindow(sel == 2);
-  GetDlgItem(IDC_P1_TYPO_PROFILE).EnableWindow(sel == 2);
+void SettingsDialog::UpdateTypoState() {
+  const bool llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
+  GetDlgItem(IDC_P1_TYPO_PROFILE_LABEL).EnableWindow(llm);
+  GetDlgItem(IDC_P1_TYPO_PROFILE).EnableWindow(llm);
 }
 
 LRESULT SettingsDialog::OnTypoChange(WORD, WORD, HWND, BOOL&) {
-  UpdateTypoHint();
+  UpdateTypoState();
   UpdateProfileUsage();
   if (loaded_)
     typo_modified_ = true;
@@ -1088,9 +1077,9 @@ bool SettingsDialog::SaveLLMSettings() {
   }
   rime->config_set_string(&llm, "prompt", wtou8(LLMTrim(prefix)).c_str());
   rime->config_clear(&llm, "llamacpp/prompt_prefix");
-  static const char* const kTypoModes[] = {"off", "rime", "llm"};
-  const int typo = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel();
-  rime->config_set_string(&llm, "typo_correction", kTypoModes[typo >= 0 && typo <= 2 ? typo : 0]);
+  rime->config_set_bool(&llm, "typo/rime", IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED);
+  rime->config_set_bool(&llm, "typo/llm", IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED);
+  rime->config_clear(&llm, "typo_correction");
   SavePersonalSettings(&llm);
   const bool ok = !!api_->customize_item(ui_settings_->settings(), "llm", &llm);
   rime->config_close(&llm);
@@ -1258,14 +1247,14 @@ bool SettingsDialog::Save() {
       boost_error = L"注音排序：" + boost_error;
     rime_boost_loaded_ = rime_boost;
   }
-  // 注音容錯：方法一、二都要 Rime 容錯；開關有變才改方案
-  const int typo = (std::max)(0, CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel());
-  if (typo_modified_ && (typo > 0) != (typo_loaded_ > 0)) {
+  // Rime 容錯：開關有變才改方案
+  const bool typo_rime = IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED;
+  if (typo_modified_ && typo_rime != typo_rime_loaded_) {
     std::wstring typo_error;
-    if (!ApplyTypoCorrection(typo > 0, &typo_error))
-      boost_error += (boost_error.empty() ? L"" : L"；") + (L"注音容錯：" + typo_error);
+    if (!ApplyTypoCorrection(typo_rime, &typo_error))
+      boost_error += (boost_error.empty() ? L"" : L"；") + (L"Rime 容錯：" + typo_error);
   }
-  typo_loaded_ = typo;
+  typo_rime_loaded_ = typo_rime;
   if (style_modified_ || llm_modified_) {
     api_->save_settings(ui_settings_->settings());
     style_modified_ = llm_modified_ = personal_modified_ = typo_modified_ = false;
@@ -1658,7 +1647,7 @@ bool SettingsDialog::ValidateProfiles() {
     SetStatus(L"請選擇預測使用的模型（可在「語言模型」頁新增）。");
     return false;
   }
-  const bool typo_llm = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel() == 2;
+  const bool typo_llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
   const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   if (typo_llm && typo < 0) {
     GoToPage(kPageSchemas);
@@ -1778,7 +1767,7 @@ void SettingsDialog::UpdateProfileUsage() {
       uses.push_back(L"智慧預測");
     if (ComboProfile(IDC_P4_PROFILE) == profile_sel_)
       uses.push_back(L"個人詞庫精煉");
-    if (CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel() == 2 &&
+    if (IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED &&
         ComboProfile(IDC_P1_TYPO_PROFILE) == profile_sel_)
       uses.push_back(L"注音校正");
     if (uses.empty()) {

@@ -170,7 +170,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
   bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
   bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
-  int m_typo_correction = 0;        // llm/typo_correction：0 關閉、1 Rime 容錯、2 再加 LLM 整句校正
+  bool m_typo_llm_on = false;       // llm/typo/llm：LLM 整句校正（Rime 容錯由注音方案處理）
   size_t m_llm_correction_count = 0;  // m_current_llm_candidates 開頭幾個是整句校正（m_llm_mutex 保護）
   // 注音整句校正用的模型（llm/typo/*），與智慧預測分開；同一個模型時直接共用 m_llm_provider
   std::unique_ptr<LLMProvider> m_typo_owned;

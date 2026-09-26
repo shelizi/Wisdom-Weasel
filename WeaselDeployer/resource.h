@@ -85,8 +85,8 @@
 #define IDC_P1_HOTKEYS                  3105
 #define IDC_P1_GET_SCHEMATA             3106
 #define IDC_P1_TYPO_LABEL               3107
-#define IDC_P1_TYPO                     3108
-#define IDC_P1_TYPO_HINT                3109
+#define IDC_P1_TYPO_RIME                3108
+#define IDC_P1_TYPO_LLM                 3109
 #define IDC_P1_TYPO_PROFILE_LABEL       3110
 #define IDC_P1_TYPO_PROFILE             3111
 #define IDC_P2_SCHEME_LABEL             3201

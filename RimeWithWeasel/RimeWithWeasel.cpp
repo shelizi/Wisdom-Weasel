@@ -223,12 +223,17 @@ void RimeWithWeaselHandler::Initialize() {
     llm_flag = true;
     m_llm_while_typing =
         !rime_api->config_get_bool(&config, "llm/predict_while_typing", &llm_flag) || llm_flag;
-    // 注音容錯：rime = 只用 Rime 的拼寫糾錯（設定在注音方案裡）；llm = 另外請 LLM 校正整句
+    // LLM 整句校正（llm/typo/llm）；Rime 容錯另外設定在注音方案裡，與此無關。
+    // 舊設定 llm/typo_correction: llm 視為開啟
     {
-      char typo[32] = {0};
-      m_typo_correction = 0;
-      if (rime_api->config_get_string(&config, "llm/typo_correction", typo, sizeof(typo) - 1))
-        m_typo_correction = strcmp(typo, "llm") == 0 ? 2 : strcmp(typo, "rime") == 0 ? 1 : 0;
+      Bool typo_llm = false;
+      char legacy[32] = {0};
+      if (rime_api->config_get_bool(&config, "llm/typo/llm", &typo_llm))
+        m_typo_llm_on = !!typo_llm;
+      else
+        m_typo_llm_on =
+            rime_api->config_get_string(&config, "llm/typo_correction", legacy, sizeof(legacy) - 1) &&
+            strcmp(legacy, "llm") == 0;
     }
     // 前文：每个窗口各自一份；只给模型最后 max_chars 个字；窗口闲置 idle_minutes 后旧前文失效
     int llm_int = 0;
@@ -2579,13 +2584,13 @@ void RimeWithWeaselHandler::_UpdateContextKey(WeaselSessionId ipc_id) {
 }
 
 bool RimeWithWeaselHandler::_TypoLLMAvailable() const {
-  return m_typo_correction == 2 && m_typo_llm && m_typo_llm->IsAvailable();
+  return m_typo_llm_on && m_typo_llm && m_typo_llm->IsAvailable();
 }
 
 void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
   m_typo_llm = nullptr;
   m_typo_owned.reset();
-  if (m_typo_correction != 2)
+  if (!m_typo_llm_on)
     return;
   auto read = [&](const char* key) {
     char value[4096] = {0};
@@ -2675,7 +2680,7 @@ void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD
   }
 
   // 续写：开启智慧预测且（输入中补全或按 ` 键手动触发，delay_ms 为 0）；
-  // 整句校正：注音容错选 LLM（与智慧预测各自独立）
+  // 整句校正：开启 LLM 整句校正（与智慧预测、Rime 容错各自独立）
   const bool complete = predict && (m_llm_while_typing || delay_ms == 0);
   const std::wstring zhuyin = _TypoLLMAvailable() ? _ComposingZhuyin(ipc_id) : std::wstring();
   if (!complete && zhuyin.empty()) {

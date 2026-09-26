@@ -89,7 +89,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_APPLY, OnApply)
   COMMAND_ID_HANDLER(IDC_P1_GET_SCHEMATA, OnGetSchemata)
   NOTIFY_HANDLER(IDC_P1_SCHEMA_LIST, LVN_ITEMCHANGED, OnSchemaListItemChanged)
-  COMMAND_HANDLER(IDC_P1_TYPO, CBN_SELCHANGE, OnTypoChange)
+  COMMAND_ID_HANDLER(IDC_P1_TYPO_RIME, OnTypoChange)
+  COMMAND_ID_HANDLER(IDC_P1_TYPO_LLM, OnTypoChange)
   COMMAND_HANDLER(IDC_P1_TYPO_PROFILE, CBN_SELCHANGE, OnProfileChoice)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
@@ -224,9 +225,9 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 輸入方案
   void PopulateSchemas();
   void ShowSchemaDetails(RimeSchemaInfo* info);
-  // 注音容錯（llm/typo_correction）：0 = 關閉、1 = Rime 容錯、2 = Rime 容錯 + LLM 整句校正
-  void UpdateTypoHint();
-  // 方法 1、2 都要在注音方案的 custom.yaml 打開 translator/enable_correction
+  // 注音容錯：Rime 容錯（llm/typo/rime）與 LLM 整句校正（llm/typo/llm）各自開關
+  void UpdateTypoState();
+  // Rime 容錯：在注音方案的 custom.yaml 打開 translator/enable_correction
   bool ApplyTypoCorrection(bool enable, std::wstring* error);
   // 外觀
   void PopulateColorSchemes();
@@ -294,7 +295,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool personal_modified_ = false;
   bool rime_boost_loaded_ = false;  // 載入時的「注音排序」設定（變更時才改方案）
   bool typo_modified_ = false;
-  int typo_loaded_ = 0;             // 載入時的注音容錯設定（Rime 容錯開關有變才改方案）
+  bool typo_rime_loaded_ = false;   // 載入時的 Rime 容錯設定（有變才改方案）
   int start_page_ = 0;
 
   // 語言模型
