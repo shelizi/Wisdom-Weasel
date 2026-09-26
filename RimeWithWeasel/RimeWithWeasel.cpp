@@ -552,6 +552,10 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   if (!(keyEvent.mask & ibus::Modifier::RELEASE_MASK))
     _UpdateContextKey(ipc_id);
 
+  // 中英混打（Shift）
+  if (_HandleMixedInput(keyEvent, ipc_id, eat))
+    return TRUE;
+
   // 处理·键（反引号键）：触发LLM预测（仅在composing状态下）或清空上下文（双击）
   if (!(keyEvent.mask & ibus::Modifier::RELEASE_MASK) &&
       (keyEvent.keycode == ibus::Keycode::grave || keyEvent.keycode == 0x060)) {
@@ -727,6 +731,17 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
+  // 混打中 Rime 不處理的可見字元（例如組字空了之後的空白）也收進混打內容，不直接輸出
+  {
+    SessionStatus& mixed_status = get_session_status(ipc_id);
+    if (!handled && mixed_status.mixed_active() &&
+        !(keyEvent.mask & (ibus::Modifier::RELEASE_MASK | ibus::Modifier::CONTROL_MASK |
+                           ibus::Modifier::MOD1_MASK | ibus::Modifier::SUPER_MASK)) &&
+        keyEvent.keycode >= 0x20 && keyEvent.keycode <= 0x7e) {
+      mixed_status.mixed_text += (wchar_t)keyEvent.keycode;
+      handled = True;
+    }
+  }
   // 输入中补全：正在组字时，停顿 300ms 后以 Rime 当前转换结果续写；组字结束则清除补全候选
   if (handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK) &&
       (_PredictionAvailable() || _TypoLLMAvailable())) {
@@ -768,11 +783,144 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   return (BOOL)handled;
 }
 
+std::wstring RimeWithWeaselHandler::_TakeComposition(RimeSessionId session_id) {
+  std::wstring text;
+  rime_api->commit_composition(session_id);
+  RIME_STRUCT(RimeCommit, commit);
+  if (rime_api->get_commit(session_id, &commit)) {
+    if (commit.text)
+      text = u8tow(commit.text);
+    rime_api->free_commit(&commit);
+  }
+  return text;
+}
+
+bool RimeWithWeaselHandler::_HandleMixedInput(const weasel::KeyEvent& keyEvent,
+                                              WeaselSessionId ipc_id,
+                                              EatLine eat) {
+  SessionStatus& ss = get_session_status(ipc_id);
+  const RimeSessionId session_id = ss.session_id;
+  const UINT key = keyEvent.keycode;
+  const bool release = (keyEvent.mask & ibus::Modifier::RELEASE_MASK) != 0;
+  const bool is_shift = key == ibus::Keycode::Shift_L || key == ibus::Keycode::Shift_R;
+  const bool other_mods = (keyEvent.mask & (ibus::Modifier::CONTROL_MASK |
+                                            ibus::Modifier::MOD1_MASK |
+                                            ibus::Modifier::SUPER_MASK)) != 0;
+  bool composing = false;
+  RIME_STRUCT(RimeStatus, status);
+  if (rime_api->get_status(session_id, &status)) {
+    composing = !!status.is_composing;
+    rime_api->free_status(&status);
+  }
+  // 吃掉按鍵時一定要回應完整的目前狀態：TSF 讀到空的回應會當成組字結束，把組字清掉
+  auto respond = [&]() {
+    _Respond(ipc_id, eat);
+    _UpdateUI(ipc_id);
+    m_active_session = ipc_id;
+    return true;
+  };
+  // 送出混打內容與目前的組字，回到一般輸入
+  auto commit_all = [&]() {
+    std::wstring text = ss.mixed_text;
+    if (composing)
+      text += _TakeComposition(session_id);
+    ss.mixed_text.clear();
+    ss.mixed_english = false;
+    ss.mixed_commit += text;
+    if (m_llm_prediction_mode || m_llm_completion_active)
+      _ExitLLMPredictionMode(ipc_id);
+  };
+
+  // Shift（左右皆可）單獨按下再放開：切換中英。組字中或混打中才由這裡處理，其餘交給 Rime 照舊切換
+  if (!release)
+    m_mixed_shift_tap = is_shift && !other_mods;
+  if (release && is_shift && m_mixed_shift_tap) {
+    m_mixed_shift_tap = false;
+    if (!composing && !ss.mixed_active())
+      return false;
+    // 英文段不切換 Rime 的 ascii_mode：英文字母都由這裡處理；切成英數會讓應用程式
+    // 看到輸入模式改變，有些程式因此把組字藏起來，直到切回中文
+    if (ss.mixed_english) {
+      ss.mixed_english = false;
+    } else {
+      if (composing) {
+        ss.mixed_text += _TakeComposition(session_id);
+        if (m_llm_prediction_mode || m_llm_completion_active)
+          _ExitLLMPredictionMode(ipc_id);
+      }
+      ss.mixed_english = true;
+    }
+    // Rime 只收到這次 Shift 的按下：送一個無作用的鍵，重設它記住的 Shift 狀態
+    rime_api->process_key(session_id, 0xffffff /* VoidSymbol */, 0);
+    return respond();
+  }
+  if (!ss.mixed_active())
+    return false;
+  // 混打中的 Shift 不交給 Rime，免得 Shift+字母（大寫）之後 Rime 自己切換中英
+  if (is_shift)
+    return respond();
+  const bool editing_key = key == ibus::Keycode::Return || key == ibus::Keycode::KP_Enter ||
+                           key == ibus::Keycode::BackSpace || key == ibus::Keycode::Escape;
+  const bool printable = key >= 0x20 && key <= 0x7e && !other_mods;
+  if (release)  // 按下時由這裡處理的鍵，放開也吃掉
+    return ss.mixed_english && (printable || editing_key) && respond();
+
+  if (key == ibus::Keycode::Return || key == ibus::Keycode::KP_Enter) {
+    commit_all();
+    return respond();
+  }
+  if (key == ibus::Keycode::Escape) {
+    rime_api->clear_composition(session_id);
+    ss.mixed_text.clear();
+    ss.mixed_english = false;
+    if (m_llm_prediction_mode || m_llm_completion_active)
+      _ExitLLMPredictionMode(ipc_id);
+    return respond();
+  }
+  if (ss.mixed_english || !composing) {
+    if (key == ibus::Keycode::BackSpace) {
+      if (!ss.mixed_text.empty()) {
+        ss.mixed_text.pop_back();
+        if (!ss.mixed_text.empty() && IS_HIGH_SURROGATE(ss.mixed_text.back()))
+          ss.mixed_text.pop_back();
+      }
+      // 刪光了：結束混打，停在目前的中英模式
+      if (ss.mixed_text.empty())
+        ss.mixed_english = false;
+      return respond();
+    }
+    if (ss.mixed_english && printable) {
+      ss.mixed_text += (wchar_t)key;
+      return respond();
+    }
+    // 游標移動等按鍵：先送出混打內容，按鍵再交給應用程式
+    const bool leaving_key =
+        key == ibus::Keycode::Left || key == ibus::Keycode::Right || key == ibus::Keycode::Up ||
+        key == ibus::Keycode::Down || key == ibus::Keycode::Home || key == ibus::Keycode::End ||
+        key == ibus::Keycode::Page_Up || key == ibus::Keycode::Page_Down ||
+        key == ibus::Keycode::Delete ||
+        (key == ibus::Keycode::Tab && m_current_llm_candidates.empty());
+    if (leaving_key || (other_mods && key < 0xff00)) {
+      commit_all();  // 由之後一般流程的 _Respond 送出
+      return false;
+    }
+  }
+  return false;
+}
+
 void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id) {
   DLOG(INFO) << "Commit composition: ipc_id = " << ipc_id;
   if (m_disabled)
     return;
-  rime_api->commit_composition(to_session_id(ipc_id));
+  SessionStatus& ss = get_session_status(ipc_id);
+  if (ss.mixed_active()) {
+    // 混打内容连同组字一起，在下一次回应时送出
+    ss.mixed_commit += ss.mixed_text + _TakeComposition(to_session_id(ipc_id));
+    ss.mixed_text.clear();
+    ss.mixed_english = false;
+  } else {
+    rime_api->commit_composition(to_session_id(ipc_id));
+  }
   _UpdateUI(ipc_id);
   m_active_session = ipc_id;
 }
@@ -781,6 +929,9 @@ void RimeWithWeaselHandler::ClearComposition(WeaselSessionId ipc_id) {
   DLOG(INFO) << "Clear composition: ipc_id = " << ipc_id;
   if (m_disabled)
     return;
+  SessionStatus& ss = get_session_status(ipc_id);
+  ss.mixed_text.clear();
+  ss.mixed_english = false;
   rime_api->clear_composition(to_session_id(ipc_id));
   _UpdateUI(ipc_id);
   m_active_session = ipc_id;
@@ -1137,6 +1288,18 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   
   if (need_context) {
     _GetContext(weasel_context, session_id);
+    // 中英混打：服务端候选窗（非 TSF）的组字前面接上混打内容
+    const SessionStatus& mixed_status = get_session_status(ipc_id);
+    if (mixed_status.mixed_active()) {
+      const int offset = (int)mixed_status.mixed_text.size();
+      weasel_context.preedit.str = mixed_status.mixed_text + weasel_context.preedit.str;
+      for (auto& attr : weasel_context.preedit.attributes) {
+        attr.range.start += offset;
+        attr.range.end += offset;
+        if (attr.range.cursor >= 0)
+          attr.range.cursor += offset;
+      }
+    }
   }
 
   // 更新会话样式设置
@@ -1447,18 +1610,40 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   SessionStatus& session_status = get_session_status(ipc_id);
   RimeSessionId session_id = session_status.session_id;
   
-  // 处理待提交的LLM候选词
+  // 处理待提交的LLM候选词（混打中则接在混打内容后面，等 Enter 一起送出）
   if (!m_pending_llm_commit.empty()) {
-    actions.insert("commit");
-    std::string commit_text = escape_string<char>(wtou8(m_pending_llm_commit));
-    messages.push_back(std::string("commit=") + commit_text + '\n');
-    
+    if (session_status.mixed_active()) {
+      session_status.mixed_text += m_pending_llm_commit;
+    } else {
+      actions.insert("commit");
+      std::string commit_text = escape_string<char>(wtou8(m_pending_llm_commit));
+      messages.push_back(std::string("commit=") + commit_text + '\n');
+    }
+
     // 清空待提交的LLM候选词
     m_pending_llm_commit.clear();
   }
-  
+
+  // 中英混打结束：整段送出
+  if (!session_status.mixed_commit.empty()) {
+    actions.insert("commit");
+    messages.push_back(std::string("commit=") +
+                       escape_string<char>(wtou8(session_status.mixed_commit)) + '\n');
+    if (m_context_history)
+      m_context_history->AddText(session_status.mixed_commit, m_dev_console);
+    if (m_personal)
+      m_personal->Record(m_context_history ? m_context_history->GetActiveKey() : L"",
+                         session_status.mixed_commit);
+    session_status.mixed_commit.clear();
+  }
+
   RIME_STRUCT(RimeCommit, commit);
-  if (rime_api->get_commit(session_id, &commit)) {
+  if (session_status.mixed_active() && rime_api->get_commit(session_id, &commit)) {
+    // 混打中 Rime 送出的字（选字、标点）收进混打内容
+    if (commit.text)
+      session_status.mixed_text += u8tow(commit.text);
+    rime_api->free_commit(&commit);
+  } else if (rime_api->get_commit(session_id, &commit)) {
     actions.insert("commit");
 
     std::string commit_text = escape_string<char>(commit.text);
@@ -1514,7 +1699,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     messages.push_back(std::string("status.ascii_mode=") +
                        std::to_string(status.is_ascii_mode) + '\n');
     messages.push_back(std::string("status.composing=") +
-                       std::to_string(status.is_composing) + '\n');
+                       std::to_string(status.is_composing || session_status.mixed_active()) +
+                       '\n');
     messages.push_back(std::string("status.disabled=") +
                        std::to_string(status.is_disabled) + '\n');
     messages.push_back(std::string("status.full_shape=") +
@@ -1656,6 +1842,42 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     
     oa << cinfo;
     messages.push_back(std::string("ctx.cand=") + wtou8(ss.str()) + '\n');
+  }
+
+  // 中英混打：混打内容显示在组字区最前面，Rime 的组字（含选取范围与光标）接在后面
+  if (session_status.mixed_active()) {
+    std::string rime_preedit;
+    int sel_start = 0, sel_end = 0, cursor = -1;
+    for (auto it = messages.begin(); it != messages.end();) {
+      if (it->rfind("ctx.preedit.cursor=", 0) == 0) {
+        sscanf_s(it->c_str() + 19, "%d,%d,%d", &sel_start, &sel_end, &cursor);
+        it = messages.erase(it);
+      } else if (it->rfind("ctx.preedit=", 0) == 0) {
+        rime_preedit = unescape_string(it->substr(12, it->size() - 13));
+        it = messages.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    const std::wstring rime_w = u8tow(rime_preedit);
+    const std::wstring shown = session_status.mixed_text + rime_w;
+    const int offset = (int)session_status.mixed_text.size();
+    const int total = (int)shown.size();
+    if (cursor < 0 || rime_w.empty()) {
+      sel_start = 0;
+      sel_end = cursor = total;
+    } else if (sel_start == 0 && sel_end == (int)rime_w.size()) {
+      sel_end = total;  // 选取整段组字时，混打内容也一起算，不另外标示
+      cursor += offset;
+    } else {
+      sel_start += offset;
+      sel_end += offset;
+      cursor += offset;
+    }
+    actions.insert("ctx");
+    messages.push_back(std::string("ctx.preedit=") + escape_string<char>(wtou8(shown)) + '\n');
+    messages.push_back(std::string("ctx.preedit.cursor=") + std::to_string(sel_start) + ',' +
+                       std::to_string(sel_end) + ',' + std::to_string(cursor) + '\n');
   }
 
   // configuration information
@@ -2166,7 +2388,7 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
     stat.schema_name = u8tow(status.schema_name);
     stat.schema_id = u8tow(status.schema_id);
     stat.ascii_mode = !!status.is_ascii_mode;
-    stat.composing = !!status.is_composing;
+    stat.composing = !!status.is_composing || session_status.mixed_active();
     
     // 如果处于LLM预测模式，强制设置composing为true以显示候选栏
     if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
@@ -2484,6 +2706,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
   std::wstring history;
   if (m_context_history)
     history = m_context_history->GetRecentContext(m_llm_context_max_chars);
+  history += get_session_status(ipc_id).mixed_text;  // 中英混打中尚未送出的部分也是前文
   const std::wstring context = history + completion_prefix;
 
   if (m_dev_console && m_dev_console->IsEnabled()) {

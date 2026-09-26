@@ -59,6 +59,12 @@ struct SessionStatus {
   // syllable, to keep showing the text after the caret while selecting
   std::string preview_input;
   std::vector<std::wstring> preview_units;
+  // 中英混打：組字中按 Shift 切到英文後，已轉好的中文與打的英文暫存在這裡，
+  // 顯示在組字區最前面，Enter 一起送出（沒在組字時切英文照舊直接輸出）
+  std::wstring mixed_text;
+  bool mixed_english = false;  // 正在混打的英文段
+  std::wstring mixed_commit;   // 待送出的混打內容
+  bool mixed_active() const { return mixed_english || !mixed_text.empty(); }
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
@@ -115,6 +121,10 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                                 bool ignore_app_name = false);
   bool _ShowMessage(weasel::Context& ctx, weasel::Status& status);
   bool _Respond(WeaselSessionId ipc_id, EatLine eat);
+  // 中英混打：處理 Shift 切換與混打中的按鍵，已處理時回傳 true
+  bool _HandleMixedInput(const weasel::KeyEvent& keyEvent, WeaselSessionId ipc_id, EatLine eat);
+  // 送出目前的組字並取回轉換好的文字（不交給應用程式）
+  std::wstring _TakeComposition(RimeSessionId session_id);
   void _ReadClientInfo(WeaselSessionId ipc_id, LPWSTR buffer);
   void _GetCandidateInfo(weasel::CandidateInfo& cinfo, RimeContext& ctx);
   void _GetStatus(weasel::Status& stat,
@@ -170,6 +180,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_prediction_mode;
   std::vector<std::wstring> m_current_llm_candidates;
   std::wstring m_pending_llm_commit;  // 待提交的LLM候选词
+  bool m_mixed_shift_tap = false;     // Shift 按下後還沒按其他鍵（放開時算一次切換）
   bool m_llm_completion_active = false;  // 当前 LLM 候选是输入中补全（Rime 首选 + 续写）
   bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
   bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
