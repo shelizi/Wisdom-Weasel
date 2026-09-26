@@ -49,6 +49,8 @@ const PageInfo kPages[] = {
     {3200, L"外觀", L"\uE790", L"外觀", L"候選視窗的配色與字體。"},
     {3300, L"智慧預測", L"\uE82F", L"LLM 智慧預測",
      L"用語言模型預測你接下來要打的詞。"},
+    {3700, L"注音校正", L"\uE70F", L"注音校正",
+     L"注音打錯字時的處理：Rime 容錯選字，或請語言模型依前文校正整句。"},
     {3500, L"語言模型", L"\uE950", L"語言模型",
      L"本機（llama.cpp）或 OpenAI 相容 API 的模型設定，可以設定多組。"},
     {3400, L"個人詞庫", L"\uE8F1", L"個人詞庫",
@@ -60,7 +62,7 @@ const int kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
 // 控制項 ID 依範圍分頁（見 kPages 的 id_base）；其餘為共用
 int PageOfControl(int id) {
-  if (id < 3100 || id >= 3700)
+  if (id < 3100 || id >= 3800)
     return -1;
   for (int i = 0; i < kPageCount; ++i) {
     if (kPages[i].id_base == id / 100 * 100)
@@ -398,7 +400,7 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   profile_list_.Attach(GetDlgItem(IDC_P5_LIST));
   model_files_.Attach(GetDlgItem(IDC_P5_FILES));
   predict_profile_.Attach(GetDlgItem(IDC_P3_PROFILE));
-  typo_profile_.Attach(GetDlgItem(IDC_P1_TYPO_PROFILE));
+  typo_profile_.Attach(GetDlgItem(IDC_P7_TYPO_PROFILE));
   refine_profile_.Attach(GetDlgItem(IDC_P4_PROFILE));
   test_result_.Attach(GetDlgItem(IDC_P3_TEST_RESULT));
   words_list_.Attach(GetDlgItem(IDC_P6_WORDS));
@@ -510,7 +512,7 @@ void SettingsDialog::ApplyFonts() {
   icon_font_ = ::CreateFontIndirectW(&icon);
 
   GetDlgItem(IDC_PAGE_TITLE).SetFont(title_font_);
-  for (int id : {IDC_P1_TYPO_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
+  for (int id : {IDC_P7_TYPO_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
                  IDC_P3_PREFIX_LABEL, IDC_P3_ENABLED, IDC_P4_ENABLED, IDC_P4_REFINE_LABEL,
                  IDC_P4_DATA_LABEL, IDC_P6_WORDS_LABEL, IDC_P6_DICT_LABEL, IDC_P5_FILES_LABEL})
     GetDlgItem(id).SetFont(section_font_);
@@ -948,20 +950,20 @@ void SettingsDialog::LoadLLMSettings() {
   // 注音容錯：兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
   const std::wstring legacy = get_string("llm/typo_correction");
   typo_rime_loaded_ = get_bool("llm/typo/rime", legacy == L"rime" || legacy == L"llm");
-  CheckDlgButton(IDC_P1_TYPO_RIME, typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P1_TYPO_LLM,
+  CheckDlgButton(IDC_P7_TYPO_RIME, typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P7_TYPO_LLM,
                  get_bool("llm/typo/llm", legacy == L"llm") ? BST_CHECKED : BST_UNCHECKED);
   // 校正提示詞：沒有自訂時顯示預設指令，方便在上面修改
   const std::wstring typo_prompt = get_string("llm/typo/prompt");
-  SetMultilineText(IDC_P1_TYPO_PROMPT, typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
+  SetMultilineText(IDC_P7_TYPO_PROMPT, typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
   UpdateTypoState();
   llm_modified_ = typo_modified_ = false;
 }
 
 void SettingsDialog::UpdateTypoState() {
-  const bool llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
-  for (int id : {IDC_P1_TYPO_PROFILE_LABEL, IDC_P1_TYPO_PROFILE, IDC_P1_TYPO_PROMPT_LABEL,
-                 IDC_P1_TYPO_PROMPT, IDC_P1_TYPO_PROMPT_RESET})
+  const bool llm = IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED;
+  for (int id : {IDC_P7_TYPO_PROFILE_LABEL, IDC_P7_TYPO_PROFILE, IDC_P7_TYPO_PROMPT_LABEL,
+                 IDC_P7_TYPO_PROMPT, IDC_P7_TYPO_PROMPT_RESET})
     GetDlgItem(id).EnableWindow(llm);
 }
 
@@ -989,7 +991,7 @@ std::wstring SettingsDialog::GetMultilineText(int id) {
 }
 
 LRESULT SettingsDialog::OnTypoPromptReset(WORD, WORD, HWND, BOOL&) {
-  SetMultilineText(IDC_P1_TYPO_PROMPT, kLLMCorrectInstruction);
+  SetMultilineText(IDC_P7_TYPO_PROMPT, kLLMCorrectInstruction);
   return 0;
 }
 
@@ -1111,10 +1113,10 @@ bool SettingsDialog::SaveLLMSettings() {
   }
   rime->config_set_string(&llm, "prompt", wtou8(LLMTrim(prefix)).c_str());
   rime->config_clear(&llm, "llamacpp/prompt_prefix");
-  rime->config_set_bool(&llm, "typo/rime", IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED);
-  rime->config_set_bool(&llm, "typo/llm", IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED);
+  rime->config_set_bool(&llm, "typo/rime", IsDlgButtonChecked(IDC_P7_TYPO_RIME) == BST_CHECKED);
+  rime->config_set_bool(&llm, "typo/llm", IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED);
   // 和預設相同（或清空）就不存，之後改了預設指令也會跟著更新
-  const std::wstring typo_prompt = GetMultilineText(IDC_P1_TYPO_PROMPT);
+  const std::wstring typo_prompt = GetMultilineText(IDC_P7_TYPO_PROMPT);
   rime->config_set_string(
       &llm, "typo/prompt",
       typo_prompt == LLMTrim(kLLMCorrectInstruction) ? "" : wtou8(typo_prompt).c_str());
@@ -1287,7 +1289,7 @@ bool SettingsDialog::Save() {
     rime_boost_loaded_ = rime_boost;
   }
   // Rime 容錯：開關有變才改方案
-  const bool typo_rime = IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED;
+  const bool typo_rime = IsDlgButtonChecked(IDC_P7_TYPO_RIME) == BST_CHECKED;
   if (typo_modified_ && typo_rime != typo_rime_loaded_) {
     std::wstring typo_error;
     if (!ApplyTypoCorrection(typo_rime, &typo_error))
@@ -1667,7 +1669,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   rime->config_set_bool(llm, "personal/refine/disable_thinking", refine >= 0 && r.no_think);
   rime->config_set_int(llm, "personal/refine/think_tokens", r.think_tokens);
   // 注音校正
-  const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+  const int typo = ComboProfile(IDC_P7_TYPO_PROFILE);
   const ModelProfile& c = typo >= 0 ? profiles_[typo] : none;
   set("typo/profile", typo >= 0 ? u8tow(key_of(typo)) : L"");
   set("typo/type", typo < 0 ? L"" : c.remote ? L"openai" : L"llamacpp");
@@ -1699,10 +1701,10 @@ bool SettingsDialog::ValidateProfiles() {
     SetStatus(L"請選擇預測使用的模型（可在「語言模型」頁新增）。");
     return false;
   }
-  const bool typo_llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
-  const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+  const bool typo_llm = IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED;
+  const int typo = ComboProfile(IDC_P7_TYPO_PROFILE);
   if (typo_llm && typo < 0) {
-    GoToPage(kPageSchemas);
+    GoToPage(kPageTypo);
     SetStatus(L"請選擇注音校正使用的模型（可在「語言模型」頁新增）。");
     return false;
   }
@@ -1808,7 +1810,7 @@ void SettingsDialog::RefreshProfileCombos(int predict, int refine, int typo) {
   if (refine == -2)
     refine = ComboProfile(IDC_P4_PROFILE);
   if (typo == -2)
-    typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+    typo = ComboProfile(IDC_P7_TYPO_PROFILE);
   predict_profile_.ResetContent();
   refine_profile_.ResetContent();
   typo_profile_.ResetContent();
@@ -1832,8 +1834,8 @@ void SettingsDialog::UpdateProfileUsage() {
       uses.push_back(L"智慧預測");
     if (ComboProfile(IDC_P4_PROFILE) == profile_sel_)
       uses.push_back(L"個人詞庫精煉");
-    if (IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED &&
-        ComboProfile(IDC_P1_TYPO_PROFILE) == profile_sel_)
+    if (IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED &&
+        ComboProfile(IDC_P7_TYPO_PROFILE) == profile_sel_)
       uses.push_back(L"注音校正");
     if (uses.empty()) {
       text = L"目前沒有被使用。可在「智慧預測」、「個人詞庫」或「輸入方案」頁選用。";
@@ -1884,7 +1886,7 @@ LRESULT SettingsDialog::OnProfileDelete(WORD, WORD, HWND, BOOL&) {
   CommitProfileEditor();
   const int index = profile_sel_;
   int predict = ComboProfile(IDC_P3_PROFILE), refine = ComboProfile(IDC_P4_PROFILE),
-      typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+      typo = ComboProfile(IDC_P7_TYPO_PROFILE);
   std::wstring message = L"確定要刪除「" + profiles_[index].name + L"」嗎？";
   if (predict == index || refine == index || typo == index)
     message += L"\n\n這組設定正在使用中，刪除後請另外選擇模型。";
