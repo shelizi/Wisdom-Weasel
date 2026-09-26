@@ -749,8 +749,35 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
     }
   }
 
+  // 注音组字中按 Backspace：光标前的音节已打声调（成字）就整个字删掉，还在拼的才一次删一键（像新注音）
+  size_t backspaces = 1;
+  if (keyEvent.keycode == ibus::Keycode::BackSpace &&
+      !(keyEvent.mask & (ibus::Modifier::RELEASE_MASK | ibus::Modifier::CONTROL_MASK |
+                         ibus::Modifier::MOD1_MASK | ibus::Modifier::SUPER_MASK |
+                         ibus::Modifier::SHIFT_MASK))) {
+    RIME_STRUCT(RimeStatus, bs_status);
+    if (rime_api->get_status(session_id, &bs_status)) {
+      const bool zhuyin = bs_status.is_composing && !bs_status.is_ascii_mode &&
+                          bs_status.schema_id &&
+                          strncmp(bs_status.schema_id, "bopomofo", 8) == 0;
+      if (zhuyin) {
+        const ZhuyinSpeller sp = _LoadZhuyinSpeller(rime_api, bs_status.schema_id);
+        const char* input = rime_api->get_input(session_id);
+        const std::string before =
+            std::string(input ? input : "").substr(0, rime_api->get_caret_pos(session_id));
+        const auto syllables = zhuyin_preview::SplitSyllables(sp, before);
+        if (!syllables.empty() && syllables.back().size() > 1 &&
+            sp.finals.find(syllables.back().back()) != std::string::npos)
+          backspaces = syllables.back().size();
+      }
+      rime_api->free_status(&bs_status);
+    }
+  }
+
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
+  for (size_t i = 1; i < backspaces; ++i)
+    rime_api->process_key(session_id, keyEvent.keycode, expand_ibus_modifier(keyEvent.mask));
   if (punct_in_composition) {
     RIME_STRUCT(RimeCommit, punct_commit);
     if (rime_api->get_commit(session_id, &punct_commit)) {
