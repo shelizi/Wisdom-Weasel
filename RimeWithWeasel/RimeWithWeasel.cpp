@@ -292,6 +292,7 @@ void RimeWithWeaselHandler::Initialize() {
         std::transform(refine_model_type.begin(), refine_model_type.end(),
                        refine_model_type.begin(), ::tolower);
         refine.instruct = refine_model_type != "base";
+        refine.disable_thinking = read_string("llm/personal/refine/disable_thinking") == "true";
         // 舊設定（只有 api_url）視為 OpenAI 相容 API
         if (refine.type.empty() && !refine.api_url.empty() &&
             read_string("llm/personal/refine/profile").empty())
@@ -2608,6 +2609,7 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
   std::string prompt = read("llm/prompt");
   if (prompt.empty())
     prompt = read("llm/llamacpp/prompt_prefix");
+  const bool no_think = read("llm/typo/disable_thinking") == "true";
 
   // 和智慧预测是同一个模型：共用，避免同一个模型载入两次
   if (m_llm_provider && m_llm_provider->IsAvailable()) {
@@ -2631,6 +2633,7 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
     spec.model_path = model_path;
     spec.instruct = model_type != "base";
     spec.n_ctx = 2048;  // 前文 + 一句话就够
+    spec.disable_thinking = no_think;
     int value = 0;
     if (rime_api->config_get_int(config, "llm/llamacpp/n_gpu_layers", &value))
       spec.n_gpu_layers = value;
@@ -2645,7 +2648,7 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
     }
   } else if (type == "openai" && !api_url.empty()) {
     auto provider = std::make_unique<OpenAICompatibleProvider>();
-    provider->ConfigureDirect(api_url, api_key, model, u8tow(prompt));
+    provider->ConfigureDirect(api_url, api_key, model, u8tow(prompt), no_think);
     m_typo_owned = std::move(provider);
   } else {
     LOG(WARNING) << "Typo correction: no model selected (llm/typo/type)";

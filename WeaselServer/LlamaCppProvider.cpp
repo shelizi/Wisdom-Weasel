@@ -244,6 +244,13 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     }
   }
 
+  // 关闭思考（思考型 Instruct 模型）
+  {
+    Bool no_think = false;
+    m_disable_thinking =
+        rime_api->config_get_bool(&config, "llm/llamacpp/disable_thinking", &no_think) && no_think;
+  }
+
   // 提示词（Base 与 Instruct 共用）：llm/prompt；兼容旧的 llm/llamacpp/prompt_prefix
   {
     char prefix_buf[4096] = {0};
@@ -673,8 +680,20 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
       break;
     }
     response.append(buf, n);
-    if (stop_at_newline && response.find('\n') != std::string::npos)
-      break;
+    if (stop_at_newline) {
+      // 思考區塊裡的換行不算；結論從思考結束後第一個非空白字開始
+      size_t from = 0;
+      const size_t open = response.find("<think>");
+      if (open != std::string::npos) {
+        const size_t close = response.find("</think>", open);
+        from = close == std::string::npos ? std::string::npos : close + 8;
+      }
+      if (from != std::string::npos) {
+        from = response.find_first_not_of(" \t\r\n", from);
+        if (from != std::string::npos && response.find('\n', from) != std::string::npos)
+          break;
+      }
+    }
 
     if (g_dev_console && g_dev_console->IsEnabled()) {
       std::string piece(buf, n);
@@ -1057,6 +1076,7 @@ bool LlamaCppProvider::LoadModelDirect(const LLMLocalModelSpec& spec, double tem
   m_enabled = true;
   m_model_path = spec.model_path;
   m_instruct_model = spec.instruct;
+  m_disable_thinking = spec.disable_thinking;
   m_n_ctx = spec.n_ctx;
   m_n_gpu_layers = spec.n_gpu_layers;
   m_n_threads = spec.n_threads > 0 ? spec.n_threads : 4;
@@ -1090,7 +1110,13 @@ std::string LlamaCppProvider::ApplyChatTemplate(const std::string& system,
     buf.resize(n);
     n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());
   }
-  return n > 0 ? std::string(buf.data(), n) : std::string();
+  if (n <= 0)
+    return std::string();
+  std::string prompt(buf.data(), n);
+  // 關閉思考：和 Qwen3 等模型的 chat template 在 enable_thinking=false 時一樣，先給一段空的思考
+  if (m_disable_thinking)
+    prompt += "<think>\n\n</think>\n\n";
+  return prompt;
 }
 
 void LlamaCppProvider::DropSystemPromptCache() {
@@ -1111,7 +1137,7 @@ std::string LlamaCppProvider::Chat(const std::string& system, const std::string&
   DropSystemPromptCache();
   if (m_sampler)
     llama_sampler_reset((llama_sampler*)m_sampler);
-  return GenerateText(prompt, (size_t)max_tokens);
+  return wtou8(LLMStripThinking(u8tow(GenerateText(prompt, (size_t)max_tokens))));
 }
 
 std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
@@ -1145,7 +1171,7 @@ std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
   extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled())
     g_dev_console->WriteLine(L"[LLM] 整句校正 (llama.cpp): " + draft + L" → " + u8tow(output));
-  std::wstring result = u8tow(output);
+  std::wstring result = LLMStripThinking(u8tow(output));
   result = result.substr(0, result.find_first_of(L"\r\n"));
   while (!result.empty() && result.back() == L'�')
     result.pop_back();

@@ -40,10 +40,28 @@ void OpenAICompatibleProvider::CloseConnection() {
   m_cached_url.clear();
 }
 
+std::string LLMDisableThinkingJson(const std::string& api_url, const std::string& model) {
+  std::string url = api_url, name = model;
+  std::transform(url.begin(), url.end(), url.begin(), ::tolower);
+  std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+  if (url.find("openrouter.ai") != std::string::npos)
+    return "\"reasoning\":{\"enabled\":false}";
+  if (url.find(":11434") != std::string::npos || url.find("ollama") != std::string::npos)
+    return "\"think\":false";
+  if (url.find("api.openai.com") != std::string::npos) {
+    // 只有推理模型接受 reasoning_effort，其他模型送了會回 400
+    const bool reasoning = name.rfind("gpt-5", 0) == 0 ||
+                           (name.size() >= 2 && name[0] == 'o' && isdigit((unsigned char)name[1]));
+    return reasoning ? "\"reasoning_effort\":\"minimal\"" : "";
+  }
+  return "\"chat_template_kwargs\":{\"enable_thinking\":false}";
+}
+
 void OpenAICompatibleProvider::ConfigureDirect(const std::string& api_url,
                                                const std::string& api_key,
                                                const std::string& model,
-                                               const std::wstring& prompt) {
+                                               const std::wstring& prompt,
+                                               bool disable_thinking) {
   m_enabled = !api_url.empty();
   m_api_url = api_url;
   m_api_key = api_key;
@@ -57,6 +75,7 @@ void OpenAICompatibleProvider::ConfigureDirect(const std::string& api_url,
   m_seed = 0;
   m_extra_body_json.clear();
   m_prompt = prompt;
+  m_disable_thinking = disable_thinking;
   CloseConnection();
 }
 
@@ -289,6 +308,13 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
         std::wstring(m_has_seed ? std::to_wstring(m_seed) : L"(未设置)"));
   }
 
+  // 关闭思考（思考型模型）
+  {
+    Bool no_think = false;
+    m_disable_thinking =
+        rime_api->config_get_bool(&config, "llm/openai/disable_thinking", &no_think) && no_think;
+  }
+
   // 任意 JSON 透传（必须是 JSON 对象字符串，如 {"stream":false,"user":"abc"}）
   if (rime_api->config_get_string(&config, "llm/openai/extra_body_json", buffer,
                                   BUF_SIZE)) {
@@ -399,6 +425,11 @@ std::string OpenAICompatibleProvider::BuildChatBody(const std::wstring& system,
   if (m_has_seed) {
     json << ",\"seed\":" << m_seed;
   }
+  if (m_disable_thinking) {
+    const std::string no_think = LLMDisableThinkingJson(m_api_url, m_model);
+    if (!no_think.empty())
+      json << "," << no_think;
+  }
 
   // 透传额外 JSON（合并对象内部字段到根对象）
   if (!m_extra_body_json.empty()) {
@@ -442,10 +473,6 @@ std::wstring OpenAICompatibleProvider::CorrectSentence(const std::wstring& conte
     g_dev_console->WriteLine(L"[LLM] 整句校正 (OpenAI): " + draft + L" → " + result);
   if (!found)
     return L"";
-  // 推理模型可能先輸出 <think>…</think>
-  const size_t think_end = result.rfind(L"</think>");
-  if (think_end != std::wstring::npos)
-    result = result.substr(think_end + 8);
   const size_t b = result.find_first_not_of(L" \t\r\n");
   if (b == std::wstring::npos)
     return L"";
@@ -694,7 +721,8 @@ std::wstring LLMExtractChatContent(const std::string& json_response, bool* found
   }
   if (found_out)
     *found_out = found;
-  return content_w;
+  // 思考型模型把思考寫在 content 的 <think>…</think> 裡：只留結論
+  return LLMStripThinking(content_w);
 }
 
 // 單次 POST（每次開新連線；給不常呼叫、可等較久的用途，例如個人詞庫精煉）

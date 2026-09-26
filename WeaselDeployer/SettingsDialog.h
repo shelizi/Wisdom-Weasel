@@ -50,6 +50,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
     std::wstring api_url;              // OpenAI 相容 API
     std::wstring api_key;
     std::wstring model;
+    bool no_think = false;             // 關閉思考（思考型模型）
   };
 
  protected:
@@ -109,6 +110,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_HANDLER(IDC_P5_API_URL, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_API_KEY, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_API_MODEL, EN_CHANGE, OnProfileEdit)
+  COMMAND_ID_HANDLER(IDC_P5_NO_THINK, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_TYPE, CBN_SELCHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_MODEL, CBN_SELCHANGE, OnModelChange)
   COMMAND_ID_HANDLER(IDC_P5_BROWSE, OnBrowseModel)

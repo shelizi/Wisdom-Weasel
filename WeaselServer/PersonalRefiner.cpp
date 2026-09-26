@@ -452,6 +452,7 @@ std::wstring PersonalRefiner::RefineWithLLM(
     spec.instruct = config.instruct;
     spec.n_gpu_layers = config.n_gpu_layers;
     spec.n_threads = config.n_threads;
+    spec.disable_thinking = config.disable_thinking;
     std::wstring error;
     Log(L"載入本機精煉模型：" + u8tow(config.model_path));
     if (!session.Open(spec, &error)) {
@@ -563,7 +564,13 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
        << "\"messages\":["
        << "{\"role\":\"system\",\"content\":\"" << LLMJsonEscape(wtou8(kSystemPrompt)) << "\"},"
        << "{\"role\":\"user\",\"content\":\"" << LLMJsonEscape(wtou8(user)) << "\"}"
-       << "],\"temperature\":0.2,\"max_tokens\":2048,\"stream\":false}";
+       << "],\"temperature\":0.2,\"max_tokens\":2048,\"stream\":false";
+  if (config.disable_thinking) {
+    const std::string no_think = LLMDisableThinkingJson(config.api_url, config.model);
+    if (!no_think.empty())
+      body << "," << no_think;
+  }
+  body << "}";
 
   Log(L"送出精煉請求：" + std::to_wstring(words) + L" 個詞、" + std::to_wstring(examples) +
       L" 句例句 → " + u8tow(config.api_url));

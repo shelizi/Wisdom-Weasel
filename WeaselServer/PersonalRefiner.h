@@ -31,6 +31,7 @@ class PersonalRefiner {
     bool instruct = true;
     int n_gpu_layers = 0;
     int n_threads = 4;
+    bool disable_thinking = false;  // 思考型模型：關閉思考
     // 讓常打的詞影響注音選字排序：匯出 Rime 詞典（terra_pinyin.personal），有變動就重新部署
     bool rime_boost = false;
     std::wstring rime_dict_path;   // 使用者資料夾\terra_pinyin.personal.dict.yaml

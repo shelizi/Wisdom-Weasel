@@ -104,6 +104,35 @@ inline std::wstring LLMCorrectBasePrompt(const std::wstring& prompt, const std::
          L"前文：" + context + L"\n注音：" + zhuyin + L"\n初稿：" + draft + L"\n校正：";
 }
 
+// ---------------------------------------------------------------------------
+// 思考（推理）模型
+
+// 去掉思考內容，只留結論：移除 <think>…</think>（也認 <thinking>）；
+// 只有結束標記（開頭標記在提示裡）時取其後；思考還沒寫完就被截斷時回傳空字串
+inline std::wstring LLMStripThinking(const std::wstring& text) {
+  std::wstring s = text;
+  static const wchar_t* const kTags[][2] = {{L"<think>", L"</think>"}, {L"<thinking>", L"</thinking>"}};
+  for (const auto& tags : kTags) {
+    const std::wstring open = tags[0], close = tags[1];
+    const size_t last_close = s.rfind(close);
+    if (last_close != std::wstring::npos) {
+      s = s.substr(last_close + close.size());
+    } else {
+      const size_t o = s.find(open);
+      if (o != std::wstring::npos)
+        s = s.substr(0, o);
+    }
+  }
+  const wchar_t* ws = L" \t\r\n";
+  const size_t b = s.find_first_not_of(ws);
+  return b == std::wstring::npos ? std::wstring() : s.substr(b);
+}
+
+// OpenAI 相容 API 關閉思考的參數（不含前後逗號）。各家寫法不同，依網址判斷：
+// OpenRouter 用 reasoning.enabled；Ollama 用 think；OpenAI 的推理模型用 reasoning_effort；
+// 其餘（llama-server、vLLM、LM Studio 等）用 chat_template_kwargs.enable_thinking
+std::string LLMDisableThinkingJson(const std::string& api_url, const std::string& model);
+
 // 共用工具（LLMProvider.cpp）
 std::string LLMJsonEscape(const std::string& s);
 // 從 chat/completions 回應取出第一個 message content（found 表示是否找到）
@@ -121,6 +150,7 @@ struct LLMLocalModelSpec {
   int n_ctx = 8192;
   int n_gpu_layers = 0;
   int n_threads = 4;
+  bool disable_thinking = false;  // 關閉思考：在 chat template 的生成提示後補上空的思考區塊
 };
 bool LLMLocalChat(const LLMLocalModelSpec& spec, const std::string& system_utf8,
                   const std::string& user_utf8, int max_tokens, std::string* output,
@@ -143,7 +173,8 @@ class OpenAICompatibleProvider : public LLMProvider {
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
   // 不經 rime 設定（也不看 llm/enabled），直接指定 API（注音校正用）
   void ConfigureDirect(const std::string& api_url, const std::string& api_key,
-                       const std::string& model, const std::wstring& prompt);
+                       const std::string& model, const std::wstring& prompt,
+                       bool disable_thinking);
 
  private:
   // chat/completions 的請求內容（system + user 兩則訊息，含 extra_body_json）
@@ -170,6 +201,7 @@ class OpenAICompatibleProvider : public LLMProvider {
   int m_seed;
   std::string m_extra_body_json;  // 额外透传 JSON（对象字符串）
   std::wstring m_prompt;          // llm/prompt：与 llama.cpp 共用的提示词
+  bool m_disable_thinking = false;  // llm/openai/disable_thinking：请求时关闭思考
   void* m_hSession;       // HINTERNET，复用的 WinHTTP 会话
   void* m_hConnect;       // HINTERNET，复用的连接
   std::string m_cached_url;  // 当前连接对应的 URL，变化时重建连接
@@ -234,6 +266,7 @@ class LlamaCppProvider : public LLMProvider {
   int m_n_threads;                // 线程数
   bool m_instruct_model;          // true=Instruct 使用指令 prompt，false=Base 仅用 context 补全
   std::wstring m_prompt_prefix;   // llm/prompt：Base 接在前文前的引导文字，Instruct 放在 system 指令前
+  bool m_disable_thinking = false;  // llm/llamacpp/disable_thinking：chat template 后补空的思考区块
 
   // llama.cpp 对象（使用前向声明避免包含头文件）
   void* m_model;                  // llama_model*

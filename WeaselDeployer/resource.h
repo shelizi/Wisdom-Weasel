@@ -168,6 +168,7 @@
 #define IDC_P5_DOWNLOAD                 3533
 #define IDC_P5_FILE_STATUS              3534
 #define IDC_P5_API_TEST                 3535
+#define IDC_P5_NO_THINK                 3536
 #define IDC_P6_WORDS_LABEL              3601
 #define IDC_P6_FILTER_LABEL             3602
 #define IDC_P6_FILTER                   3603

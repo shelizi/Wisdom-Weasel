@@ -1498,6 +1498,7 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     p.api_url = get(base + "api_url");
     p.api_key = get(base + "api_key");
     p.model = get(base + "model");
+    p.no_think = get(base + "disable_thinking") == L"true";
     index_of[u8tow(key)] = (int)profiles_.size();
     profiles_.push_back(p);
   }
@@ -1588,6 +1589,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
     set(base + "api_url", p.api_url);
     set(base + "api_key", p.api_key);
     set(base + "model", p.model);
+    rime->config_set_bool(llm, (base + "disable_thinking").c_str(), p.no_think);
   }
   // 預測：展開到輸入法讀取的欄位
   const int predict = ComboProfile(IDC_P3_PROFILE);
@@ -1599,9 +1601,11 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
       set("openai/api_url", p.api_url);
       set("openai/api_key", p.api_key);
       set("openai/model", p.model);
+      rime->config_set_bool(llm, "openai/disable_thinking", p.no_think);
     } else {
       set("llamacpp/model_path", yaml_path(p.model_path));
       set("llamacpp/model_type", p.model_type);
+      rime->config_set_bool(llm, "llamacpp/disable_thinking", p.no_think);
     }
   }
   // 精煉
@@ -1616,6 +1620,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   set("personal/refine/api_url", refine >= 0 && r.remote ? r.api_url : L"");
   set("personal/refine/api_key", refine >= 0 && r.remote ? r.api_key : L"");
   set("personal/refine/model", refine >= 0 && r.remote ? r.model : L"");
+  rime->config_set_bool(llm, "personal/refine/disable_thinking", refine >= 0 && r.no_think);
   // 注音校正
   const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   const ModelProfile& c = typo >= 0 ? profiles_[typo] : none;
@@ -1626,6 +1631,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   set("typo/api_url", typo >= 0 && c.remote ? c.api_url : L"");
   set("typo/api_key", typo >= 0 && c.remote ? c.api_key : L"");
   set("typo/model", typo >= 0 && c.remote ? c.model : L"");
+  rime->config_set_bool(llm, "typo/disable_thinking", typo >= 0 && c.no_think);
 }
 
 bool SettingsDialog::ValidateProfiles() {
@@ -1691,8 +1697,10 @@ void SettingsDialog::SelectProfile(int index) {
   GetDlgItem(IDC_P5_API_URL).SetWindowTextW(p.api_url.c_str());
   GetDlgItem(IDC_P5_API_KEY).SetWindowTextW(p.api_key.c_str());
   GetDlgItem(IDC_P5_API_MODEL).SetWindowTextW(p.model.c_str());
+  CheckDlgButton(IDC_P5_NO_THINK, p.no_think ? BST_CHECKED : BST_UNCHECKED);
   for (int id = IDC_P5_NAME_LABEL; id <= IDC_P5_REMOTE_HINT; ++id)
     GetDlgItem(id).EnableWindow(has);
+  GetDlgItem(IDC_P5_NO_THINK).EnableWindow(has);
   GetDlgItem(IDC_P5_COPY).EnableWindow(has);
   GetDlgItem(IDC_P5_DELETE).EnableWindow(has);
   GetDlgItem(IDC_P5_API_TEST).EnableWindow(has && !api_busy_);
@@ -1724,6 +1732,7 @@ void SettingsDialog::CommitProfileEditor() {
   p.api_url = get_text(IDC_P5_API_URL);
   p.api_key = get_text(IDC_P5_API_KEY);
   p.model = get_text(IDC_P5_API_MODEL);
+  p.no_think = IsDlgButtonChecked(IDC_P5_NO_THINK) == BST_CHECKED;
   if (ProfileLabel(p) != old_label) {
     profile_list_.DeleteString(profile_sel_);
     profile_list_.InsertString(profile_sel_, ProfileLabel(p).c_str());
