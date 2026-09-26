@@ -3046,6 +3046,15 @@ void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD
       preview = u8tow(ctx.menu.candidates[0].text);
     rime_api->free_context(&ctx);
   }
+  // 注音：往回选字时转换结果后面会接着还没转换的按键，只把光标前转好的中文当前文
+  {
+    char schema_id[256] = {0};
+    rime_api->get_current_schema(to_session_id(ipc_id), schema_id, sizeof(schema_id));
+    if (strncmp(schema_id, "bopomofo", 8) == 0) {
+      while (!preview.empty() && preview.back() < 0x80)
+        preview.pop_back();
+    }
+  }
   if (preview.empty()) {
     _CancelLLMCompletion();
     return;
@@ -3082,9 +3091,15 @@ std::wstring RimeWithWeaselHandler::_ComposingZhuyin(WeaselSessionId ipc_id) {
     zhuyin_schema = status.schema_id && strncmp(status.schema_id, "bopomofo", 8) == 0;
     rime_api->free_status(&status);
   }
-  const char* input = zhuyin_schema ? rime_api->get_input(session_id) : nullptr;
-  if (!input || !*input)
+  const char* raw = zhuyin_schema ? rime_api->get_input(session_id) : nullptr;
+  if (!raw || !*raw)
     return L"";
+  // 往回选字时只取光标前的部分（与送给模型的前文一致）；光标在最前面时 Rime 转换整段
+  std::string before(raw);
+  const size_t caret = rime_api->get_caret_pos(session_id);
+  if (caret > 0 && caret < before.size())
+    before.resize(caret);
+  const char* input = before.c_str();
   // 注音方案（大千式）的按键 → 注音符号；声调之后断开，方便模型分辨音节
   static const char kKeys[] = "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-";
   static const wchar_t kSymbols[] = L"ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦ";
@@ -3133,6 +3148,27 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] 选择LLM候选词: " + std::to_wstring(llm_index + 1) +
                              L". " + selected);
+  }
+
+  // 往回选字（光标不在最后）：候选取代光标前的部分，留在组字区；光标后的按键留给 Rime 继续编辑
+  {
+    const RimeSessionId session_id = to_session_id(ipc_id);
+    const char* raw = rime_api->get_input(session_id);
+    const std::string input = raw ? raw : "";
+    const size_t caret = rime_api->get_caret_pos(session_id);
+    char schema_id[256] = {0};
+    rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
+    if (strncmp(schema_id, "bopomofo", 8) == 0 && caret > 0 && caret < input.size()) {
+      SessionStatus& ss = get_session_status(ipc_id);
+      ss.mixed_text += selected;
+      rime_api->clear_composition(session_id);
+      rime_api->set_input(session_id, input.substr(caret).c_str());
+      m_llm_completion_active = false;
+      m_llm_prediction_mode = false;
+      _Respond(ipc_id, eat);
+      _UpdateUI(ipc_id);
+      return true;
+    }
   }
 
   // 补全候选已包含 Rime 的转换结果，丢弃 composition 后整段提交
