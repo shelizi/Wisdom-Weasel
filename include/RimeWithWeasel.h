@@ -65,6 +65,10 @@ struct SessionStatus {
   bool mixed_english = false;  // 正在混打的英文段
   std::wstring mixed_commit;   // 待送出的混打內容
   bool mixed_active() const { return mixed_english || !mixed_text.empty(); }
+  // 注音逐字選字（像新注音）：←/→ 框住的字（音節序號），-1 表示沒有框選
+  int focus = -1;
+  std::string focus_input;  // 框選時的輸入與游標，改變了就取消框選
+  size_t focus_caret = 0;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
@@ -125,6 +129,9 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool _HandleMixedInput(const weasel::KeyEvent& keyEvent, WeaselSessionId ipc_id, EatLine eat);
   // 送出目前的組字並取回轉換好的文字（不交給應用程式）
   std::wstring _TakeComposition(RimeSessionId session_id);
+  // 注音逐字選字：←/→/Home/End 移動框選
+  bool _HandleZhuyinFocus(const weasel::KeyEvent& keyEvent, WeaselSessionId ipc_id, EatLine eat);
+  bool _FocusSyllable(WeaselSessionId ipc_id, int index);
   void _ReadClientInfo(WeaselSessionId ipc_id, LPWSTR buffer);
   void _GetCandidateInfo(weasel::CandidateInfo& cinfo, RimeContext& ctx);
   void _GetStatus(weasel::Status& stat,

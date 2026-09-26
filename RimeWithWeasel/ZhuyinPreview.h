@@ -146,7 +146,8 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
                                         int highlighted,
                                         const ZhuyinSpeller& sp,
                                         std::string& cache_input,
-                                        std::vector<std::wstring>& cache_units) {
+                                        std::vector<std::wstring>& cache_units,
+                                        bool focused = false) {
   using namespace zhuyin_preview;
   ZhuyinPreview out;
   std::wstring head = u8tow(preview);
@@ -182,6 +183,11 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
     out.text = Join(units);
     out.sel_start = out.sel_end = out.cursor =
         at_start ? 0 : (int)out.text.size();
+    // 框住的是最後一個字（游標仍在句尾）：一樣標示出來
+    const std::wstring cw = u8tow(cand);
+    if (focused && !cw.empty() && out.text.size() >= cw.size() &&
+        out.text.compare(out.text.size() - cw.size(), cw.size(), cw) == 0)
+      out.sel_start = (int)(out.text.size() - cw.size());
     return out;
   }
 
@@ -217,7 +223,7 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
   out.cursor = (int)(head.size() + rem_text.size());
   out.sel_start = out.sel_end = out.cursor;
   const std::wstring cw = u8tow(cand);
-  const bool choosing = caret < input.size() || highlighted > 0;
+  const bool choosing = caret < input.size() || highlighted > 0 || focused;
   if (choosing && !cw.empty() && head.size() >= cw.size() &&
       head.compare(head.size() - cw.size(), cw.size(), cw) == 0) {
     out.sel_start = (int)(head.size() - cw.size());

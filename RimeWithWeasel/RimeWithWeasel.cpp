@@ -557,6 +557,8 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   // 中英混打（Shift）
   if (_HandleMixedInput(keyEvent, ipc_id, eat))
     return TRUE;
+  if (_HandleZhuyinFocus(keyEvent, ipc_id, eat))
+    return TRUE;
 
   // 处理·键（反引号键）：触发LLM预测（仅在composing状态下）或清空上下文（双击）
   if (!(keyEvent.mask & ibus::Modifier::RELEASE_MASK) &&
@@ -961,6 +963,138 @@ bool RimeWithWeaselHandler::_HandleMixedInput(const weasel::KeyEvent& keyEvent,
     }
   }
   return false;
+}
+
+// 框住第 index 個音節：前面的字照目前顯示的样子確定下來，Rime 的候選就只針對這個字；
+// 反白停在目前顯示的字。靠的是最後一次整句轉換的快取（每個音節一個字）
+bool RimeWithWeaselHandler::_FocusSyllable(WeaselSessionId ipc_id, int index) {
+  SessionStatus& ss = get_session_status(ipc_id);
+  const RimeSessionId session_id = ss.session_id;
+  char schema_id[256] = {0};
+  rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
+  const ZhuyinSpeller sp = _LoadZhuyinSpeller(rime_api, schema_id);
+  const char* raw = rime_api->get_input(session_id);
+  const std::string input = raw ? raw : "";
+  const auto syllables = zhuyin_preview::SplitSyllables(sp, input);
+  const auto& units = ss.preview_units;
+  if (index < 0 || index >= (int)syllables.size() || units.size() != syllables.size() ||
+      ss.preview_input != input)
+    return false;
+  size_t end = 0;
+  for (int i = 0; i <= index; ++i)
+    end += syllables[i].size();
+
+  // 找候選清單裡符合條件的候選序號
+  auto find_candidate = [&](auto&& match) {
+    int found = -1, idx = 0;
+    RimeCandidateListIterator it = {0};
+    if (rime_api->candidate_list_begin(session_id, &it)) {
+      while (rime_api->candidate_list_next(&it) && idx < 300) {
+        if (it.candidate.text && match(u8tow(it.candidate.text), idx))
+          found = idx;
+        ++idx;
+      }
+      rime_api->candidate_list_end(&it);
+    }
+    return found;
+  };
+
+  const std::vector<std::wstring> units_copy = units;  // set_input 之後快取不會變，保險起見複製
+  rime_api->clear_composition(session_id);
+  rime_api->set_input(session_id, input.c_str());
+  rime_api->set_caret_pos(session_id, end);
+  int pos = 0;
+  while (pos < index) {
+    int best_len = 0;
+    const int best = find_candidate([&](const std::wstring& text, int) {
+      const int len = (int)zhuyin_preview::SplitChars(text).size();
+      if (len > best_len && len <= index - pos &&
+          text == zhuyin_preview::Join(units_copy, pos, pos + len)) {
+        best_len = len;
+        return true;
+      }
+      return false;
+    });
+    if (best < 0 || !rime_api->select_candidate(session_id, best)) {
+      // 對不上：把整句恢復原狀
+      rime_api->clear_composition(session_id);
+      rime_api->set_input(session_id, input.c_str());
+      ss.focus = -1;
+      return false;
+    }
+    pos += best_len;
+  }
+  bool first = true;
+  const int shown = find_candidate([&](const std::wstring& text, int) {
+    const bool hit = first && text == units_copy[index];
+    if (hit)
+      first = false;
+    return hit;
+  });
+  if (shown > 0)
+    rime_api->highlight_candidate(session_id, shown);
+  ss.focus = index;
+  ss.focus_input = input;
+  ss.focus_caret = end;
+  return true;
+}
+
+bool RimeWithWeaselHandler::_HandleZhuyinFocus(const weasel::KeyEvent& keyEvent,
+                                               WeaselSessionId ipc_id,
+                                               EatLine eat) {
+  const UINT key = keyEvent.keycode;
+  const bool nav = key == ibus::Keycode::Left || key == ibus::Keycode::Right ||
+                   key == ibus::Keycode::Home || key == ibus::Keycode::End;
+  if (!nav || (keyEvent.mask & (ibus::Modifier::CONTROL_MASK | ibus::Modifier::MOD1_MASK |
+                                ibus::Modifier::SUPER_MASK | ibus::Modifier::SHIFT_MASK)))
+    return false;
+  SessionStatus& ss = get_session_status(ipc_id);
+  const RimeSessionId session_id = ss.session_id;
+  RIME_STRUCT(RimeStatus, status);
+  bool zhuyin = false;
+  if (rime_api->get_status(session_id, &status)) {
+    zhuyin = status.is_composing && !status.is_ascii_mode && status.schema_id &&
+             strncmp(status.schema_id, "bopomofo", 8) == 0;
+    rime_api->free_status(&status);
+  }
+  if (!zhuyin)
+    return false;
+  auto respond = [&]() {
+    _Respond(ipc_id, eat);
+    _UpdateUI(ipc_id);
+    m_active_session = ipc_id;
+    return true;
+  };
+  if (keyEvent.mask & ibus::Modifier::RELEASE_MASK)
+    return ss.focus >= 0 && respond();
+
+  const char* raw = rime_api->get_input(session_id);
+  const std::string input = raw ? raw : "";
+  char schema_id[256] = {0};
+  rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
+  const int count =
+      (int)zhuyin_preview::SplitSyllables(_LoadZhuyinSpeller(rime_api, schema_id), input).size();
+  // 回到句尾：取消框選，接著打字
+  auto unfocus = [&]() {
+    rime_api->set_caret_pos(session_id, input.size());
+    ss.focus = -1;
+    return respond();
+  };
+  int target;
+  if (key == ibus::Keycode::Left) {
+    target = ss.focus < 0 ? count - 1 : (std::max)(0, ss.focus - 1);
+  } else if (key == ibus::Keycode::Home) {
+    target = 0;
+  } else if (ss.focus < 0) {
+    return false;  // 本來就在句尾
+  } else if (key == ibus::Keycode::End || ss.focus + 1 >= count) {
+    return unfocus();
+  } else {
+    target = ss.focus + 1;
+  }
+  if (!_FocusSyllable(ipc_id, target))
+    return false;  // 對不上（例如省略聲調的連打），交回 Rime 原本的游標移動
+  return respond();
 }
 
 void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id) {
@@ -1780,6 +1914,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   if (!is_composing) {
     session_status.preview_input.clear();
     session_status.preview_units.clear();
+    session_status.focus = -1;
   }
   if (rime_api->get_context(session_id, &ctx)) {
     if (is_composing) {
@@ -1796,12 +1931,19 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
             const char* cand = hl >= 0 && hl < ctx.menu.num_candidates
                                    ? ctx.menu.candidates[hl].text
                                    : nullptr;
+            // 逐字選字：選好了（候選沒了、游標跑回句尾）或輸入改變，就取消框選
+            const size_t caret_pos = rime_api->get_caret_pos(session_id);
+            if (session_status.focus >= 0 &&
+                (ctx.menu.num_candidates == 0 || session_status.focus_input != (input ? input : "") ||
+                 session_status.focus_caret != caret_pos))
+              session_status.focus = -1;
             ZhuyinPreview pv = BuildZhuyinPreview(
                 ctx.commit_text_preview,
                 ctx.composition.preedit ? ctx.composition.preedit : "",
-                input ? input : "", rime_api->get_caret_pos(session_id),
+                input ? input : "", caret_pos,
                 cand ? cand : "", hl, _LoadZhuyinSpeller(rime_api, schema_id),
-                session_status.preview_input, session_status.preview_units);
+                session_status.preview_input, session_status.preview_units,
+                session_status.focus >= 0);
             // without a chosen word the whole preedit is the selection
             if (pv.sel_start == pv.sel_end) {
               pv.sel_start = 0;
