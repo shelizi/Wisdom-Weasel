@@ -50,6 +50,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
     std::wstring api_url;              // OpenAI 相容 API
     std::wstring api_key;
     std::wstring model;
+    bool no_think = false;             // 關閉思考（思考型模型）
+    int think_tokens = 2048;           // 開啟思考時的思考長度上限（0 = 不限制）
   };
 
  protected:
@@ -91,6 +93,9 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_APPLY, OnApply)
   COMMAND_ID_HANDLER(IDC_P1_GET_SCHEMATA, OnGetSchemata)
   NOTIFY_HANDLER(IDC_P1_SCHEMA_LIST, LVN_ITEMCHANGED, OnSchemaListItemChanged)
+  COMMAND_ID_HANDLER(IDC_P1_TYPO_RIME, OnTypoChange)
+  COMMAND_ID_HANDLER(IDC_P1_TYPO_LLM, OnTypoChange)
+  COMMAND_HANDLER(IDC_P1_TYPO_PROFILE, CBN_SELCHANGE, OnProfileChoice)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
   COMMAND_ID_HANDLER(IDC_P3_ENABLED, OnLLMEnabledClick)
@@ -108,6 +113,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_HANDLER(IDC_P5_API_URL, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_API_KEY, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_API_MODEL, EN_CHANGE, OnProfileEdit)
+  COMMAND_ID_HANDLER(IDC_P5_NO_THINK, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_THINK_TOKENS, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_TYPE, CBN_SELCHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_MODEL, CBN_SELCHANGE, OnModelChange)
   COMMAND_ID_HANDLER(IDC_P5_BROWSE, OnBrowseModel)
@@ -184,6 +191,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnApply(WORD, WORD, HWND, BOOL&);
   LRESULT OnGetSchemata(WORD, WORD, HWND, BOOL&);
   LRESULT OnSchemaListItemChanged(int, LPNMHDR, BOOL&);
+  LRESULT OnTypoChange(WORD, WORD, HWND, BOOL&);
   LRESULT OnColorSchemeChange(WORD, WORD, HWND, BOOL&);
   LRESULT OnSelectFont(WORD, WORD, HWND, BOOL&);
   LRESULT OnLLMEnabledClick(WORD, WORD, HWND, BOOL&);
@@ -231,6 +239,10 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 輸入方案
   void PopulateSchemas();
   void ShowSchemaDetails(RimeSchemaInfo* info);
+  // 注音容錯：Rime 容錯（llm/typo/rime）與 LLM 整句校正（llm/typo/llm）各自開關
+  void UpdateTypoState();
+  // Rime 容錯：在注音方案的 custom.yaml 打開 translator/enable_correction
+  bool ApplyTypoCorrection(bool enable, std::wstring* error);
   // 外觀
   void PopulateColorSchemes();
   void PreviewColorScheme(int index);
@@ -248,9 +260,10 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool ValidateProfiles();
   void PopulateProfileList();
   void SelectProfile(int index);    // 顯示到右側編輯區
+  void UpdateThinkState();          // 關閉思考時停用「思考長度上限」
   void CommitProfileEditor();       // 編輯區 → profiles_
   // 預測與精煉的下拉選單；參數為要選的 profiles_ 索引（-1 = 不選，-2 = 維持目前的選擇）
-  void RefreshProfileCombos(int predict = -2, int refine = -2);
+  void RefreshProfileCombos(int predict = -2, int refine = -2, int typo = -2);
   void UpdateProfileUsage();
   // 模型檔案（使用者資料夾的 models）
   void PopulateModelFiles(const std::wstring& select = L"");
@@ -297,6 +310,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool llm_modified_ = false;
   bool personal_modified_ = false;
   bool rime_boost_loaded_ = false;  // 載入時的「注音排序」設定（變更時才改方案）
+  bool typo_modified_ = false;
+  bool typo_rime_loaded_ = false;   // 載入時的 Rime 容錯設定（有變才改方案）
   int start_page_ = 0;
 
   // 語言模型
@@ -317,6 +332,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   int api_profile_ = -1;        // 測試的是哪一組
   CListBox profile_list_;
   CComboBox predict_profile_;
+  CComboBox typo_profile_;  // 注音校正使用的模型
   CComboBox refine_profile_;
 
   // 詞庫管理

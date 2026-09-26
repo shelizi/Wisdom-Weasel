@@ -84,6 +84,11 @@
 #define IDC_P1_HOTKEY_LABEL             3104
 #define IDC_P1_HOTKEYS                  3105
 #define IDC_P1_GET_SCHEMATA             3106
+#define IDC_P1_TYPO_LABEL               3107
+#define IDC_P1_TYPO_RIME                3108
+#define IDC_P1_TYPO_LLM                 3109
+#define IDC_P1_TYPO_PROFILE_LABEL       3110
+#define IDC_P1_TYPO_PROFILE             3111
 #define IDC_P2_SCHEME_LABEL             3201
 #define IDC_P2_COLOR_SCHEME             3202
 #define IDC_P2_PREVIEW                  3203
@@ -163,6 +168,10 @@
 #define IDC_P5_DOWNLOAD                 3533
 #define IDC_P5_FILE_STATUS              3534
 #define IDC_P5_API_TEST                 3535
+#define IDC_P5_NO_THINK                 3536
+#define IDC_P5_THINK_LABEL              3537
+#define IDC_P5_THINK_TOKENS             3538
+#define IDC_P5_THINK_HINT               3539
 #define IDC_P6_WORDS_LABEL              3601
 #define IDC_P6_FILTER_LABEL             3602
 #define IDC_P6_FILTER                   3603

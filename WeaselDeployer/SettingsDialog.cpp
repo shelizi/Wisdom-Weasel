@@ -85,6 +85,7 @@ bool IsSubtleText(int id) {
     case IDC_P5_REMOTE_HINT:
     case IDC_P5_USAGE:
     case IDC_P5_FILE_STATUS:
+    case IDC_P5_THINK_HINT:
     case IDC_P6_COUNT:
     case IDC_P6_RULES_LABEL:
     case IDC_P6_HINT:
@@ -396,6 +397,7 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   profile_list_.Attach(GetDlgItem(IDC_P5_LIST));
   model_files_.Attach(GetDlgItem(IDC_P5_FILES));
   predict_profile_.Attach(GetDlgItem(IDC_P3_PROFILE));
+  typo_profile_.Attach(GetDlgItem(IDC_P1_TYPO_PROFILE));
   refine_profile_.Attach(GetDlgItem(IDC_P4_PROFILE));
   test_result_.Attach(GetDlgItem(IDC_P3_TEST_RESULT));
   words_list_.Attach(GetDlgItem(IDC_P6_WORDS));
@@ -507,7 +509,7 @@ void SettingsDialog::ApplyFonts() {
   icon_font_ = ::CreateFontIndirectW(&icon);
 
   GetDlgItem(IDC_PAGE_TITLE).SetFont(title_font_);
-  for (int id : {IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
+  for (int id : {IDC_P1_TYPO_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
                  IDC_P3_PREFIX_LABEL, IDC_P3_ENABLED, IDC_P4_ENABLED, IDC_P4_REFINE_LABEL,
                  IDC_P4_DATA_LABEL, IDC_P6_WORDS_LABEL, IDC_P6_DICT_LABEL, IDC_P5_FILES_LABEL})
     GetDlgItem(id).SetFont(section_font_);
@@ -941,7 +943,29 @@ void SettingsDialog::LoadLLMSettings() {
   GetDlgItem(IDC_P3_PREFIX).SetWindowTextW(display.c_str());
   UpdateLLMEnableState();
   LoadPersonalSettings(&config);
-  llm_modified_ = false;
+
+  // 注音容錯：兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
+  const std::wstring legacy = get_string("llm/typo_correction");
+  typo_rime_loaded_ = get_bool("llm/typo/rime", legacy == L"rime" || legacy == L"llm");
+  CheckDlgButton(IDC_P1_TYPO_RIME, typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P1_TYPO_LLM,
+                 get_bool("llm/typo/llm", legacy == L"llm") ? BST_CHECKED : BST_UNCHECKED);
+  UpdateTypoState();
+  llm_modified_ = typo_modified_ = false;
+}
+
+void SettingsDialog::UpdateTypoState() {
+  const bool llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
+  GetDlgItem(IDC_P1_TYPO_PROFILE_LABEL).EnableWindow(llm);
+  GetDlgItem(IDC_P1_TYPO_PROFILE).EnableWindow(llm);
+}
+
+LRESULT SettingsDialog::OnTypoChange(WORD, WORD, HWND, BOOL&) {
+  UpdateTypoState();
+  UpdateProfileUsage();
+  if (loaded_)
+    typo_modified_ = true;
+  return 0;
 }
 
 int SettingsDialog::AddModel(const std::wstring& path) {
@@ -1054,6 +1078,9 @@ bool SettingsDialog::SaveLLMSettings() {
   }
   rime->config_set_string(&llm, "prompt", wtou8(LLMTrim(prefix)).c_str());
   rime->config_clear(&llm, "llamacpp/prompt_prefix");
+  rime->config_set_bool(&llm, "typo/rime", IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED);
+  rime->config_set_bool(&llm, "typo/llm", IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED);
+  rime->config_clear(&llm, "typo_correction");
   SavePersonalSettings(&llm);
   const bool ok = !!api_->customize_item(ui_settings_->settings(), "llm", &llm);
   rime->config_close(&llm);
@@ -1203,10 +1230,10 @@ bool SettingsDialog::Save() {
     saved = true;
   }
   CommitProfileEditor();
-  if ((llm_modified_ || personal_modified_) && !ValidateProfiles())
+  if ((llm_modified_ || personal_modified_ || typo_modified_) && !ValidateProfiles())
     return false;
-  if (personal_modified_)
-    llm_modified_ = true;  // 個人詞庫的設定也在 llm 之下，一起儲存
+  if (personal_modified_ || typo_modified_)
+    llm_modified_ = true;  // 個人詞庫與注音容錯的設定也在 llm 之下，一起儲存
   if (llm_modified_ && !SaveLLMSettings()) {
     SetStatus(L"LLM 設定儲存失敗。");
     return false;
@@ -1217,11 +1244,21 @@ bool SettingsDialog::Save() {
   std::wstring boost_error;
   if (llm_modified_ && rime_boost != rime_boost_loaded_) {
     ApplyRimeBoost(rime_boost, &boost_error);
+    if (!boost_error.empty())
+      boost_error = L"注音排序：" + boost_error;
     rime_boost_loaded_ = rime_boost;
   }
+  // Rime 容錯：開關有變才改方案
+  const bool typo_rime = IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED;
+  if (typo_modified_ && typo_rime != typo_rime_loaded_) {
+    std::wstring typo_error;
+    if (!ApplyTypoCorrection(typo_rime, &typo_error))
+      boost_error += (boost_error.empty() ? L"" : L"；") + (L"Rime 容錯：" + typo_error);
+  }
+  typo_rime_loaded_ = typo_rime;
   if (style_modified_ || llm_modified_) {
     api_->save_settings(ui_settings_->settings());
-    style_modified_ = llm_modified_ = personal_modified_ = false;
+    style_modified_ = llm_modified_ = personal_modified_ = typo_modified_ = false;
     saved = true;
   }
   if (!saved) {
@@ -1234,7 +1271,7 @@ bool SettingsDialog::Save() {
     deploy_();
   }
   deployed_ = true;
-  SetStatus(boost_error.empty() ? L"已套用。" : L"已套用；注音排序：" + boost_error);
+  SetStatus(boost_error.empty() ? L"已套用。" : L"已套用；" + boost_error);
   // 等輸入法重新載入模型後更新「目前載入」
   status_polls_left_ = 15;
   SetTimer(kTimerStatusPoll, 1000);
@@ -1462,11 +1499,14 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     p.api_url = get(base + "api_url");
     p.api_key = get(base + "api_key");
     p.model = get(base + "model");
+    p.no_think = get(base + "disable_thinking") == L"true";
+    const std::wstring think = get(base + "think_tokens");
+    p.think_tokens = think.empty() ? 2048 : (std::max)(0, _wtoi(think.c_str()));
     index_of[u8tow(key)] = (int)profiles_.size();
     profiles_.push_back(p);
   }
 
-  int predict = -1, refine = -1;
+  int predict = -1, refine = -1, typo = -1;
   if (profiles_.empty()) {
     // 舊設定轉換：本機模型、預測用的 API、精煉用的 API 各一組
     const std::wstring provider = ToLower(get("llm/provider_type"));
@@ -1518,9 +1558,12 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     };
     predict = find(get("llm/predict_profile"));
     refine = find(get("llm/personal/refine/profile"));
+    typo = find(get("llm/typo/profile"));
   }
+  if (typo < 0)
+    typo = predict;  // 還沒選過：預設和智慧預測用同一個模型
   PopulateProfileList();
-  RefreshProfileCombos(predict, refine);
+  RefreshProfileCombos(predict, refine, typo);
   SelectProfile(profiles_.empty() ? -1 : 0);
 }
 
@@ -1549,6 +1592,8 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
     set(base + "api_url", p.api_url);
     set(base + "api_key", p.api_key);
     set(base + "model", p.model);
+    rime->config_set_bool(llm, (base + "disable_thinking").c_str(), p.no_think);
+    rime->config_set_int(llm, (base + "think_tokens").c_str(), p.think_tokens);
   }
   // 預測：展開到輸入法讀取的欄位
   const int predict = ComboProfile(IDC_P3_PROFILE);
@@ -1560,9 +1605,13 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
       set("openai/api_url", p.api_url);
       set("openai/api_key", p.api_key);
       set("openai/model", p.model);
+      rime->config_set_bool(llm, "openai/disable_thinking", p.no_think);
+      rime->config_set_int(llm, "openai/think_tokens", p.think_tokens);
     } else {
       set("llamacpp/model_path", yaml_path(p.model_path));
       set("llamacpp/model_type", p.model_type);
+      rime->config_set_bool(llm, "llamacpp/disable_thinking", p.no_think);
+      rime->config_set_int(llm, "llamacpp/think_tokens", p.think_tokens);
     }
   }
   // 精煉
@@ -1577,6 +1626,20 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   set("personal/refine/api_url", refine >= 0 && r.remote ? r.api_url : L"");
   set("personal/refine/api_key", refine >= 0 && r.remote ? r.api_key : L"");
   set("personal/refine/model", refine >= 0 && r.remote ? r.model : L"");
+  rime->config_set_bool(llm, "personal/refine/disable_thinking", refine >= 0 && r.no_think);
+  rime->config_set_int(llm, "personal/refine/think_tokens", r.think_tokens);
+  // 注音校正
+  const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+  const ModelProfile& c = typo >= 0 ? profiles_[typo] : none;
+  set("typo/profile", typo >= 0 ? u8tow(key_of(typo)) : L"");
+  set("typo/type", typo < 0 ? L"" : c.remote ? L"openai" : L"llamacpp");
+  set("typo/model_path", typo >= 0 && !c.remote ? yaml_path(c.model_path) : L"");
+  set("typo/model_type", typo >= 0 && !c.remote ? c.model_type : L"");
+  set("typo/api_url", typo >= 0 && c.remote ? c.api_url : L"");
+  set("typo/api_key", typo >= 0 && c.remote ? c.api_key : L"");
+  set("typo/model", typo >= 0 && c.remote ? c.model : L"");
+  rime->config_set_bool(llm, "typo/disable_thinking", typo >= 0 && c.no_think);
+  rime->config_set_int(llm, "typo/think_tokens", c.think_tokens);
 }
 
 bool SettingsDialog::ValidateProfiles() {
@@ -1598,8 +1661,15 @@ bool SettingsDialog::ValidateProfiles() {
     SetStatus(L"請選擇預測使用的模型（可在「語言模型」頁新增）。");
     return false;
   }
+  const bool typo_llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
+  const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+  if (typo_llm && typo < 0) {
+    GoToPage(kPageSchemas);
+    SetStatus(L"請選擇注音校正使用的模型（可在「語言模型」頁新增）。");
+    return false;
+  }
   const int refine = ComboProfile(IDC_P4_PROFILE);
-  for (int index : {llm_on ? predict : -1, refine}) {
+  for (int index : {llm_on ? predict : -1, refine, typo_llm ? typo : -1}) {
     if (index < 0)
       continue;
     const ModelProfile& p = profiles_[index];
@@ -1635,8 +1705,12 @@ void SettingsDialog::SelectProfile(int index) {
   GetDlgItem(IDC_P5_API_URL).SetWindowTextW(p.api_url.c_str());
   GetDlgItem(IDC_P5_API_KEY).SetWindowTextW(p.api_key.c_str());
   GetDlgItem(IDC_P5_API_MODEL).SetWindowTextW(p.model.c_str());
+  CheckDlgButton(IDC_P5_NO_THINK, p.no_think ? BST_CHECKED : BST_UNCHECKED);
+  GetDlgItem(IDC_P5_THINK_TOKENS).SetWindowTextW(std::to_wstring(p.think_tokens).c_str());
   for (int id = IDC_P5_NAME_LABEL; id <= IDC_P5_REMOTE_HINT; ++id)
     GetDlgItem(id).EnableWindow(has);
+  GetDlgItem(IDC_P5_NO_THINK).EnableWindow(has);
+  UpdateThinkState();
   GetDlgItem(IDC_P5_COPY).EnableWindow(has);
   GetDlgItem(IDC_P5_DELETE).EnableWindow(has);
   GetDlgItem(IDC_P5_API_TEST).EnableWindow(has && !api_busy_);
@@ -1668,11 +1742,20 @@ void SettingsDialog::CommitProfileEditor() {
   p.api_url = get_text(IDC_P5_API_URL);
   p.api_key = get_text(IDC_P5_API_KEY);
   p.model = get_text(IDC_P5_API_MODEL);
+  p.no_think = IsDlgButtonChecked(IDC_P5_NO_THINK) == BST_CHECKED;
+  const std::wstring think = get_text(IDC_P5_THINK_TOKENS);
+  p.think_tokens = think.empty() ? 2048 : (std::max)(0, _wtoi(think.c_str()));
   if (ProfileLabel(p) != old_label) {
     profile_list_.DeleteString(profile_sel_);
     profile_list_.InsertString(profile_sel_, ProfileLabel(p).c_str());
     profile_list_.SetCurSel(profile_sel_);
   }
+}
+
+void SettingsDialog::UpdateThinkState() {
+  const bool on = profile_sel_ >= 0 && IsDlgButtonChecked(IDC_P5_NO_THINK) != BST_CHECKED;
+  for (int id : {IDC_P5_THINK_LABEL, IDC_P5_THINK_TOKENS, IDC_P5_THINK_HINT})
+    GetDlgItem(id).EnableWindow(on);
 }
 
 int SettingsDialog::ComboProfile(int combo_id) const {
@@ -1681,19 +1764,24 @@ int SettingsDialog::ComboProfile(int combo_id) const {
   return index >= 0 && index < (int)profiles_.size() ? index : -1;
 }
 
-void SettingsDialog::RefreshProfileCombos(int predict, int refine) {
+void SettingsDialog::RefreshProfileCombos(int predict, int refine, int typo) {
   if (predict == -2)
     predict = ComboProfile(IDC_P3_PROFILE);
   if (refine == -2)
     refine = ComboProfile(IDC_P4_PROFILE);
+  if (typo == -2)
+    typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   predict_profile_.ResetContent();
   refine_profile_.ResetContent();
+  typo_profile_.ResetContent();
   refine_profile_.AddString(L"不使用 LLM（只做統計整理）");
   for (const auto& p : profiles_) {
     predict_profile_.AddString(ProfileLabel(p).c_str());
     refine_profile_.AddString(ProfileLabel(p).c_str());
+    typo_profile_.AddString(ProfileLabel(p).c_str());
   }
   predict_profile_.SetCurSel(predict >= 0 && predict < (int)profiles_.size() ? predict : -1);
+  typo_profile_.SetCurSel(typo >= 0 && typo < (int)profiles_.size() ? typo : -1);
   refine_profile_.SetCurSel(refine >= 0 && refine < (int)profiles_.size() ? refine + 1 : 0);
   UpdateProfileUsage();
 }
@@ -1706,8 +1794,11 @@ void SettingsDialog::UpdateProfileUsage() {
       uses.push_back(L"智慧預測");
     if (ComboProfile(IDC_P4_PROFILE) == profile_sel_)
       uses.push_back(L"個人詞庫精煉");
+    if (IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED &&
+        ComboProfile(IDC_P1_TYPO_PROFILE) == profile_sel_)
+      uses.push_back(L"注音校正");
     if (uses.empty()) {
-      text = L"目前沒有被使用。可在「智慧預測」或「個人詞庫」頁選用。";
+      text = L"目前沒有被使用。可在「智慧預測」、「個人詞庫」或「輸入方案」頁選用。";
     } else {
       text = L"用於：";
       for (size_t i = 0; i < uses.size(); ++i)
@@ -1754,20 +1845,22 @@ LRESULT SettingsDialog::OnProfileDelete(WORD, WORD, HWND, BOOL&) {
     return 0;
   CommitProfileEditor();
   const int index = profile_sel_;
-  int predict = ComboProfile(IDC_P3_PROFILE), refine = ComboProfile(IDC_P4_PROFILE);
+  int predict = ComboProfile(IDC_P3_PROFILE), refine = ComboProfile(IDC_P4_PROFILE),
+      typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   std::wstring message = L"確定要刪除「" + profiles_[index].name + L"」嗎？";
-  if (predict == index || refine == index)
+  if (predict == index || refine == index || typo == index)
     message += L"\n\n這組設定正在使用中，刪除後請另外選擇模型。";
   if (MessageBoxW(message.c_str(), L"刪除模型設定", MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   auto shift = [&](int i) { return i == index ? -1 : i > index ? i - 1 : i; };
   predict = shift(predict);
   refine = shift(refine);
+  typo = shift(typo);
   profiles_.erase(profiles_.begin() + index);
   profile_sel_ = -1;
   PopulateProfileList();
   SelectProfile((std::min)(index, (int)profiles_.size() - 1));
-  RefreshProfileCombos(predict, refine);
+  RefreshProfileCombos(predict, refine, typo);
   llm_modified_ = true;
   return 0;
 }
@@ -1777,6 +1870,7 @@ LRESULT SettingsDialog::OnProfileEdit(WORD, WORD, HWND, BOOL&) {
     return 0;
   CommitProfileEditor();
   RefreshProfileCombos();
+  UpdateThinkState();
   llm_modified_ = true;
   return 0;
 }
@@ -2461,9 +2555,15 @@ namespace {
 const wchar_t* const kZhuyinSchemas[] = {L"bopomofo", L"bopomofo_express", L"bopomofo_tw"};
 const char kBoostBegin[] = "  # >>> weasel-personal-dict";
 const char kBoostEnd[] = "  # <<< weasel-personal-dict";
+const char kTypoBegin[] = "  # >>> weasel-typo-correction";
+const char kTypoEnd[] = "  # <<< weasel-typo-correction";
 
-// 改寫一個方案的 custom.yaml；回傳 false 表示無法安全修改（例如使用者自己改過詞典）
-bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* error) {
+// 改寫一個方案的 custom.yaml：拿掉 begin ~ end 標記的區塊，block 非空時再加在 patch: 下面。
+// 使用者自己設定過 conflict_keys 其中一項時不修改，回傳 false
+bool PatchSchemaBlock(const fs::path& file, const char* begin, const char* end,
+                      const std::vector<std::string>& block,
+                      const std::vector<std::string>& conflict_keys, std::wstring* error) {
+  const bool enable = !block.empty();
   std::string text;
   {
     std::ifstream in(file, std::ios::binary);
@@ -2482,12 +2582,12 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
     for (std::string line; std::getline(in, line);) {
       if (!line.empty() && line.back() == '\r')
         line.pop_back();
-      if (line.rfind(kBoostBegin, 0) == 0) {
+      if (line.rfind(begin, 0) == 0) {
         inside = true;
         continue;
       }
       if (inside) {
-        if (line.rfind(kBoostEnd, 0) == 0)
+        if (line.rfind(end, 0) == 0)
           inside = false;
         continue;
       }
@@ -2496,10 +2596,11 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
   }
   if (enable) {
     for (const auto& line : lines) {
-      if (line.find("translator/dictionary") != std::string::npos ||
-          line.find("translator/user_dict") != std::string::npos) {
-        *error = file.filename().wstring() + L" 已自行設定詞典，沒有修改";
-        return false;
+      for (const auto& key : conflict_keys) {
+        if (line.find(key) != std::string::npos) {
+          *error = file.filename().wstring() + L" 已自行設定 " + u8tow(key) + L"，沒有修改";
+          return false;
+        }
       }
     }
     auto patch = std::find_if(lines.begin(), lines.end(), [](const std::string& l) {
@@ -2514,12 +2615,6 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
       lines.push_back("patch:");
       patch = lines.end() - 1;
     }
-    const std::vector<std::string> block = {
-        std::string(kBoostBegin) + u8"：個人詞庫的常用詞影響選字排序（小狼毫設定自動管理）",
-        "  translator/dictionary: terra_pinyin.personal",
-        "  translator/user_dict: terra_pinyin",
-        kBoostEnd,
-    };
     lines.insert(patch + 1, block.begin(), block.end());
   }
   std::string result;
@@ -2532,6 +2627,33 @@ bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* erro
   }
   out << result;
   return true;
+}
+
+// 注音排序：改用 terra_pinyin.personal 詞典
+bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* error) {
+  std::vector<std::string> block;
+  if (enable)
+    block = {
+        std::string(kBoostBegin) + u8"：個人詞庫的常用詞影響選字排序（小狼毫設定自動管理）",
+        "  translator/dictionary: terra_pinyin.personal",
+        "  translator/user_dict: terra_pinyin",
+        kBoostEnd,
+    };
+  return PatchSchemaBlock(file, kBoostBegin, kBoostEnd, block,
+                          {"translator/dictionary", "translator/user_dict"}, error);
+}
+
+// 注音容錯：打開 Rime 的拼寫糾錯（依鍵盤鄰鍵與編輯距離找相近的音節）
+bool PatchSchemaCorrection(const fs::path& file, bool enable, std::wstring* error) {
+  std::vector<std::string> block;
+  if (enable)
+    block = {
+        std::string(kTypoBegin) + u8"：打錯注音時找相近的音節（小狼毫設定自動管理）",
+        "  translator/enable_correction: true",
+        kTypoEnd,
+    };
+  return PatchSchemaBlock(file, kTypoBegin, kTypoEnd, block, {"translator/enable_correction"},
+                          error);
 }
 
 }  // namespace
@@ -2576,6 +2698,21 @@ bool SettingsDialog::ApplyRimeBoost(bool enable, std::wstring* error) {
   if (!enable) {
     std::error_code ec;
     fs::remove(dict, ec);
+  }
+  return ok;
+}
+
+bool SettingsDialog::ApplyTypoCorrection(bool enable, std::wstring* error) {
+  // 三個注音方案都改（沒選用的也改，之後改選時不必再套用一次）；關閉時只還原已有的檔案
+  const fs::path user_dir = WeaselUserDataPath();
+  bool ok = true;
+  for (const wchar_t* schema : kZhuyinSchemas) {
+    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
+    std::error_code ec;
+    if (!enable && !fs::exists(file, ec))
+      continue;
+    if (!PatchSchemaCorrection(file, enable, error))
+      ok = false;
   }
   return ok;
 }
