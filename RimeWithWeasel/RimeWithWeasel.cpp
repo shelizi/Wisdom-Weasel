@@ -1543,7 +1543,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
       actions.insert("ctx");
       switch (session_status.style.preedit_type) {
         case UIStyle::PREVIEW:
-          if (ctx.commit_text_preview != NULL) {
+          // 西文模式（Shift 的 inline_ascii）下組字是英文按鍵，不能當注音轉換
+          if (ctx.commit_text_preview != NULL && !session_status.status.is_ascii_mode) {
             char schema_id[256] = {0};
             rime_api->get_current_schema(session_id, schema_id,
                                          sizeof(schema_id));
