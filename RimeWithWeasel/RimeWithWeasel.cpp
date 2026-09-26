@@ -762,15 +762,22 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
       const bool zhuyin = bs_status.is_composing && !bs_status.is_ascii_mode &&
                           bs_status.schema_id &&
                           strncmp(bs_status.schema_id, "bopomofo", 8) == 0;
-      if (zhuyin) {
-        const ZhuyinSpeller sp = _LoadZhuyinSpeller(rime_api, bs_status.schema_id);
-        const char* input = rime_api->get_input(session_id);
-        const std::string before =
-            std::string(input ? input : "").substr(0, rime_api->get_caret_pos(session_id));
-        const auto syllables = zhuyin_preview::SplitSyllables(sp, before);
-        if (!syllables.empty() && syllables.back().size() > 1 &&
-            sp.finals.find(syllables.back().back()) != std::string::npos)
-          backspaces = syllables.back().size();
+      // 音节依 Rime 组字的切法（注音之间以空白分开，省略声调的连打也切得对），
+      // 取光标前最后一个音节；每个注音符号或声调对应一个按键
+      RIME_STRUCT(RimeContext, bs_ctx);
+      if (zhuyin && rime_api->get_context(session_id, &bs_ctx)) {
+        if (bs_ctx.composition.preedit && bs_ctx.composition.cursor_pos > 0) {
+          const std::wstring before = u8tow(std::string(bs_ctx.composition.preedit)
+                                                .substr(0, bs_ctx.composition.cursor_pos));
+          size_t start = before.size();
+          while (start > 0 && (zhuyin_preview::IsBopomofo(before[start - 1]) ||
+                               zhuyin_preview::IsTone(before[start - 1])))
+            --start;
+          const size_t len = before.size() - start;
+          if (len > 1 && zhuyin_preview::IsTone(before.back()))
+            backspaces = len;
+        }
+        rime_api->free_context(&bs_ctx);
       }
       rime_api->free_status(&bs_status);
     }
