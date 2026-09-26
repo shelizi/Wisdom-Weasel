@@ -46,6 +46,9 @@ std::string LLMDisableThinkingJson(const std::string& api_url, const std::string
   std::transform(name.begin(), name.end(), name.begin(), ::tolower);
   if (url.find("openrouter.ai") != std::string::npos)
     return "\"reasoning\":{\"enabled\":false}";
+  // DeepSeek 官方 API：chat_template_kwargs 會被無視，要用 thinking.type
+  if (url.find("api.deepseek.com") != std::string::npos)
+    return "\"thinking\":{\"type\":\"disabled\"}";
   if (url.find(":11434") != std::string::npos || url.find("ollama") != std::string::npos)
     return "\"think\":false";
   if (url.find("api.openai.com") != std::string::npos) {
@@ -662,13 +665,15 @@ std::string LLMJsonEscape(const std::string& s) {
 
 // 在 choices 之后找 "content": "..."（跳过 content 为 null 的情况），
 // 并正确解码 JSON 字串（\" \\ \n 以及许多服务用来输出中文的 \uXXXX / 代理对）
-std::wstring LLMExtractChatContent(const std::string& json_response, bool* found_out) {
+std::wstring LLMExtractJsonString(const std::string& json_response, const char* key,
+                                  bool* found_out) {
   size_t pos = json_response.find("\"choices\"");
   if (pos == std::string::npos)
     pos = 0;
+  const std::string quoted = std::string("\"") + key + "\"";
   std::wstring content_w;
   bool found = false;
-  while (!found && (pos = json_response.find("\"content\"", pos)) != std::string::npos) {
+  while (!found && (pos = json_response.find(quoted, pos)) != std::string::npos) {
     size_t p = json_response.find(':', pos);
     if (p == std::string::npos)
       break;
@@ -731,14 +736,23 @@ std::wstring LLMExtractChatContent(const std::string& json_response, bool* found
   }
   if (found_out)
     *found_out = found;
+  return content_w;
+}
+
+std::wstring LLMExtractChatContent(const std::string& json_response, bool* found_out) {
   // 思考型模型把思考寫在 content 的 <think>…</think> 裡：只留結論
-  return LLMStripThinking(content_w);
+  return LLMStripThinking(LLMExtractJsonString(json_response, "content", found_out));
 }
 
 // 單次 POST（每次開新連線；給不常呼叫、可等較久的用途，例如個人詞庫精煉）
 bool LLMHttpPostJson(const std::string& url, const std::string& api_key,
                      const std::string& body, std::string* response,
-                     unsigned long timeout_ms, unsigned long* status_code) {
+                     unsigned long timeout_ms, unsigned long* status_code, bool* timed_out) {
+  if (timed_out)
+    *timed_out = false;
+  // WinHTTP 的逾時只算「多久沒收到資料」；OpenRouter 在模型還沒算完時會一直送空白保持連線，
+  // 永遠不會逾時。另外限制整個請求的總時間
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
   URL_COMPONENTS uc = {0};
   uc.dwStructSize = sizeof(uc);
   wchar_t host[256] = {0};
@@ -782,14 +796,124 @@ bool LLMHttpPostJson(const std::string& url, const std::string& api_key,
         *status_code = code;
       response->clear();
       DWORD avail = 0;
+      bool expired = false;
       while (WinHttpQueryDataAvailable(request, &avail) && avail > 0) {
         std::vector<char> buf(avail);
         DWORD read = 0;
         if (!WinHttpReadData(request, buf.data(), avail, &read))
           break;
         response->append(buf.data(), read);
+        if (GetTickCount64() > deadline) {
+          expired = true;
+          break;
+        }
       }
-      ok = code >= 200 && code < 300;
+      if (expired && timed_out)
+        *timed_out = true;
+      ok = !expired && code >= 200 && code < 300;
+    }
+    WinHttpCloseHandle(request);
+  }
+  if (connect)
+    WinHttpCloseHandle(connect);
+  WinHttpCloseHandle(session);
+  return ok;
+}
+
+bool LLMHttpPostStream(const std::string& url, const std::string& api_key,
+                       const std::string& body,
+                       const std::function<bool(const std::string& data)>& on_event,
+                       unsigned long idle_ms, unsigned long* status_code, bool* timed_out,
+                       std::string* error_body) {
+  if (timed_out)
+    *timed_out = false;
+  URL_COMPONENTS uc = {0};
+  uc.dwStructSize = sizeof(uc);
+  wchar_t host[256] = {0};
+  wchar_t path[2048] = {0};
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = _countof(host);
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = _countof(path);
+  const std::wstring url_w = u8tow(url);
+  if (!WinHttpCrackUrl(url_w.c_str(), (DWORD)url_w.length(), 0, &uc))
+    return false;
+  const bool https = uc.nScheme == INTERNET_SCHEME_HTTPS;
+  const std::wstring host_s(host, uc.dwHostNameLength);
+  const bool local = host_s == L"localhost" || host_s == L"127.0.0.1";
+  HINTERNET session = WinHttpOpen(L"Weasel IME/1.0",
+                                  local ? WINHTTP_ACCESS_TYPE_NO_PROXY
+                                        : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session)
+    return false;
+  const int t = (int)idle_ms;
+  WinHttpSetTimeouts(session, t, t, t, t);
+  bool ok = false;
+  HINTERNET connect = WinHttpConnect(session, host_s.c_str(), uc.nPort, 0);
+  HINTERNET request = connect ? WinHttpOpenRequest(connect, L"POST", path, NULL,
+                                                   WINHTTP_NO_REFERER,
+                                                   WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                   https ? WINHTTP_FLAG_SECURE : 0)
+                              : NULL;
+  if (request) {
+    std::wstring headers = L"Content-Type: application/json\r\nAccept: text/event-stream\r\n";
+    if (!api_key.empty())
+      headers += L"Authorization: Bearer " + u8tow(api_key) + L"\r\n";
+    if (WinHttpSendRequest(request, headers.c_str(), (DWORD)-1, (LPVOID)body.data(),
+                           (DWORD)body.size(), (DWORD)body.size(), 0) &&
+        WinHttpReceiveResponse(request, NULL)) {
+      DWORD code = 0, size = sizeof(code);
+      WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                          WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
+      if (status_code)
+        *status_code = code;
+      const bool success = code >= 200 && code < 300;
+      std::string pending, all;
+      // 最後一次收到事件的時間；保持連線用的註解行（以 : 開頭）與空白不算
+      ULONGLONG last_event = GetTickCount64();
+      bool done = false, aborted = false;
+      DWORD avail = 0;
+      while (!done && WinHttpQueryDataAvailable(request, &avail) && avail > 0) {
+        std::vector<char> buf(avail);
+        DWORD read = 0;
+        if (!WinHttpReadData(request, buf.data(), avail, &read))
+          break;
+        if (!success) {
+          all.append(buf.data(), read);
+          continue;
+        }
+        pending.append(buf.data(), read);
+        size_t nl;
+        while ((nl = pending.find('\n')) != std::string::npos) {
+          std::string line = pending.substr(0, nl);
+          pending.erase(0, nl + 1);
+          if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+          if (line.rfind("data:", 0) != 0)
+            continue;
+          const size_t b = line.find_first_not_of(' ', 5);
+          const std::string data = b == std::string::npos ? std::string() : line.substr(b);
+          if (data == "[DONE]") {
+            done = true;
+            break;
+          }
+          last_event = GetTickCount64();
+          if (!on_event(data)) {
+            aborted = true;
+            done = true;
+            break;
+          }
+        }
+        if (!done && GetTickCount64() - last_event > idle_ms) {
+          if (timed_out)
+            *timed_out = true;
+          break;
+        }
+      }
+      if (!success && error_body)
+        *error_body = all;
+      ok = success && !aborted && (!timed_out || !*timed_out);
     }
     WinHttpCloseHandle(request);
   }

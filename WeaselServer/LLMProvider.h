@@ -174,10 +174,22 @@ std::string LLMDisableThinkingJson(const std::string& api_url, const std::string
 std::string LLMJsonEscape(const std::string& s);
 // 從 chat/completions 回應取出第一個 message content（found 表示是否找到）
 std::wstring LLMExtractChatContent(const std::string& json_response, bool* found);
-// 單次 POST JSON；HTTP 2xx 才回傳 true。status_code 可為 nullptr
+// 單次 POST JSON；HTTP 2xx 才回傳 true。status_code 可為 nullptr。
+// timeout_ms 也是整個請求的總時間上限，超過時 timed_out 設為 true
 bool LLMHttpPostJson(const std::string& url, const std::string& api_key,
                      const std::string& body, std::string* response,
-                     unsigned long timeout_ms, unsigned long* status_code = nullptr);
+                     unsigned long timeout_ms, unsigned long* status_code = nullptr,
+                     bool* timed_out = nullptr);
+// SSE 串流 POST（"stream":true）：每收到一個 data: 事件就呼叫 on_event（[DONE] 結束），
+// on_event 回傳 false 時中斷。idle_ms 內沒有新事件（保持連線的註解不算）就中斷並設 timed_out。
+// HTTP 非 2xx 時回傳 false，回應內容放在 error_body
+bool LLMHttpPostStream(const std::string& url, const std::string& api_key,
+                       const std::string& body,
+                       const std::function<bool(const std::string& data)>& on_event,
+                       unsigned long idle_ms, unsigned long* status_code = nullptr,
+                       bool* timed_out = nullptr, std::string* error_body = nullptr);
+// 取出 JSON 裡第一個名為 key 的字串欄位（null 或非字串的會跳過）
+std::wstring LLMExtractJsonString(const std::string& json, const char* key, bool* found);
 
 // 本機模型的一次性對話（LlamaCppProvider.cpp）：載入模型 → 以 chat template 生成 → 釋放。
 // 給個人詞庫精煉這類偶爾執行、需要較長上下文的工作用，不佔用預測用的模型。
