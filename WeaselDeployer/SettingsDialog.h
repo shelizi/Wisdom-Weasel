@@ -96,6 +96,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_P1_TYPO_RIME, OnTypoChange)
   COMMAND_ID_HANDLER(IDC_P1_TYPO_LLM, OnTypoChange)
   COMMAND_HANDLER(IDC_P1_TYPO_PROFILE, CBN_SELCHANGE, OnProfileChoice)
+  COMMAND_HANDLER(IDC_P1_TYPO_PROMPT, EN_CHANGE, OnTypoChange)
+  COMMAND_ID_HANDLER(IDC_P1_TYPO_PROMPT_RESET, OnTypoPromptReset)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
   COMMAND_ID_HANDLER(IDC_P3_ENABLED, OnLLMEnabledClick)
@@ -192,6 +194,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnGetSchemata(WORD, WORD, HWND, BOOL&);
   LRESULT OnSchemaListItemChanged(int, LPNMHDR, BOOL&);
   LRESULT OnTypoChange(WORD, WORD, HWND, BOOL&);
+  LRESULT OnTypoPromptReset(WORD, WORD, HWND, BOOL&);
   LRESULT OnColorSchemeChange(WORD, WORD, HWND, BOOL&);
   LRESULT OnSelectFont(WORD, WORD, HWND, BOOL&);
   LRESULT OnLLMEnabledClick(WORD, WORD, HWND, BOOL&);
@@ -241,6 +244,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void ShowSchemaDetails(RimeSchemaInfo* info);
   // 注音容錯：Rime 容錯（llm/typo/rime）與 LLM 整句校正（llm/typo/llm）各自開關
   void UpdateTypoState();
+  void SetMultilineText(int id, const std::wstring& text);
+  std::wstring GetMultilineText(int id);
   // Rime 容錯：在注音方案的 custom.yaml 打開 translator/enable_correction
   bool ApplyTypoCorrection(bool enable, std::wstring* error);
   // 外觀

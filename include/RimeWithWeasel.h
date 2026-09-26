@@ -178,6 +178,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   size_t m_llm_correction_count = 0;  // m_current_llm_candidates 開頭幾個是整句校正（m_llm_mutex 保護）
   // 注音整句校正用的模型（llm/typo/*），與智慧預測分開；同一個模型時直接共用 m_llm_provider
   std::unique_ptr<LLMProvider> m_typo_owned;
+  std::wstring m_typo_prompt;        // llm/typo/prompt：自訂校正指令（m_llm_mutex 保護）
   LLMProvider* m_typo_llm = nullptr;  // m_llm_infer_mutex 下使用
   bool _TypoLLMAvailable() const;
   void _LoadTypoProvider(RimeConfig* config);

@@ -23,10 +23,12 @@ class LLMProvider {
       size_t max_candidates) = 0;
 
   // 注音整句校正：zhuyin 是使用者打的注音（可能有打錯的鍵），draft 是 Rime 轉出的整句。
+  // instruction 是使用者自訂的校正指令（llm/typo/prompt），空字串時用預設。
   // 回傳推測的正確句子；不支援或失敗時回傳空字串
   virtual std::wstring CorrectSentence(const std::wstring& context,
                                        const std::wstring& zhuyin,
-                                       const std::wstring& draft) {
+                                       const std::wstring& draft,
+                                       const std::wstring& instruction) {
     return std::wstring();
   }
 
@@ -74,16 +76,20 @@ inline std::wstring LLMInstructUser(const std::wstring& context, const std::wstr
   return L"上下文：「" + context + L"」\n目前輸入：「" + current_input + L"」\n候選詞：";
 }
 
-// 注音整句校正（llm/typo_correction: llm）
-// Instruct / OpenAI：system 指令 = 提示詞 + 校正任務說明
-inline std::wstring LLMCorrectSystem(const std::wstring& prompt) {
+// 注音整句校正（llm/typo/llm）
+// 預設的校正指令；設定視窗的「校正提示詞」可以改寫（llm/typo/prompt）
+constexpr wchar_t kLLMCorrectInstruction[] =
+    L"你是中文注音輸入法的校正器。使用者用注音打了一句話，其中可能有打錯的鍵"
+    L"（按到隔壁的鍵、多打或少打一個注音符號、聲調打錯），所以輸入法依注音轉出的初稿可能有錯字。"
+    L"請根據前文、注音與初稿，推測使用者真正想打的句子。\n"
+    L"要求：只輸出校正後的句子本身，字數與初稿相同或相近，不要解釋、引號或多餘的標點；"
+    L"初稿已經正確時，原樣輸出初稿。";
+
+// Instruct / OpenAI：system 指令 = 提示詞 + 校正指令（自訂的取代預設）
+inline std::wstring LLMCorrectSystem(const std::wstring& prompt, const std::wstring& instruction) {
   const std::wstring p = LLMTrimPrompt(prompt);
-  return (p.empty() ? std::wstring() : p + L"\n\n") +
-         L"你是中文注音輸入法的校正器。使用者用注音打了一句話，其中可能有打錯的鍵"
-         L"（按到隔壁的鍵、多打或少打一個注音符號、聲調打錯），所以輸入法依注音轉出的初稿可能有錯字。"
-         L"請根據前文、注音與初稿，推測使用者真正想打的句子。\n"
-         L"要求：只輸出校正後的句子本身，字數與初稿相同或相近，不要解釋、引號或多餘的標點；"
-         L"初稿已經正確時，原樣輸出初稿。";
+  const std::wstring i = LLMTrimPrompt(instruction);
+  return (p.empty() ? std::wstring() : p + L"\n\n") + (i.empty() ? kLLMCorrectInstruction : i);
 }
 
 // Instruct / OpenAI：user 訊息
@@ -92,10 +98,13 @@ inline std::wstring LLMCorrectUser(const std::wstring& context, const std::wstri
   return L"前文：「" + context + L"」\n注音：" + zhuyin + L"\n初稿：" + draft + L"\n校正：";
 }
 
-// Base：以幾個範例引導續寫，模型接在最後的「校正：」後面輸出一行
-inline std::wstring LLMCorrectBasePrompt(const std::wstring& prompt, const std::wstring& context,
-                                         const std::wstring& zhuyin, const std::wstring& draft) {
-  return LLMBasePrefix(prompt) +
+// Base：以幾個範例引導續寫，模型接在最後的「校正：」後面輸出一行；
+// 自訂的校正指令放在範例說明前面（Base 模型靠範例格式續寫，不取代範例）
+inline std::wstring LLMCorrectBasePrompt(const std::wstring& prompt, const std::wstring& instruction,
+                                         const std::wstring& context, const std::wstring& zhuyin,
+                                         const std::wstring& draft) {
+  const std::wstring i = LLMTrimPrompt(instruction);
+  return LLMBasePrefix(prompt) + (i.empty() ? std::wstring() : i + L"\n\n") +
          L"以下是注音輸入法的校正紀錄。注音可能有打錯的鍵，初稿是輸入法直接轉出的文字，"
          L"校正是使用者真正要打的句子。\n\n"
          L"前文：\n注音：ㄨㄛˇ ㄐㄧㄣ ㄊㄧㄢ ㄏㄣˇ ㄈㄤˊ\n初稿：我今天很房\n校正：我今天很忙\n\n"
@@ -177,7 +186,8 @@ class OpenAICompatibleProvider : public LLMProvider {
       const std::wstring& current_input,
       size_t max_candidates) override;
   std::wstring CorrectSentence(const std::wstring& context, const std::wstring& zhuyin,
-                               const std::wstring& draft) override;
+                               const std::wstring& draft,
+                               const std::wstring& instruction) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
   // 不經 rime 設定（也不看 llm/enabled），直接指定 API（注音校正用）
@@ -229,7 +239,8 @@ class LlamaCppProvider : public LLMProvider {
       const std::wstring& current_input,
       size_t max_candidates) override;
   std::wstring CorrectSentence(const std::wstring& context, const std::wstring& zhuyin,
-                               const std::wstring& draft) override;
+                               const std::wstring& draft,
+                               const std::wstring& instruction) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 

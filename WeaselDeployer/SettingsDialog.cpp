@@ -3,6 +3,7 @@
 #include "FontSettingDialog.h"
 #include "WeaselDeployer.h"
 #include <PersonalCrypto.h>
+#include "../WeaselServer/LLMProvider.h"
 #include <WeaselIPC.h>
 #include <WeaselUtility.h>
 #include <algorithm>
@@ -950,14 +951,46 @@ void SettingsDialog::LoadLLMSettings() {
   CheckDlgButton(IDC_P1_TYPO_RIME, typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(IDC_P1_TYPO_LLM,
                  get_bool("llm/typo/llm", legacy == L"llm") ? BST_CHECKED : BST_UNCHECKED);
+  // 校正提示詞：沒有自訂時顯示預設指令，方便在上面修改
+  const std::wstring typo_prompt = get_string("llm/typo/prompt");
+  SetMultilineText(IDC_P1_TYPO_PROMPT, typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
   UpdateTypoState();
   llm_modified_ = typo_modified_ = false;
 }
 
 void SettingsDialog::UpdateTypoState() {
   const bool llm = IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED;
-  GetDlgItem(IDC_P1_TYPO_PROFILE_LABEL).EnableWindow(llm);
-  GetDlgItem(IDC_P1_TYPO_PROFILE).EnableWindow(llm);
+  for (int id : {IDC_P1_TYPO_PROFILE_LABEL, IDC_P1_TYPO_PROFILE, IDC_P1_TYPO_PROMPT_LABEL,
+                 IDC_P1_TYPO_PROMPT, IDC_P1_TYPO_PROMPT_RESET})
+    GetDlgItem(id).EnableWindow(llm);
+}
+
+// 設定裡用 \n 換行，多行編輯框要 \r\n
+void SettingsDialog::SetMultilineText(int id, const std::wstring& text) {
+  std::wstring display;
+  for (wchar_t c : text) {
+    if (c == L'\n')
+      display += L"\r\n";
+    else if (c != L'\r')
+      display += c;
+  }
+  GetDlgItem(id).SetWindowTextW(display.c_str());
+}
+
+std::wstring SettingsDialog::GetMultilineText(int id) {
+  CString text;
+  GetDlgItem(id).GetWindowTextW(text);
+  std::wstring value;
+  for (const wchar_t* p = text; *p; ++p) {
+    if (*p != L'\r')
+      value += *p;
+  }
+  return LLMTrim(value);
+}
+
+LRESULT SettingsDialog::OnTypoPromptReset(WORD, WORD, HWND, BOOL&) {
+  SetMultilineText(IDC_P1_TYPO_PROMPT, kLLMCorrectInstruction);
+  return 0;
 }
 
 LRESULT SettingsDialog::OnTypoChange(WORD, WORD, HWND, BOOL&) {
@@ -1080,6 +1113,11 @@ bool SettingsDialog::SaveLLMSettings() {
   rime->config_clear(&llm, "llamacpp/prompt_prefix");
   rime->config_set_bool(&llm, "typo/rime", IsDlgButtonChecked(IDC_P1_TYPO_RIME) == BST_CHECKED);
   rime->config_set_bool(&llm, "typo/llm", IsDlgButtonChecked(IDC_P1_TYPO_LLM) == BST_CHECKED);
+  // 和預設相同（或清空）就不存，之後改了預設指令也會跟著更新
+  const std::wstring typo_prompt = GetMultilineText(IDC_P1_TYPO_PROMPT);
+  rime->config_set_string(
+      &llm, "typo/prompt",
+      typo_prompt == LLMTrim(kLLMCorrectInstruction) ? "" : wtou8(typo_prompt).c_str());
   rime->config_clear(&llm, "typo_correction");
   SavePersonalSettings(&llm);
   const bool ok = !!api_->customize_item(ui_settings_->settings(), "llm", &llm);

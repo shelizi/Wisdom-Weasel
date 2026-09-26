@@ -1182,18 +1182,19 @@ std::string LlamaCppProvider::Chat(const std::string& system, const std::string&
 
 std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
                                                const std::wstring& zhuyin,
-                                               const std::wstring& draft) {
+                                               const std::wstring& draft,
+                                               const std::wstring& instruction) {
   if (!IsAvailable() || zhuyin.empty() || draft.empty())
     return L"";
   std::string prompt;
   if (m_instruct_model) {
-    const std::string system = wtou8(LLMCorrectSystem(m_prompt_prefix));
+    const std::string system = wtou8(LLMCorrectSystem(m_prompt_prefix, instruction));
     const std::string user = wtou8(LLMCorrectUser(context, zhuyin, draft));
     prompt = ApplyChatTemplate(system, user);
     if (prompt.empty())
       prompt = system + "\n\n" + user;
   } else {
-    prompt = wtou8(LLMCorrectBasePrompt(m_prompt_prefix, context, zhuyin, draft));
+    prompt = wtou8(LLMCorrectBasePrompt(m_prompt_prefix, instruction, context, zhuyin, draft));
   }
 
   // 校正要穩定的結果：改用 greedy 取樣（不影響預測用的取樣設定）；

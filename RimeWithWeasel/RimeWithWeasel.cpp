@@ -2500,9 +2500,15 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
   std::wstring context_copy = context;
   std::wstring current_input_copy = current_input;
   std::wstring prefix_copy = completion_prefix;
+  std::wstring typo_prompt;
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    typo_prompt = m_typo_prompt;
+  }
 
   std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
-               prefix_copy, personal, llm_available, history, zhuyin, correct, complete]() {
+               prefix_copy, personal, llm_available, history, zhuyin, correct, complete,
+               typo_prompt]() {
     // 防抖：等待期间若又有新请求（例如继续打字），直接放弃，不占用 GPU
     if (delay_ms > 0) {
       Sleep(delay_ms);
@@ -2553,8 +2559,9 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
         std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
         if (request_seq != m_llm_request_seq.load() || !m_typo_llm)
           return;
-        corrected = CleanCorrection(m_typo_llm->CorrectSentence(history, zhuyin, prefix_copy),
-                                    prefix_copy);
+        corrected = CleanCorrection(
+            m_typo_llm->CorrectSentence(history, zhuyin, prefix_copy, typo_prompt),
+            prefix_copy);
       }
       if (m_dev_console && m_dev_console->IsEnabled())
         m_dev_console->WriteLine(L"[LLM] 整句校正: " + prefix_copy + L" → " +
@@ -2674,6 +2681,10 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
   std::string prompt = read("llm/prompt");
   if (prompt.empty())
     prompt = read("llm/llamacpp/prompt_prefix");
+  {
+    std::lock_guard<std::mutex> lock(m_llm_mutex);
+    m_typo_prompt = u8tow(read("llm/typo/prompt"));  // 自訂校正指令，空字串用預設
+  }
   const bool no_think = read("llm/typo/disable_thinking") == "true";
   int think_tokens = 2048;  // 開啟思考時的思考長度上限（0 = 不限制）
   if (rime_api->config_get_int(config, "llm/typo/think_tokens", &think_tokens))

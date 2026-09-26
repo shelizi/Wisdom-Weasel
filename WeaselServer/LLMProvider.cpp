@@ -464,12 +464,13 @@ std::string OpenAICompatibleProvider::BuildChatBody(const std::wstring& system,
 
 std::wstring OpenAICompatibleProvider::CorrectSentence(const std::wstring& context,
                                                        const std::wstring& zhuyin,
-                                                       const std::wstring& draft) {
+                                                       const std::wstring& draft,
+                                                       const std::wstring& instruction) {
   if (!IsAvailable() || zhuyin.empty() || draft.empty())
     return L"";
   // 校正要穩定的結果：溫度 0；字數與初稿相近，多留一些 token
   const std::string request_body =
-      BuildChatBody(LLMCorrectSystem(m_prompt), LLMCorrectUser(context, zhuyin, draft),
+      BuildChatBody(LLMCorrectSystem(m_prompt, instruction), LLMCorrectUser(context, zhuyin, draft),
                     LLMTokenBudget((int)draft.size() * 3 + 16, !m_disable_thinking, m_think_tokens),
                     0.0);
   std::string response_body;
