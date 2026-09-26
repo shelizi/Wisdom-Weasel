@@ -453,6 +453,7 @@ std::wstring PersonalRefiner::RefineWithLLM(
     spec.n_gpu_layers = config.n_gpu_layers;
     spec.n_threads = config.n_threads;
     spec.disable_thinking = config.disable_thinking;
+    spec.think_tokens = config.think_tokens;
     std::wstring error;
     Log(L"載入本機精煉模型：" + u8tow(config.model_path));
     if (!session.Open(spec, &error)) {
@@ -564,7 +565,10 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
        << "\"messages\":["
        << "{\"role\":\"system\",\"content\":\"" << LLMJsonEscape(wtou8(kSystemPrompt)) << "\"},"
        << "{\"role\":\"user\",\"content\":\"" << LLMJsonEscape(wtou8(user)) << "\"}"
-       << "],\"temperature\":0.2,\"max_tokens\":2048,\"stream\":false";
+       << "],\"temperature\":0.2,\"stream\":false";
+  const int max_tokens = LLMTokenBudget(2048, !config.disable_thinking, config.think_tokens);
+  if (max_tokens >= 0)
+    body << ",\"max_tokens\":" << max_tokens;
   if (config.disable_thinking) {
     const std::string no_think = LLMDisableThinkingJson(config.api_url, config.model);
     if (!no_think.empty())

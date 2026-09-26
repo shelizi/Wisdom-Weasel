@@ -85,6 +85,7 @@ bool IsSubtleText(int id) {
     case IDC_P5_REMOTE_HINT:
     case IDC_P5_USAGE:
     case IDC_P5_FILE_STATUS:
+    case IDC_P5_THINK_HINT:
     case IDC_P6_COUNT:
     case IDC_P6_RULES_LABEL:
     case IDC_P6_HINT:
@@ -1499,6 +1500,8 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     p.api_key = get(base + "api_key");
     p.model = get(base + "model");
     p.no_think = get(base + "disable_thinking") == L"true";
+    const std::wstring think = get(base + "think_tokens");
+    p.think_tokens = think.empty() ? 2048 : (std::max)(0, _wtoi(think.c_str()));
     index_of[u8tow(key)] = (int)profiles_.size();
     profiles_.push_back(p);
   }
@@ -1590,6 +1593,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
     set(base + "api_key", p.api_key);
     set(base + "model", p.model);
     rime->config_set_bool(llm, (base + "disable_thinking").c_str(), p.no_think);
+    rime->config_set_int(llm, (base + "think_tokens").c_str(), p.think_tokens);
   }
   // 預測：展開到輸入法讀取的欄位
   const int predict = ComboProfile(IDC_P3_PROFILE);
@@ -1602,10 +1606,12 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
       set("openai/api_key", p.api_key);
       set("openai/model", p.model);
       rime->config_set_bool(llm, "openai/disable_thinking", p.no_think);
+      rime->config_set_int(llm, "openai/think_tokens", p.think_tokens);
     } else {
       set("llamacpp/model_path", yaml_path(p.model_path));
       set("llamacpp/model_type", p.model_type);
       rime->config_set_bool(llm, "llamacpp/disable_thinking", p.no_think);
+      rime->config_set_int(llm, "llamacpp/think_tokens", p.think_tokens);
     }
   }
   // 精煉
@@ -1621,6 +1627,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   set("personal/refine/api_key", refine >= 0 && r.remote ? r.api_key : L"");
   set("personal/refine/model", refine >= 0 && r.remote ? r.model : L"");
   rime->config_set_bool(llm, "personal/refine/disable_thinking", refine >= 0 && r.no_think);
+  rime->config_set_int(llm, "personal/refine/think_tokens", r.think_tokens);
   // 注音校正
   const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   const ModelProfile& c = typo >= 0 ? profiles_[typo] : none;
@@ -1632,6 +1639,7 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   set("typo/api_key", typo >= 0 && c.remote ? c.api_key : L"");
   set("typo/model", typo >= 0 && c.remote ? c.model : L"");
   rime->config_set_bool(llm, "typo/disable_thinking", typo >= 0 && c.no_think);
+  rime->config_set_int(llm, "typo/think_tokens", c.think_tokens);
 }
 
 bool SettingsDialog::ValidateProfiles() {
@@ -1698,9 +1706,11 @@ void SettingsDialog::SelectProfile(int index) {
   GetDlgItem(IDC_P5_API_KEY).SetWindowTextW(p.api_key.c_str());
   GetDlgItem(IDC_P5_API_MODEL).SetWindowTextW(p.model.c_str());
   CheckDlgButton(IDC_P5_NO_THINK, p.no_think ? BST_CHECKED : BST_UNCHECKED);
+  GetDlgItem(IDC_P5_THINK_TOKENS).SetWindowTextW(std::to_wstring(p.think_tokens).c_str());
   for (int id = IDC_P5_NAME_LABEL; id <= IDC_P5_REMOTE_HINT; ++id)
     GetDlgItem(id).EnableWindow(has);
   GetDlgItem(IDC_P5_NO_THINK).EnableWindow(has);
+  UpdateThinkState();
   GetDlgItem(IDC_P5_COPY).EnableWindow(has);
   GetDlgItem(IDC_P5_DELETE).EnableWindow(has);
   GetDlgItem(IDC_P5_API_TEST).EnableWindow(has && !api_busy_);
@@ -1733,11 +1743,19 @@ void SettingsDialog::CommitProfileEditor() {
   p.api_key = get_text(IDC_P5_API_KEY);
   p.model = get_text(IDC_P5_API_MODEL);
   p.no_think = IsDlgButtonChecked(IDC_P5_NO_THINK) == BST_CHECKED;
+  const std::wstring think = get_text(IDC_P5_THINK_TOKENS);
+  p.think_tokens = think.empty() ? 2048 : (std::max)(0, _wtoi(think.c_str()));
   if (ProfileLabel(p) != old_label) {
     profile_list_.DeleteString(profile_sel_);
     profile_list_.InsertString(profile_sel_, ProfileLabel(p).c_str());
     profile_list_.SetCurSel(profile_sel_);
   }
+}
+
+void SettingsDialog::UpdateThinkState() {
+  const bool on = profile_sel_ >= 0 && IsDlgButtonChecked(IDC_P5_NO_THINK) != BST_CHECKED;
+  for (int id : {IDC_P5_THINK_LABEL, IDC_P5_THINK_TOKENS, IDC_P5_THINK_HINT})
+    GetDlgItem(id).EnableWindow(on);
 }
 
 int SettingsDialog::ComboProfile(int combo_id) const {
@@ -1852,6 +1870,7 @@ LRESULT SettingsDialog::OnProfileEdit(WORD, WORD, HWND, BOOL&) {
     return 0;
   CommitProfileEditor();
   RefreshProfileCombos();
+  UpdateThinkState();
   llm_modified_ = true;
   return 0;
 }

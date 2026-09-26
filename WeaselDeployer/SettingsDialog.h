@@ -51,6 +51,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
     std::wstring api_key;
     std::wstring model;
     bool no_think = false;             // 關閉思考（思考型模型）
+    int think_tokens = 2048;           // 開啟思考時的思考長度上限（0 = 不限制）
   };
 
  protected:
@@ -111,6 +112,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_HANDLER(IDC_P5_API_KEY, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_API_MODEL, EN_CHANGE, OnProfileEdit)
   COMMAND_ID_HANDLER(IDC_P5_NO_THINK, OnProfileEdit)
+  COMMAND_HANDLER(IDC_P5_THINK_TOKENS, EN_CHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_TYPE, CBN_SELCHANGE, OnProfileEdit)
   COMMAND_HANDLER(IDC_P5_MODEL, CBN_SELCHANGE, OnModelChange)
   COMMAND_ID_HANDLER(IDC_P5_BROWSE, OnBrowseModel)
@@ -248,6 +250,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool ValidateProfiles();
   void PopulateProfileList();
   void SelectProfile(int index);    // 顯示到右側編輯區
+  void UpdateThinkState();          // 關閉思考時停用「思考長度上限」
   void CommitProfileEditor();       // 編輯區 → profiles_
   // 預測與精煉的下拉選單；參數為要選的 profiles_ 索引（-1 = 不選，-2 = 維持目前的選擇）
   void RefreshProfileCombos(int predict = -2, int refine = -2, int typo = -2);

@@ -61,7 +61,7 @@ void OpenAICompatibleProvider::ConfigureDirect(const std::string& api_url,
                                                const std::string& api_key,
                                                const std::string& model,
                                                const std::wstring& prompt,
-                                               bool disable_thinking) {
+                                               bool disable_thinking, int think_tokens) {
   m_enabled = !api_url.empty();
   m_api_url = api_url;
   m_api_key = api_key;
@@ -76,6 +76,7 @@ void OpenAICompatibleProvider::ConfigureDirect(const std::string& api_url,
   m_extra_body_json.clear();
   m_prompt = prompt;
   m_disable_thinking = disable_thinking;
+  m_think_tokens = think_tokens;
   CloseConnection();
 }
 
@@ -313,6 +314,10 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
     Bool no_think = false;
     m_disable_thinking =
         rime_api->config_get_bool(&config, "llm/openai/disable_thinking", &no_think) && no_think;
+    int think_tokens = 2048;
+    m_think_tokens = rime_api->config_get_int(&config, "llm/openai/think_tokens", &think_tokens)
+                         ? (std::max)(0, think_tokens)
+                         : 2048;
   }
 
   // 任意 JSON 透传（必须是 JSON 对象字符串，如 {"stream":false,"user":"abc"}）
@@ -362,7 +367,9 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   // 构建 prompt：提示词（与 llama.cpp 共用）+ 任务说明放 system，上下文放 user
   extern DevConsole* g_dev_console;
   std::string request_body = BuildChatBody(LLMInstructSystem(m_prompt, max_candidates),
-                                           LLMInstructUser(context, current_input), m_max_tokens,
+                                           LLMInstructUser(context, current_input),
+                                           LLMTokenBudget(m_max_tokens, !m_disable_thinking,
+                                                          m_think_tokens),
                                            m_temperature);
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -415,9 +422,10 @@ std::string OpenAICompatibleProvider::BuildChatBody(const std::wstring& system,
        << "\"messages\":["
        << "{\"role\":\"system\",\"content\":\"" << escape_json(wtou8(system)) << "\"},"
        << "{\"role\":\"user\",\"content\":\"" << escape_json(wtou8(user)) << "\"}"
-       << "],"
-       << "\"max_tokens\":" << max_tokens << ","
-       << "\"temperature\":" << temperature;
+       << "],";
+  if (max_tokens >= 0)
+    json << "\"max_tokens\":" << max_tokens << ",";
+  json << "\"temperature\":" << temperature;
 
   json << ",\"top_p\":" << m_top_p
        << ",\"presence_penalty\":" << m_presence_penalty
@@ -462,7 +470,8 @@ std::wstring OpenAICompatibleProvider::CorrectSentence(const std::wstring& conte
   // 校正要穩定的結果：溫度 0；字數與初稿相近，多留一些 token
   const std::string request_body =
       BuildChatBody(LLMCorrectSystem(m_prompt), LLMCorrectUser(context, zhuyin, draft),
-                    (int)draft.size() * 3 + 16, 0.0);
+                    LLMTokenBudget((int)draft.size() * 3 + 16, !m_disable_thinking, m_think_tokens),
+                    0.0);
   std::string response_body;
   if (!ExecuteRequest(m_api_url, request_body, response_body))
     return L"";

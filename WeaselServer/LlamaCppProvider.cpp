@@ -249,6 +249,10 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     Bool no_think = false;
     m_disable_thinking =
         rime_api->config_get_bool(&config, "llm/llamacpp/disable_thinking", &no_think) && no_think;
+    int think_tokens = 2048;
+    m_think_tokens = rime_api->config_get_int(&config, "llm/llamacpp/think_tokens", &think_tokens)
+                         ? (std::max)(0, think_tokens)
+                         : 2048;
   }
 
   // 提示词（Base 与 Instruct 共用）：llm/prompt；兼容旧的 llm/llamacpp/prompt_prefix
@@ -738,7 +742,8 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
 }
 
 std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
-    const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens) {
+    const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens,
+    int think_budget) {
   std::vector<std::string> candidates;
   extern DevConsole* g_dev_console;
 
@@ -813,6 +818,13 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
   const int n_prompt_tokens = n_system_tokens + n_user_tokens;
 
   const int n_parallel_i = (int)(n_parallel <= (size_t)INT32_MAX ? n_parallel : INT32_MAX);
+  // 每条序列的 token 上限：结论 max_new_tokens + 思考额度；不限制或超过上下文时，用上下文放得下的最大值
+  const int answer_tokens = max_new_tokens;
+  int seq_tokens = think_budget < 0 ? INT32_MAX / 2 : max_new_tokens + think_budget;
+  const int fit = (m_ctx_size - n_prompt_tokens) / (n_parallel_i > 0 ? n_parallel_i : 1);
+  if (think_budget != 0 && seq_tokens > fit)
+    seq_tokens = (std::max)(fit, max_new_tokens);
+  max_new_tokens = seq_tokens;
   const int n_len = n_prompt_tokens + max_new_tokens;
   const int64_t n_kv_req = (int64_t)n_prompt_tokens + (int64_t)max_new_tokens * (int64_t)n_parallel_i;
   if (n_kv_req > m_ctx_size) {
@@ -866,6 +878,8 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
   candidates.resize((size_t)n_parallel_i);
   const int32_t first_logits_batch_idx = n_prefill_tokens - 1;
   std::vector<int32_t> i_batch((size_t)n_parallel_i, first_logits_batch_idx);
+  // 思考结束后（或根本没思考）才开始计算结论的 token；结论满 answer_tokens 就停
+  std::vector<int> answer_count((size_t)n_parallel_i, 0);
 
   int n_cur = n_prompt_tokens;
   const int n_vocab = llama_vocab_n_tokens(vocab);
@@ -897,8 +911,28 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
 
       char buf[256];
       int n = llama_token_to_piece(vocab, new_token_id, buf, (int32_t)sizeof(buf), 0, true);
+      const size_t before = candidates[i].size();
       if (n > 0) {
         candidates[i].append(buf, (size_t)n);
+      }
+      if (think_budget != 0) {
+        // 思考中（含 "<think>" 被拆成好几个 token 的开头）不计；结论从思考结束后第一个非空白字算起
+        const std::string& text = candidates[i];
+        const size_t start = text.find_first_not_of(" \t\r\n");
+        const size_t close = text.find("</think>");
+        const bool thinking_text = start != std::string::npos &&
+                                   text.compare(start, 7, "<think>") == 0;
+        const bool think_prefix = start != std::string::npos && text.size() - start < 7 &&
+                                  std::string("<think>").compare(0, text.size() - start, text, start,
+                                                                 std::string::npos) == 0;
+        const size_t answer_from = close != std::string::npos ? close + 8 : 0;
+        const bool in_answer = (!thinking_text || close != std::string::npos) && !think_prefix &&
+                               text.find_first_not_of(" \t\r\n", answer_from) != std::string::npos;
+        if (in_answer && ++answer_count[i] > answer_tokens) {
+          candidates[i].resize(before);  // 超过结论额度的这个 token 不要
+          i_batch[i] = -1;
+          continue;
+        }
       }
 
       const int32_t batch_idx = batch.n_tokens;
@@ -1009,13 +1043,16 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   // 当需要多个候选时，使用批量采样（与单次生成一样复用 system KV cache）
   if (max_candidates > 1) {
     ULONGLONG start_time = GetTickCount64();
-    std::vector<std::string> raw = GenerateCandidatesBatch(system_prompt_utf8, prompt_utf8, max_candidates, 4);
+    const int think_budget =
+        Thinking() ? (m_think_tokens <= 0 ? -1 : m_think_tokens) : 0;
+    std::vector<std::string> raw =
+        GenerateCandidatesBatch(system_prompt_utf8, prompt_utf8, max_candidates, 4, think_budget);
     ULONGLONG elapsed_ms = GetTickCount64() - start_time;
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] 批量采样完成，耗时: " + std::to_wstring(elapsed_ms) + L" ms");
     }
     for (const auto& s : raw) {
-      std::wstring w = u8tow(s);
+      std::wstring w = LLMStripThinking(u8tow(s));
       if (!w.empty()) candidates.push_back(w);
     }
     if (!m_instruct_model) {
@@ -1037,7 +1074,8 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
 
   // 生成文本（单候选或回退）
   ULONGLONG start_time = GetTickCount64();
-  std::string response = GenerateText(prompt_utf8, m_max_tokens);
+  const int budget = LLMTokenBudget(m_max_tokens, Thinking(), m_think_tokens);
+  std::string response = GenerateText(prompt_utf8, budget < 0 ? (size_t)m_ctx_size : (size_t)budget);
   ULONGLONG end_time = GetTickCount64();
   ULONGLONG elapsed_ms = end_time - start_time;
 
@@ -1048,7 +1086,7 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   }
 
   // 解析响应（按空格分割）
-  std::wstring response_w = u8tow(response);
+  std::wstring response_w = LLMStripThinking(u8tow(response));
   std::wstringstream ss(response_w);
   std::wstring word;
   while (ss >> word && candidates.size() < max_candidates) {
@@ -1077,6 +1115,7 @@ bool LlamaCppProvider::LoadModelDirect(const LLMLocalModelSpec& spec, double tem
   m_model_path = spec.model_path;
   m_instruct_model = spec.instruct;
   m_disable_thinking = spec.disable_thinking;
+  m_think_tokens = (std::max)(0, spec.think_tokens);
   m_n_ctx = spec.n_ctx;
   m_n_gpu_layers = spec.n_gpu_layers;
   m_n_threads = spec.n_threads > 0 ? spec.n_threads : 4;
@@ -1137,7 +1176,8 @@ std::string LlamaCppProvider::Chat(const std::string& system, const std::string&
   DropSystemPromptCache();
   if (m_sampler)
     llama_sampler_reset((llama_sampler*)m_sampler);
-  return wtou8(LLMStripThinking(u8tow(GenerateText(prompt, (size_t)max_tokens))));
+  const size_t limit = max_tokens < 0 ? (size_t)m_ctx_size : (size_t)max_tokens;
+  return wtou8(LLMStripThinking(u8tow(GenerateText(prompt, limit))));
 }
 
 std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
@@ -1164,7 +1204,9 @@ std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
   void* saved = m_sampler;
   m_sampler = greedy;
   // 中文大約一字一個 token，多留一些給模型改字數
-  const std::string output = GenerateText(prompt, draft.size() * 2 + 8, true);
+  const int budget = LLMTokenBudget((int)draft.size() * 2 + 8, Thinking(), m_think_tokens);
+  const std::string output =
+      GenerateText(prompt, budget < 0 ? (size_t)m_ctx_size : (size_t)budget, true);
   m_sampler = saved;
   llama_sampler_free(greedy);
 
@@ -1209,7 +1251,14 @@ bool LLMLocalChatSession::Chat(const std::string& system, const std::string& use
     *error = L"模型尚未載入";
     return false;
   }
-  const int need = provider_->CountTokens(system + user) + max_tokens + 64;
+  // 開啟思考時再加思考額度；不限制或放不下時，用完剩下的上下文（至少要放得下原本的結論額度）
+  const int base = max_tokens;
+  const int prompt_tokens = provider_->CountTokens(system + user) + 64;
+  const int room = provider_->ContextSize() - prompt_tokens;
+  max_tokens = provider_->ChatBudget(base);
+  if (max_tokens < 0 || max_tokens > room)
+    max_tokens = (std::max)(room, 0);
+  const int need = prompt_tokens + base;
   if (need > provider_->ContextSize()) {
     *error = L"提示太長（需要 " + std::to_wstring(need) + L" token，上下文 " +
              std::to_wstring(provider_->ContextSize()) + L"）";

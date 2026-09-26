@@ -293,6 +293,11 @@ void RimeWithWeaselHandler::Initialize() {
                        refine_model_type.begin(), ::tolower);
         refine.instruct = refine_model_type != "base";
         refine.disable_thinking = read_string("llm/personal/refine/disable_thinking") == "true";
+        {
+          int think_tokens = 2048;
+          if (rime_api->config_get_int(&config, "llm/personal/refine/think_tokens", &think_tokens))
+            refine.think_tokens = (std::max)(0, think_tokens);
+        }
         // 舊設定（只有 api_url）視為 OpenAI 相容 API
         if (refine.type.empty() && !refine.api_url.empty() &&
             read_string("llm/personal/refine/profile").empty())
@@ -2610,6 +2615,11 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
   if (prompt.empty())
     prompt = read("llm/llamacpp/prompt_prefix");
   const bool no_think = read("llm/typo/disable_thinking") == "true";
+  int think_tokens = 2048;  // 開啟思考時的思考長度上限（0 = 不限制）
+  if (rime_api->config_get_int(config, "llm/typo/think_tokens", &think_tokens))
+    think_tokens = (std::max)(0, think_tokens);
+  else
+    think_tokens = 2048;
 
   // 和智慧预测是同一个模型：共用，避免同一个模型载入两次
   if (m_llm_provider && m_llm_provider->IsAvailable()) {
@@ -2632,8 +2642,12 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
     LLMLocalModelSpec spec;
     spec.model_path = model_path;
     spec.instruct = model_type != "base";
-    spec.n_ctx = 2048;  // 前文 + 一句话就够
+    // 前文 + 一句话 2048 就够；开启思考时再加上思考额度（不限制时给 8192）
+    spec.n_ctx = no_think || model_type == "base" ? 2048
+                 : think_tokens <= 0              ? 8192
+                                                  : (std::min)(2048 + think_tokens, 32768);
     spec.disable_thinking = no_think;
+    spec.think_tokens = think_tokens;
     int value = 0;
     if (rime_api->config_get_int(config, "llm/llamacpp/n_gpu_layers", &value))
       spec.n_gpu_layers = value;
@@ -2648,7 +2662,7 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
     }
   } else if (type == "openai" && !api_url.empty()) {
     auto provider = std::make_unique<OpenAICompatibleProvider>();
-    provider->ConfigureDirect(api_url, api_key, model, u8tow(prompt), no_think);
+    provider->ConfigureDirect(api_url, api_key, model, u8tow(prompt), no_think, think_tokens);
     m_typo_owned = std::move(provider);
   } else {
     LOG(WARNING) << "Typo correction: no model selected (llm/typo/type)";

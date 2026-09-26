@@ -128,6 +128,14 @@ inline std::wstring LLMStripThinking(const std::wstring& text) {
   return b == std::wstring::npos ? std::wstring() : s.substr(b);
 }
 
+// 輸出額度：base 是結論本身需要的 token；開啟思考時再加上思考長度上限 think_tokens。
+// think_tokens 為 0 表示不限制，回傳 -1（API 不送 max_tokens；本機生成到結束或上下文用完）
+inline int LLMTokenBudget(int base, bool thinking, int think_tokens) {
+  if (!thinking)
+    return base;
+  return think_tokens <= 0 ? -1 : base + think_tokens;
+}
+
 // OpenAI 相容 API 關閉思考的參數（不含前後逗號）。各家寫法不同，依網址判斷：
 // OpenRouter 用 reasoning.enabled；Ollama 用 think；OpenAI 的推理模型用 reasoning_effort；
 // 其餘（llama-server、vLLM、LM Studio 等）用 chat_template_kwargs.enable_thinking
@@ -151,6 +159,7 @@ struct LLMLocalModelSpec {
   int n_gpu_layers = 0;
   int n_threads = 4;
   bool disable_thinking = false;  // 關閉思考：在 chat template 的生成提示後補上空的思考區塊
+  int think_tokens = 2048;        // 開啟思考時的思考長度上限（0 = 不限制）
 };
 bool LLMLocalChat(const LLMLocalModelSpec& spec, const std::string& system_utf8,
                   const std::string& user_utf8, int max_tokens, std::string* output,
@@ -174,10 +183,10 @@ class OpenAICompatibleProvider : public LLMProvider {
   // 不經 rime 設定（也不看 llm/enabled），直接指定 API（注音校正用）
   void ConfigureDirect(const std::string& api_url, const std::string& api_key,
                        const std::string& model, const std::wstring& prompt,
-                       bool disable_thinking);
+                       bool disable_thinking, int think_tokens);
 
  private:
-  // chat/completions 的請求內容（system + user 兩則訊息，含 extra_body_json）
+  // chat/completions 的請求內容（system + user 兩則訊息，含 extra_body_json）；max_tokens < 0 時不送
   std::string BuildChatBody(const std::wstring& system, const std::wstring& user, int max_tokens,
                             double temperature) const;
   // 执行HTTP请求
@@ -202,6 +211,7 @@ class OpenAICompatibleProvider : public LLMProvider {
   std::string m_extra_body_json;  // 额外透传 JSON（对象字符串）
   std::wstring m_prompt;          // llm/prompt：与 llama.cpp 共用的提示词
   bool m_disable_thinking = false;  // llm/openai/disable_thinking：请求时关闭思考
+  int m_think_tokens = 2048;        // llm/openai/think_tokens：开启思考时的思考长度上限（0 = 不限制）
   void* m_hSession;       // HINTERNET，复用的 WinHTTP 会话
   void* m_hConnect;       // HINTERNET，复用的连接
   std::string m_cached_url;  // 当前连接对应的 URL，变化时重建连接
@@ -226,10 +236,13 @@ class LlamaCppProvider : public LLMProvider {
   // 不經 rime 設定，直接指定模型載入（LLMLocalChat 用）
   bool LoadModelDirect(const LLMLocalModelSpec& spec, double temperature);
   void SetPromptPrefix(const std::wstring& prompt) { m_prompt_prefix = prompt; }
-  // 一次對話：Instruct 模型套用模型內建的 chat template，Base 模型用純文字續寫
+  // 一次對話：Instruct 模型套用模型內建的 chat template，Base 模型用純文字續寫；
+  // max_tokens < 0 表示不限制（生成到結束或上下文用完）
   std::string Chat(const std::string& system_utf8, const std::string& user_utf8, int max_tokens);
   // 目前模型可用的上下文長度（token）與文字的 token 數
   int ContextSize() const { return m_ctx_size; }
+  // 對話需要的輸出額度：開啟思考時加上思考長度上限（-1 = 不限制）
+  int ChatBudget(int base) const { return LLMTokenBudget(base, Thinking(), m_think_tokens); }
   int CountTokens(const std::string& text_utf8) const;
 
  private:
@@ -244,8 +257,9 @@ class LlamaCppProvider : public LLMProvider {
   std::string ApplyChatTemplate(const std::string& system_utf8, const std::string& user_utf8) const;
   // 丢弃预测用的 system prompt KV 缓存（改跑别的 prompt 前呼叫；下次预测会重新 prefill）
   void DropSystemPromptCache();
-  // 批量采样：n_parallel 条序列并行，每条只生成一个词（最多 max_new_tokens 个 token）；与单次生成一样复用 system 的 KV cache
-  std::vector<std::string> GenerateCandidatesBatch(const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens);
+  // 批量采样：n_parallel 条序列并行，每条只生成一个词（最多 max_new_tokens 个 token）；与单次生成一样复用 system 的 KV cache。
+  // think_budget：思考区块另外可用的 token（0 = 不思考，-1 = 不限制，受上下文大小限制）
+  std::vector<std::string> GenerateCandidatesBatch(const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens, int think_budget = 0);
   // 预处理并缓存 system prompt 的 KV 状态
   bool PrepareSystemPrompt(const std::string& system_prompt_utf8);
 
@@ -267,6 +281,9 @@ class LlamaCppProvider : public LLMProvider {
   bool m_instruct_model;          // true=Instruct 使用指令 prompt，false=Base 仅用 context 补全
   std::wstring m_prompt_prefix;   // llm/prompt：Base 接在前文前的引导文字，Instruct 放在 system 指令前
   bool m_disable_thinking = false;  // llm/llamacpp/disable_thinking：chat template 后补空的思考区块
+  int m_think_tokens = 2048;        // llm/llamacpp/think_tokens：开启思考时的思考长度上限（0 = 不限制）
+  // 会思考：Instruct 模型且没有关闭思考（Base 模型只会续写）
+  bool Thinking() const { return m_instruct_model && !m_disable_thinking; }
 
   // llama.cpp 对象（使用前向声明避免包含头文件）
   void* m_model;                  // llama_model*
