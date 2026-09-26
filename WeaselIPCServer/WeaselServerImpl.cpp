@@ -172,6 +172,134 @@ int ServerImpl::Stop() {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// 卡住侦测：所有应用程序的输入法请求都在同一条线程上处理，它一卡住，打字中的应用程序就跟着冻结。
+// 监看线程发现一个请求（含等锁的时间）超过 2 秒时，把所有线程当下的调用栈写到
+// %TEMP%\rime.weasel\stall.log，方便找出卡在哪里。
+
+#include <dbghelp.h>
+#include <tlhelp32.h>
+#include <fstream>
+#pragma comment(lib, "dbghelp.lib")
+
+namespace {
+
+std::atomic<ULONGLONG> g_request_start{0};  // 0 = 没有进行中的请求
+std::atomic<DWORD> g_request_msg{0};
+std::atomic<DWORD> g_listener_tid{0};
+
+#ifdef _M_X64
+// 只做栈回溯，不配置内存（线程可能停在堆锁里）；读到坏地址就停
+int WalkStack(CONTEXT ctx, DWORD64* frames, int max_frames) {
+  int n = 0;
+  __try {
+    while (n < max_frames && ctx.Rip) {
+      frames[n++] = ctx.Rip;
+      DWORD64 image_base = 0;
+      PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &image_base, NULL);
+      if (!fn) {
+        ctx.Rip = *(DWORD64*)ctx.Rsp;
+        ctx.Rsp += 8;
+      } else {
+        PVOID handler_data = NULL;
+        DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, ctx.Rip, fn, &ctx, &handler_data,
+                         &establisher, NULL);
+      }
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return n;
+}
+
+void WriteStall(ULONGLONG elapsed, DWORD msg) {
+  static bool sym_ready = false;
+  const HANDLE process = GetCurrentProcess();
+  if (!sym_ready) {
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    sym_ready = !!SymInitialize(process, NULL, TRUE);
+  }
+  std::ofstream out(WeaselLogPath() / "stall.log", std::ios::app);
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  char head[160];
+  sprintf_s(head, "==== %04d-%02d-%02d %02d:%02d:%02d request msg=%lu stalled %llu ms (listener tid=%lu)",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, msg, elapsed,
+            g_listener_tid.load());
+  out << head << "\n";
+
+  const DWORD pid = GetCurrentProcessId();
+  const DWORD self = GetCurrentThreadId();
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snap == INVALID_HANDLE_VALUE)
+    return;
+  THREADENTRY32 te = {sizeof(te)};
+  for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+    if (te.th32OwnerProcessID != pid || te.th32ThreadID == self)
+      continue;
+    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                           FALSE, te.th32ThreadID);
+    if (!th)
+      continue;
+    CONTEXT ctx = {};
+    ctx.ContextFlags = CONTEXT_FULL;
+    DWORD64 frames[48];
+    int n = 0;
+    if (SuspendThread(th) != (DWORD)-1) {
+      if (GetThreadContext(th, &ctx))
+        n = WalkStack(ctx, frames, 48);
+      ResumeThread(th);
+    }
+    CloseHandle(th);
+    out << "-- thread " << te.th32ThreadID
+        << (te.th32ThreadID == g_listener_tid.load() ? " (IPC listener)" : "") << "\n";
+    for (int i = 0; i < n; ++i) {
+      char buf[sizeof(SYMBOL_INFO) + 256] = {};
+      SYMBOL_INFO* sym = (SYMBOL_INFO*)buf;
+      sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+      sym->MaxNameLen = 255;
+      DWORD64 disp = 0;
+      IMAGEHLP_MODULE64 mod = {sizeof(mod)};
+      const char* mod_name = SymGetModuleInfo64(process, frames[i], &mod) ? mod.ModuleName : "?";
+      out << "   " << mod_name << "!";
+      if (SymFromAddr(process, frames[i], &disp, sym))
+        out << sym->Name << "+0x" << std::hex << disp << std::dec;
+      else
+        out << "0x" << std::hex << frames[i] << std::dec;
+      IMAGEHLP_LINE64 line = {sizeof(line)};
+      DWORD line_disp = 0;
+      if (SymGetLineFromAddr64(process, frames[i], &line_disp, &line))
+        out << "  " << line.FileName << ":" << line.LineNumber;
+      out << "\n";
+    }
+  }
+  CloseHandle(snap);
+  out << "\n";
+}
+
+#else
+void WriteStall(ULONGLONG, DWORD) {}
+#endif  // _M_X64
+
+void StartStallWatchdog() {
+  std::thread([]() {
+    ULONGLONG reported = 0;  // 已回报过的请求（以开始时间辨识），同一次卡住只写一次
+    for (;;) {
+      Sleep(250);
+      const ULONGLONG start = g_request_start.load();
+      if (!start || start == reported)
+        continue;
+      const ULONGLONG elapsed = GetTickCount64() - start;
+      if (elapsed < 2000)
+        continue;
+      reported = start;
+      WriteStall(elapsed, g_request_msg.load());
+    }
+  }).detach();
+}
+
+}  // namespace
+
 // 所有 IPC 请求都在这把锁下串行处理（librime 与候选窗都不是线程安全的）。
 // 后台线程（如 LLM 异步预测完成后刷新候选窗）也必须先取得这把锁，见 weasel::ServerApiMutex()。
 std::mutex& weasel::ServerApiMutex() {
@@ -187,9 +315,16 @@ int ServerImpl::Run() {
   }
 
   auto listener = [this](PipeMessage msg, PipeServer::Respond resp) -> void {
-    std::lock_guard guard(g_api_mutex);
-    HandlePipeMessage(msg, resp);
+    g_listener_tid = GetCurrentThreadId();
+    g_request_msg = msg.Msg;
+    g_request_start = GetTickCount64();  // 从收到请求开始计时，等锁的时间也算
+    {
+      std::lock_guard guard(g_api_mutex);
+      HandlePipeMessage(msg, resp);
+    }
+    g_request_start = 0;
   };
+  StartStallWatchdog();
   m_listenThread =
       std::thread([this, listener]() { channel->Listen(listener); });
 
