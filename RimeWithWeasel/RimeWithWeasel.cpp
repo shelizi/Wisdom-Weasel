@@ -2786,10 +2786,12 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
     std::lock_guard<std::mutex> lock(m_llm_mutex);
     typo_prompt = m_typo_prompt;
   }
+  // 校正只看组字区的内容：组字区里已确定的部分（混打、标点）当前文，不带之前送出的文字
+  const std::wstring typo_context = get_session_status(ipc_id).mixed_text;
 
   std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
                prefix_copy, personal, llm_available, history, zhuyin, correct, complete,
-               typo_prompt]() {
+               typo_prompt, typo_context]() {
     // 生成途中又有新请求（继续打字）：本机模型立即停止，让新的请求接着开始
     LLMCancelScope cancel_scope(
         [this, request_seq] { return request_seq != m_llm_request_seq.load(); });
@@ -2844,7 +2846,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
         if (request_seq != m_llm_request_seq.load() || !m_typo_llm)
           return;
         corrected = CleanCorrection(
-            m_typo_llm->CorrectSentence(history, zhuyin, prefix_copy, typo_prompt),
+            m_typo_llm->CorrectSentence(typo_context, zhuyin, prefix_copy, typo_prompt),
             prefix_copy);
       }
       if (m_dev_console && m_dev_console->IsEnabled())
