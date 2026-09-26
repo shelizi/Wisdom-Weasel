@@ -98,6 +98,9 @@
 #define IDC_P8_STATS                    3806
 #define IDC_P8_STATS_HINT               3807
 #define IDC_P8_STATS_RESET              3808
+#define IDC_P8_LOG                      3809
+#define IDC_P8_LOG_STATUS               3810
+#define IDC_P8_LOG_CLEAR                3811
 #define IDC_P1_HOTKEY_LABEL             3104
 #define IDC_P1_HOTKEYS                  3105
 #define IDC_P1_GET_SCHEMATA             3106

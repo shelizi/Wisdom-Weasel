@@ -70,6 +70,12 @@ struct SessionStatus {
   // 選字統計：這次組字有沒有換過候選、有沒有出現 LLM 候選（送出時計入）
   bool choice_changed = false;
   bool llm_offered = false;
+  bool focus_used = false;      // 這次組字用過逐字選字
+  bool llm_committed = false;   // 這次送出的是 LLM 候選
+  bool correction_committed = false;
+  // 選字紀錄：還沒換字前 Rime 的預設轉換（整句）與對應的注音
+  std::wstring default_text;
+  std::wstring default_zhuyin;
   int focus_hl = 0;  // 框選時反白停的位置（目前顯示的字），換到別的才算換字
   int focus = -1;
   std::string focus_input;  // 框選時的輸入與游標，改變了就取消框選
@@ -223,11 +229,16 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
     int64_t llm_used = 0;          // 採用 LLM 候選（Tab）的次數
     int64_t corrections_used = 0;  // 其中採用整句校正的次數
     int64_t backspaces = 0;        // 組字中按 Backspace 的次數
+    int64_t deleted_after = 0;     // 送出後 10 秒內在應用程式裡按 Backspace 的次數（送錯字）
+    int64_t focus_uses = 0;        // 用逐字選字（←/→ 框字）的次數
   };
+  ULONGLONG m_last_commit_tick = 0;  // 最近一次送出的時間（算送出後刪除）
+  bool m_choice_log = false;         // llm/choice/log：記錄選字過程（加密）
+  void _LogChoice(SessionStatus& ss, const std::wstring& text, bool mixed);
   std::map<std::string, ChoiceStats> m_choice_stats;  // 日期 → 統計
   bool m_choice_stats_loaded = false;
   ChoiceStats& _TodayStats();
-  void _CountCommit(SessionStatus& ss, const std::wstring& text);
+  void _CountCommit(SessionStatus& ss, const std::wstring& text, bool mixed = false);
   void _SaveChoiceStats();
   // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放，
   // 不在處理輸入法請求的執行緒上等（精煉可能正在等 LLM）

@@ -6,6 +6,7 @@
 #include <WeaselUtility.h>
 #include <FixedWMemStreamBuf.h>
 #include "ZhuyinPreview.h"
+#include <PersonalCrypto.h>
 
 #include <cstring>
 #include <filesystem>
@@ -225,6 +226,9 @@ void RimeWithWeaselHandler::Initialize() {
     llm_flag = true;
     m_llm_while_typing =
         !rime_api->config_get_bool(&config, "llm/predict_while_typing", &llm_flag) || llm_flag;
+    // 選字紀錄（加密、只在本機，預設關閉）
+    llm_flag = false;
+    m_choice_log = rime_api->config_get_bool(&config, "llm/choice/log", &llm_flag) && llm_flag;
     // LLM 整句校正（llm/typo/llm）；Rime 容錯另外設定在注音方案裡，與此無關。
     // 舊設定 llm/typo_correction: llm 視為開啟
     {
@@ -467,8 +471,10 @@ RimeWithWeaselHandler::ChoiceStats& RimeWithWeaselHandler::_TodayStats() {
       std::string date;
       ChoiceStats s;
       if (f >> date >> s.commits >> s.chars >> s.changed >> s.llm_offered >> s.llm_used >>
-          s.corrections_used >> s.backspaces)
+          s.corrections_used >> s.backspaces) {
+        f >> s.deleted_after >> s.focus_uses;  // 較新的欄位，舊檔沒有就是 0
         m_choice_stats[date] = s;
+      }
     }
   }
   SYSTEMTIME t;
@@ -487,10 +493,10 @@ void RimeWithWeaselHandler::_SaveChoiceStats() {
   for (const auto& [date, s] : m_choice_stats)
     out << date << '\t' << s.commits << '\t' << s.chars << '\t' << s.changed << '\t'
         << s.llm_offered << '\t' << s.llm_used << '\t' << s.corrections_used << '\t'
-        << s.backspaces << '\n';
+        << s.backspaces << '\t' << s.deleted_after << '\t' << s.focus_uses << '\n';
 }
 
-void RimeWithWeaselHandler::_CountCommit(SessionStatus& ss, const std::wstring& text) {
+void RimeWithWeaselHandler::_CountCommit(SessionStatus& ss, const std::wstring& text, bool mixed) {
   ChoiceStats& s = _TodayStats();
   ++s.commits;
   s.chars += (int64_t)text.size();
@@ -498,8 +504,56 @@ void RimeWithWeaselHandler::_CountCommit(SessionStatus& ss, const std::wstring& 
     ++s.changed;
   if (ss.llm_offered)
     ++s.llm_offered;
-  ss.choice_changed = ss.llm_offered = false;
   _SaveChoiceStats();
+  m_last_commit_tick = GetTickCount64();
+  _LogChoice(ss, text, mixed);
+  ss.choice_changed = ss.llm_offered = ss.focus_used = false;
+  ss.llm_committed = ss.correction_committed = false;
+  ss.default_text.clear();
+  ss.default_zhuyin.clear();
+}
+
+// 選字紀錄（llm/choice/log 開啟時）：每次送出一筆，加密附加到 personal/choice_log.dat。
+// 格式：時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換 \t 送出的文字
+void RimeWithWeaselHandler::_LogChoice(SessionStatus& ss, const std::wstring& text, bool mixed) {
+  if (!m_choice_log || text.empty())
+    return;
+  auto clean = [](std::wstring s) {
+    for (auto& c : s)
+      if (c == L'\t' || c == L'\r' || c == L'\n')
+        c = L' ';
+    return s;
+  };
+  const char* method = mixed                     ? "mixed"
+                       : ss.correction_committed ? "correction"
+                       : ss.llm_committed        ? "llm"
+                       : ss.focus_used && ss.choice_changed ? "focus"
+                       : ss.choice_changed       ? "changed"
+                                                 : "direct";
+  // 前文：送出之前的最近文字（有些路徑已先把這次送出的文字加進前文，去掉）
+  std::wstring context =
+      m_context_history ? m_context_history->GetRecentContext(40 + text.size()) : L"";
+  if (context.size() >= text.size() &&
+      context.compare(context.size() - text.size(), text.size(), text) == 0)
+    context.resize(context.size() - text.size());
+  if (context.size() > 40)
+    context = context.substr(context.size() - 40);
+  char app[256] = {0};
+  rime_api->get_property(ss.session_id, "client_app", app, sizeof(app) - 1);
+  std::ostringstream record;
+  record << (int64_t)time(nullptr) << '\t' << app << '\t' << method << '\t'
+         << wtou8(clean(context)) << '\t' << wtou8(clean(ss.default_zhuyin)) << '\t'
+         << wtou8(clean(ss.default_text)) << '\t' << wtou8(clean(text));
+  std::string cipher;
+  if (!personal_crypto::Protect(record.str(), &cipher))
+    return;
+  const std::filesystem::path dir = WeaselUserDataPath() / L"personal";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  std::ofstream out(dir / L"choice_log.dat", std::ios::binary | std::ios::app);
+  const uint32_t len = (uint32_t)cipher.size();
+  out.write((const char*)&len, sizeof(len));
+  out.write(cipher.data(), cipher.size());
 }
 
 void RimeWithWeaselHandler::Finalize() {
@@ -841,6 +895,10 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
     if (rime_api->get_status(session_id, &bs_status)) {
       if (bs_status.is_composing) {
         ++_TodayStats().backspaces;
+        _SaveChoiceStats();
+      } else if (m_last_commit_tick && GetTickCount64() - m_last_commit_tick <= 10000) {
+        // 送出後很快就在應用程式裡刪字：多半是送錯字
+        ++_TodayStats().deleted_after;
         _SaveChoiceStats();
       }
       const bool zhuyin = bs_status.is_composing && !bs_status.is_ascii_mode &&
@@ -1184,6 +1242,11 @@ bool RimeWithWeaselHandler::_HandleZhuyinFocus(const weasel::KeyEvent& keyEvent,
   }
   if (!_FocusSyllable(ipc_id, target))
     return false;  // 對不上（例如省略聲調的連打），交回 Rime 原本的游標移動
+  if (!ss.focus_used) {
+    ss.focus_used = true;
+    ++_TodayStats().focus_uses;
+    _SaveChoiceStats();
+  }
   return respond();
 }
 
@@ -1916,7 +1979,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     if (m_personal)
       m_personal->Record(m_context_history ? m_context_history->GetActiveKey() : L"",
                          session_status.mixed_commit);
-    _CountCommit(session_status, session_status.mixed_commit);
+    _CountCommit(session_status, session_status.mixed_commit, true);
     session_status.mixed_commit.clear();
   }
 
@@ -2010,8 +2073,12 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     session_status.preview_lens.clear();
     session_status.focus = -1;
     // 沒送出就結束組字（例如 Esc）：這次不計
-    if (!session_status.mixed_active())
+    if (!session_status.mixed_active()) {
       session_status.choice_changed = session_status.llm_offered = false;
+      session_status.focus_used = false;
+      session_status.default_text.clear();
+      session_status.default_zhuyin.clear();
+    }
   }
   if (rime_api->get_context(session_id, &ctx)) {
     if (is_composing) {
@@ -2021,6 +2088,17 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         session_status.choice_changed = true;
       if (m_llm_prediction_mode && !m_current_llm_candidates.empty())
         session_status.llm_offered = true;
+      // 選字紀錄：還沒換字、游標在最後時，記下 Rime 的預設轉換與注音
+      if (m_choice_log && !session_status.choice_changed && ctx.commit_text_preview) {
+        const char* input_now = rime_api->get_input(session_id);
+        if (input_now && rime_api->get_caret_pos(session_id) == strlen(input_now)) {
+          std::wstring preview_now = u8tow(ctx.commit_text_preview);
+          while (!preview_now.empty() && preview_now.back() < 0x80)
+            preview_now.pop_back();
+          session_status.default_text = preview_now;
+          session_status.default_zhuyin = _ComposingZhuyin(ipc_id);
+        }
+      }
       actions.insert("ctx");
       switch (session_status.style.preedit_type) {
         case UIStyle::PREVIEW:
@@ -3410,6 +3488,9 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
     if (correction)
       ++stats.corrections_used;
     _SaveChoiceStats();
+    SessionStatus& ss = get_session_status(ipc_id);
+    ss.llm_committed = true;
+    ss.correction_committed = correction;
   }
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] 选择LLM候选词: " + std::to_wstring(llm_index + 1) +

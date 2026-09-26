@@ -106,6 +106,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_P8_GRAMMAR, OnGrammarChange)
   COMMAND_ID_HANDLER(IDC_P8_GRAMMAR_DOWNLOAD, OnGrammarDownload)
   COMMAND_ID_HANDLER(IDC_P8_STATS_RESET, OnStatsReset)
+  COMMAND_ID_HANDLER(IDC_P8_LOG, OnLLMChanged)
+  COMMAND_ID_HANDLER(IDC_P8_LOG_CLEAR, OnChoiceLogClear)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
   COMMAND_ID_HANDLER(IDC_P3_ENABLED, OnLLMEnabledClick)
@@ -181,6 +183,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnGrammarChange(WORD, WORD, HWND, BOOL&);
   LRESULT OnGrammarDownload(WORD, WORD, HWND, BOOL&);
   LRESULT OnStatsReset(WORD, WORD, HWND, BOOL&);
+  LRESULT OnChoiceLogClear(WORD, WORD, HWND, BOOL&);
   LRESULT OnApiTest(WORD, WORD, HWND, BOOL&);
   LRESULT OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnWordRename(UINT, WPARAM, LPARAM, BOOL&);
@@ -259,6 +262,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 選字策略頁
   void RefreshGrammarStatus();
   void RefreshChoiceStats();
+  void RefreshChoiceLogStatus();
   bool ApplyGrammar(bool enable, std::wstring* error);
   void SetMultilineText(int id, const std::wstring& text);
   std::wstring GetMultilineText(int id);

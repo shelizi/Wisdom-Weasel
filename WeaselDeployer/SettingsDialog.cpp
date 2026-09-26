@@ -565,6 +565,7 @@ void SettingsDialog::ShowPage(int page) {
   if (page == kPageChoice) {
     RefreshGrammarStatus();
     RefreshChoiceStats();
+    RefreshChoiceLogStatus();
   }
   if (page == kPageDict) {
     if (!words_loaded_)
@@ -935,6 +936,7 @@ void SettingsDialog::LoadLLMSettings() {
                  get_bool("llm/predict_after_commit", true) ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(IDC_P3_WHILE_TYPING,
                  get_bool("llm/predict_while_typing", true) ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P8_LOG, get_bool("llm/choice/log", false) ? BST_CHECKED : BST_UNCHECKED);
 
   LoadProfiles(&config);
 
@@ -1113,6 +1115,7 @@ bool SettingsDialog::SaveLLMSettings() {
                         IsDlgButtonChecked(IDC_P3_AFTER_COMMIT) == BST_CHECKED);
   rime->config_set_bool(&llm, "predict_while_typing",
                         IsDlgButtonChecked(IDC_P3_WHILE_TYPING) == BST_CHECKED);
+  rime->config_set_bool(&llm, "choice/log", IsDlgButtonChecked(IDC_P8_LOG) == BST_CHECKED);
   auto get_text = [&](int id) {
     CString text;
     GetDlgItem(id).GetWindowTextW(text);
@@ -2840,7 +2843,8 @@ void SettingsDialog::RefreshGrammarStatus() {
 void SettingsDialog::RefreshChoiceStats() {
   // weasel_stats.txt（輸入法寫的）：日期 送出 字數 換字 LLM出現 LLM採用 校正採用 Backspace
   struct Sum {
-    int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0;
+    int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0,
+            deleted = 0, focus = 0;
   };
   std::map<std::string, Sum> days;
   {
@@ -2850,8 +2854,10 @@ void SettingsDialog::RefreshChoiceStats() {
       std::string date;
       Sum s;
       if (f >> date >> s.commits >> s.chars >> s.changed >> s.offered >> s.used >> s.corrections >>
-          s.backs)
+          s.backs) {
+        f >> s.deleted >> s.focus;  // 較新的欄位
         days[date] = s;
+      }
     }
   }
   // n 天前的日期（本機時間）
@@ -2884,6 +2890,8 @@ void SettingsDialog::RefreshChoiceStats() {
       t.used += s.used;
       t.corrections += s.corrections;
       t.backs += s.backs;
+      t.deleted += s.deleted;
+      t.focus += s.focus;
     }
     std::wostringstream out;
     out << title << L"：";
@@ -2891,18 +2899,51 @@ void SettingsDialog::RefreshChoiceStats() {
       out << L"還沒有紀錄\n";
       return out.str();
     }
+    // 直接用第一候選：沒換字就送出的比例；送出後刪除：送出後 10 秒內刪字的次數／送出字數
     const double first = 100.0 * (t.commits - t.changed) / t.commits;
+    const double deleted = t.chars ? 100.0 * t.deleted / t.chars : 0;
     out.setf(std::ios::fixed);
     out.precision(1);
-    out << L"送出 " << t.commits << L" 次（" << t.chars << L" 字），直接用第一候選 " << first
-        << L"%（換字 " << t.changed << L" 次）\n";
-    out << L"　　LLM 候選出現 " << t.offered << L" 次、採用 " << t.used << L" 次（其中校正 "
-        << t.corrections << L" 次）；組字中按 Backspace " << t.backs << L" 次\n";
+    out << L"送出 " << t.commits << L" 次（" << t.chars << L" 字）｜直接用第一候選 " << first
+        << L"%｜送出後刪除 " << deleted << L"%\n";
+    out << L"　　換字 " << t.changed << L"、逐字選字 " << t.focus << L"、LLM 出現 " << t.offered
+        << L" 採用 " << t.used << L"（校正 " << t.corrections << L"）、組字中 Backspace "
+        << t.backs << L"\n";
     return out.str();
   };
   const std::wstring text =
       describe(L"今天", 1) + L"\n" + describe(L"最近 7 天", 7) + L"\n" + describe(L"最近 30 天", 30);
   GetDlgItem(IDC_P8_STATS).SetWindowTextW(text.c_str());
+}
+
+void SettingsDialog::RefreshChoiceLogStatus() {
+  // personal/choice_log.dat：每筆是 4 位元組長度 + 加密內容，只數筆數不解密
+  const fs::path file = WeaselUserDataPath() / L"personal" / L"choice_log.dat";
+  size_t records = 0;
+  std::error_code ec;
+  const uintmax_t bytes = fs::file_size(file, ec);
+  if (!ec) {
+    std::ifstream in(file, std::ios::binary);
+    uint32_t len = 0;
+    while (in.read((char*)&len, sizeof(len)) && in.seekg(len, std::ios::cur))
+      ++records;
+  }
+  std::wstring text = records ? L"已記錄 " + std::to_wstring(records) + L" 筆（" +
+                                    std::to_wstring((bytes + 1023) / 1024) + L" KB）"
+                              : L"還沒有紀錄";
+  GetDlgItem(IDC_P8_LOG_STATUS).SetWindowTextW(text.c_str());
+  GetDlgItem(IDC_P8_LOG_CLEAR).EnableWindow(records > 0);
+}
+
+LRESULT SettingsDialog::OnChoiceLogClear(WORD, WORD, HWND, BOOL&) {
+  if (MessageBoxW(L"要刪除所有選字紀錄嗎？之後訓練選字模型會少了這些資料。", L"選字紀錄",
+                  MB_YESNO | MB_ICONQUESTION) != IDYES)
+    return 0;
+  std::error_code ec;
+  fs::remove(WeaselUserDataPath() / L"personal" / L"choice_log.dat", ec);
+  RefreshChoiceLogStatus();
+  SetStatus(ec ? L"無法刪除選字紀錄。" : L"已刪除選字紀錄。");
+  return 0;
 }
 
 LRESULT SettingsDialog::OnGrammarChange(WORD, WORD, HWND, BOOL&) {
