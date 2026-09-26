@@ -3089,9 +3089,11 @@ void RimeWithWeaselHandler::_UpdateContextKey(WeaselSessionId ipc_id) {
     if (root)
       hwnd = root;
   }
+  // 不能用 GetWindowTextW：它會對視窗送 WM_GETTEXT 並等回覆，視窗忙碌或正在等輸入法時
+  // 就卡住整個服務（所有應用程式跟著凍結）。InternalGetWindowText 直接讀系統存的標題，不送訊息
   wchar_t title[256] = {0};
   if (hwnd)
-    GetWindowTextW(hwnd, title, (int)(sizeof(title) / sizeof(title[0])) - 1);
+    InternalGetWindowText(hwnd, title, (int)(sizeof(title) / sizeof(title[0])) - 1);
   std::wstring title_key;
   for (const wchar_t* p = title; *p; ++p) {
     if (iswdigit(*p) || *p == L'*' || *p == L'●' || *p == L'•')
