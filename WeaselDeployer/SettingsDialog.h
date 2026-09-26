@@ -106,7 +106,10 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_P8_GRAMMAR, OnGrammarChange)
   COMMAND_ID_HANDLER(IDC_P8_GRAMMAR_DOWNLOAD, OnGrammarDownload)
   COMMAND_ID_HANDLER(IDC_P8_STATS_RESET, OnStatsReset)
+  COMMAND_HANDLER(IDC_P8_STATS_PERIOD, CBN_SELCHANGE, OnStatsPeriod)
+  NOTIFY_HANDLER(IDC_P8_STATS, LVN_ITEMCHANGED, OnStatsSelChanged)
   COMMAND_ID_HANDLER(IDC_P8_LOG, OnLLMChanged)
+  COMMAND_ID_HANDLER(IDC_P8_RESCORE, OnLLMChanged)
   COMMAND_ID_HANDLER(IDC_P8_LOG_CLEAR, OnChoiceLogClear)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
@@ -262,6 +265,9 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 選字策略頁
   void RefreshGrammarStatus();
   void RefreshChoiceStats();
+  static LRESULT CALLBACK HeaderTextSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+  LRESULT OnStatsSelChanged(int, LPNMHDR, BOOL&);
+  LRESULT OnStatsPeriod(WORD, WORD, HWND, BOOL&);
   void RefreshChoiceLogStatus();
   bool ApplyGrammar(bool enable, std::wstring* error);
   void SetMultilineText(int id, const std::wstring& text);
@@ -379,6 +385,9 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool personal_disabled_ = false;
   CListViewCtrl words_list_;
   CListViewCtrl rules_list_;
+  CListViewCtrl stats_list_;                 // 選字統計：每個版本與設定組合一列
+  CComboBox stats_period_;
+  std::vector<std::wstring> stats_details_;  // 每一列的詳細資訊
   CListBox dicts_;
   bool dicts_loaded_ = false;
   bool dict_task_ready_ = false;

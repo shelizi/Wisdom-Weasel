@@ -52,6 +52,13 @@ class LLMProvider {
     return std::wstring();
   }
 
+  // 文字接在前文後面的機率（log，自然對數）：total 為整段總和，per_char 為每個字分到的值。
+  // 用來比較同音字的句子哪個通順；不支援（例如 API 模型）時回傳 false
+  virtual bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
+                         std::vector<double>* per_char) {
+    return false;
+  }
+
   // 检查LLM是否可用
   virtual bool IsAvailable() const = 0;
 
@@ -274,6 +281,8 @@ class LlamaCppProvider : public LLMProvider {
                                const std::wstring& draft,
                                const std::wstring& instruction) override;
   bool IsAvailable() const override;
+  bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
+                 std::vector<double>* per_char) override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
   // 不經 rime 設定，直接指定模型載入（LLMLocalChat 用）

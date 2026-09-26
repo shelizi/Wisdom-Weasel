@@ -101,6 +101,10 @@
 #define IDC_P8_LOG                      3809
 #define IDC_P8_LOG_STATUS               3810
 #define IDC_P8_LOG_CLEAR                3811
+#define IDC_P8_RESCORE                  3812
+#define IDC_P8_RESCORE_HINT             3813
+#define IDC_P8_STATS_PERIOD             3814
+#define IDC_P8_STATS_DETAIL             3815
 #define IDC_P1_HOTKEY_LABEL             3104
 #define IDC_P1_HOTKEYS                  3105
 #define IDC_P1_GET_SCHEMATA             3106

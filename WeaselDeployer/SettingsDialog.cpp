@@ -19,6 +19,7 @@
 #include <shobjidl.h>
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "comctl32.lib")
 #include <shlwapi.h>
 #include <winhttp.h>
 #pragma comment(lib, "shlwapi.lib")
@@ -92,8 +93,10 @@ bool IsSubtleText(int id) {
     case IDC_P5_FILE_STATUS:
     case IDC_P5_THINK_HINT:
     case IDC_P8_GRAMMAR_HINT:
+    case IDC_P8_RESCORE_HINT:
     case IDC_P8_GRAMMAR_STATUS:
     case IDC_P8_STATS_HINT:
+    case IDC_P8_STATS_DETAIL:
     case IDC_P6_COUNT:
     case IDC_P6_RULES_LABEL:
     case IDC_P6_HINT:
@@ -326,6 +329,10 @@ void SettingsDialog::ApplyTheme() {
       ListView_SetBkColor(child, pal_->input);
       ListView_SetTextBkColor(child, pal_->input);
       ListView_SetTextColor(child, pal_->text);
+      if (HWND header = ListView_GetHeader(child)) {
+        ::SetWindowTheme(header, dark_ ? L"DarkMode_ItemsView" : L"ItemsView", nullptr);
+        ::SetWindowSubclass(child, HeaderTextSubclass, 0, reinterpret_cast<DWORD_PTR>(this));
+      }
     }
     ::SendMessageW(child, WM_THEMECHANGED, 0, 0);
   }
@@ -415,6 +422,27 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   rules_list_.Attach(GetDlgItem(IDC_P6_RULES));
   rules_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
   rules_list_.AddColumn(L"規則", 0);
+  stats_list_.Attach(GetDlgItem(IDC_P8_STATS));
+  stats_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
+  {
+    // 欄寬按清單寬度的比例分配（跟著 DPI 縮放）
+    static const struct {
+      const wchar_t* title;
+      int weight;
+    } kColumns[] = {{L"版本", 12}, {L"設定", 25}, {L"送出", 8},  {L"第一候選", 11},
+                    {L"送出後刪", 11}, {L"換字", 8}, {L"推薦套用", 12}, {L"LLM 採用", 12}};
+    CRect rc;
+    stats_list_.GetClientRect(&rc);
+    const int width = rc.Width() - ::GetSystemMetrics(SM_CXVSCROLL);
+    for (int i = 0; i < _countof(kColumns); ++i)
+      stats_list_.AddColumn(kColumns[i].title, i);
+    for (int i = 0; i < _countof(kColumns); ++i)
+      stats_list_.SetColumnWidth(i, width * kColumns[i].weight / 99);
+  }
+  stats_period_.Attach(GetDlgItem(IDC_P8_STATS_PERIOD));
+  for (const wchar_t* period : {L"今天", L"最近 7 天", L"最近 30 天", L"全部"})
+    stats_period_.AddString(period);
+  stats_period_.SetCurSel(1);
   dicts_.Attach(GetDlgItem(IDC_P6_DICTS));
   {
     CComboBox personal_max(GetDlgItem(IDC_P4_MAX));
@@ -937,6 +965,8 @@ void SettingsDialog::LoadLLMSettings() {
   CheckDlgButton(IDC_P3_WHILE_TYPING,
                  get_bool("llm/predict_while_typing", true) ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(IDC_P8_LOG, get_bool("llm/choice/log", false) ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P8_RESCORE,
+                 get_bool("llm/choice/rescore", false) ? BST_CHECKED : BST_UNCHECKED);
 
   LoadProfiles(&config);
 
@@ -1116,6 +1146,8 @@ bool SettingsDialog::SaveLLMSettings() {
   rime->config_set_bool(&llm, "predict_while_typing",
                         IsDlgButtonChecked(IDC_P3_WHILE_TYPING) == BST_CHECKED);
   rime->config_set_bool(&llm, "choice/log", IsDlgButtonChecked(IDC_P8_LOG) == BST_CHECKED);
+  rime->config_set_bool(&llm, "choice/rescore",
+                        IsDlgButtonChecked(IDC_P8_RESCORE) == BST_CHECKED);
   auto get_text = [&](int id) {
     CString text;
     GetDlgItem(id).GetWindowTextW(text);
@@ -2840,27 +2872,75 @@ void SettingsDialog::RefreshGrammarStatus() {
       .SetWindowTextW(grammar_downloading_ ? L"取消下載" : GrammarReady() ? L"重新下載" : L"下載模型");
 }
 
-void SettingsDialog::RefreshChoiceStats() {
-  // weasel_stats.txt（輸入法寫的）：日期 送出 字數 換字 LLM出現 LLM採用 校正採用 Backspace
-  struct Sum {
-    int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0,
-            deleted = 0, focus = 0;
-  };
-  std::map<std::string, Sum> days;
-  {
-    std::ifstream in(WeaselUserDataPath() / L"weasel_stats.txt", std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
-      std::istringstream f(line);
-      std::string date;
-      Sum s;
-      if (f >> date >> s.commits >> s.chars >> s.changed >> s.offered >> s.used >> s.corrections >>
-          s.backs) {
-        f >> s.deleted >> s.focus;  // 較新的欄位
-        days[date] = s;
+// 深色主題的欄位標題預設是深灰字：標題的自訂繪製通知送給 ListView，在這裡改成目前主題的文字色
+LRESULT CALLBACK SettingsDialog::HeaderTextSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                                    UINT_PTR, DWORD_PTR ref) {
+  if (msg == WM_NOTIFY) {
+    auto* nm = reinterpret_cast<NMCUSTOMDRAW*>(lp);
+    if (nm->hdr.code == NM_CUSTOMDRAW && nm->hdr.hwndFrom == ListView_GetHeader(hwnd)) {
+      if (nm->dwDrawStage == CDDS_PREPAINT)
+        return CDRF_NOTIFYITEMDRAW;
+      if (nm->dwDrawStage == CDDS_ITEMPREPAINT) {
+        ::SetTextColor(nm->hdc, reinterpret_cast<SettingsDialog*>(ref)->pal_->text);
+        return CDRF_DODEFAULT;
       }
     }
+  } else if (msg == WM_NCDESTROY) {
+    ::RemoveWindowSubclass(hwnd, HeaderTextSubclass, 0);
   }
-  // n 天前的日期（本機時間）
+  return ::DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void SettingsDialog::RefreshChoiceStats() {
+  // weasel_stats.txt（輸入法寫的）：日期 組合代碼 送出 字數 換字 LLM出現 LLM採用 校正採用 Backspace
+  //   送出後刪除 逐字選字 推薦出現 推薦套用；舊格式沒有組合代碼
+  // weasel_stats_profiles.txt：組合代碼 版本 編譯時間 版本說明 設定 第一次出現
+  struct Sum {
+    int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0,
+            deleted = 0, focus = 0, rec_offered = 0, rec_used = 0;
+    void Add(const Sum& s) {
+      commits += s.commits;
+      chars += s.chars;
+      changed += s.changed;
+      offered += s.offered;
+      used += s.used;
+      corrections += s.corrections;
+      backs += s.backs;
+      deleted += s.deleted;
+      focus += s.focus;
+      rec_offered += s.rec_offered;
+      rec_used += s.rec_used;
+    }
+  };
+  struct Profile {
+    std::wstring version, time, subject, settings;
+  };
+  std::map<std::string, Profile> profiles;
+  {
+    std::ifstream in(WeaselUserDataPath() / L"weasel_stats_profiles.txt", std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      std::vector<std::wstring> f;
+      std::string key;
+      size_t start = 0;
+      for (int i = 0; i < 6; ++i) {
+        const size_t tab = line.find('\t', start);
+        const std::string part = line.substr(start, tab == std::string::npos ? tab : tab - start);
+        if (i == 0)
+          key = part;
+        else
+          f.push_back(u8tow(part));
+        if (tab == std::string::npos)
+          break;
+        start = tab + 1;
+      }
+      f.resize(5);
+      if (!key.empty())
+        profiles[key] = {f[0], f[1], f[2], f[3]};
+    }
+  }
+  // 期間的起始日（本機時間，n 天前）
   auto date_before = [](int n) {
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -2877,43 +2957,133 @@ void SettingsDialog::RefreshChoiceStats() {
     sprintf_s(buf, "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
     return std::string(buf);
   };
-  auto describe = [&](const wchar_t* title, int span) {
-    Sum t;
-    const std::string from = date_before(span - 1);
-    for (const auto& [date, s] : days) {
-      if (date < from)
+  static const int kSpans[] = {1, 7, 30, 0};  // 0：全部
+  const int period = stats_period_.GetCurSel();
+  const int span = kSpans[period >= 0 && period < 4 ? period : 1];
+  const std::string from = span ? date_before(span - 1) : std::string();
+
+  std::map<std::string, Sum> sums;          // 組合代碼 → 期間內合計
+  std::map<std::string, std::string> last;  // 組合代碼 → 最後使用日
+  {
+    std::ifstream in(WeaselUserDataPath() / L"weasel_stats.txt", std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+      std::istringstream f(line);
+      std::string date, key;
+      if (!(f >> date >> key) || date < from)
         continue;
-      t.commits += s.commits;
-      t.chars += s.chars;
-      t.changed += s.changed;
-      t.offered += s.offered;
-      t.used += s.used;
-      t.corrections += s.corrections;
-      t.backs += s.backs;
-      t.deleted += s.deleted;
-      t.focus += s.focus;
+      std::istringstream numbers;
+      if (key.find_first_not_of("0123456789") == std::string::npos) {
+        numbers.str(line.substr(line.find(date) + date.size()));
+        key = "legacy";
+      } else {
+        numbers.str(line.substr(line.find(key) + key.size()));
+      }
+      Sum s;
+      if (numbers >> s.commits >> s.chars >> s.changed >> s.offered >> s.used >> s.corrections >>
+          s.backs) {
+        numbers >> s.deleted >> s.focus >> s.rec_offered >> s.rec_used;  // 較新的欄位
+        sums[key].Add(s);
+        last[key] = (std::max)(last[key], date);
+      }
     }
+  }
+
+  auto percent = [](int64_t n, int64_t d) {
+    if (!d)
+      return std::wstring(L"—");
+    wchar_t buf[32];
+    swprintf_s(buf, L"%.1f%%", 100.0 * n / d);
+    return std::wstring(buf);
+  };
+  auto ratio = [](int64_t n, int64_t d) {
+    return d ? std::to_wstring(n) + L"／" + std::to_wstring(d) : std::wstring(L"—");
+  };
+  auto counts = [](const Sum& t) {
     std::wostringstream out;
-    out << title << L"：";
-    if (!t.commits) {
-      out << L"還沒有紀錄\n";
-      return out.str();
-    }
-    // 直接用第一候選：沒換字就送出的比例；送出後刪除：送出後 10 秒內刪字的次數／送出字數
-    const double first = 100.0 * (t.commits - t.changed) / t.commits;
-    const double deleted = t.chars ? 100.0 * t.deleted / t.chars : 0;
-    out.setf(std::ios::fixed);
-    out.precision(1);
-    out << L"送出 " << t.commits << L" 次（" << t.chars << L" 字）｜直接用第一候選 " << first
-        << L"%｜送出後刪除 " << deleted << L"%\n";
-    out << L"　　換字 " << t.changed << L"、逐字選字 " << t.focus << L"、LLM 出現 " << t.offered
-        << L" 採用 " << t.used << L"（校正 " << t.corrections << L"）、組字中 Backspace "
-        << t.backs << L"\n";
+    out << t.chars << L" 字、逐字選字 " << t.focus << L"、推薦出現 " << t.rec_offered
+        << L"、LLM 出現 " << t.offered << L"（校正採用 " << t.corrections << L"）、Backspace "
+        << t.backs << L"、送出後刪除 " << t.deleted << L" 次";
     return out.str();
   };
-  const std::wstring text =
-      describe(L"今天", 1) + L"\n" + describe(L"最近 7 天", 7) + L"\n" + describe(L"最近 30 天", 30);
-  GetDlgItem(IDC_P8_STATS).SetWindowTextW(text.c_str());
+
+  // 最近用過的組合排前面
+  std::vector<std::string> keys;
+  for (const auto& [key, s] : sums)
+    keys.push_back(key);
+  std::sort(keys.begin(), keys.end(), [&](const std::string& a, const std::string& b) {
+    return last[a] != last[b] ? last[a] > last[b] : a < b;
+  });
+
+  stats_list_.SetRedraw(FALSE);
+  stats_list_.DeleteAllItems();
+  stats_details_.clear();
+  auto add_row = [&](const std::wstring& version, const std::wstring& settings, const Sum& t,
+                     const std::wstring& detail) {
+    const int row = stats_list_.GetItemCount();
+    stats_list_.InsertItem(row, version.c_str());
+    int col = 1;
+    auto set = [&](const std::wstring& text) { stats_list_.SetItemText(row, col++, text.c_str()); };
+    set(settings);
+    set(std::to_wstring(t.commits));
+    set(percent(t.commits - t.changed, t.commits));
+    set(percent(t.deleted, t.chars));
+    set(std::to_wstring(t.changed));
+    set(ratio(t.rec_used, t.rec_offered));
+    set(ratio(t.used, t.offered));
+    stats_details_.push_back(detail);
+  };
+  if (keys.size() > 1) {
+    Sum total;
+    for (const auto& [key, s] : sums)
+      total.Add(s);
+    add_row(L"（合計）", L"所有組合", total, L"所有版本與設定組合的合計\n" + counts(total));
+  }
+  for (const auto& key : keys) {
+    const Sum& t = sums[key];
+    std::wstring version, settings, detail;
+    if (key == "legacy") {
+      version = L"舊資料";
+      settings = L"（未記錄）";
+      detail = L"分版本統計之前的紀錄，沒有版本與設定資訊\n";
+    } else {
+      auto p = profiles.find(key);
+      const Profile info = p != profiles.end() ? p->second : Profile{L"?", L"", L"", L"?"};
+      version = info.version;
+      // 列表只放短的：方案名稱留給詳細資訊
+      settings = info.settings;
+      const size_t bar = settings.find(L'｜');
+      if (bar != std::wstring::npos)
+        settings = settings.substr(bar + 1);
+      detail = L"版本 " + info.version;
+      if (!info.version.empty() && info.version.back() == L'*')
+        detail += L"（含未提交的修改）";
+      if (!info.time.empty())
+        detail += L"，" + info.time + L" 編譯";
+      if (!info.subject.empty())
+        detail += L"：" + info.subject;
+      detail += L"\n設定：" + info.settings + L"\n";
+    }
+    add_row(version, settings, t, detail + counts(t));
+  }
+  stats_list_.SetRedraw(TRUE);
+  if (stats_details_.empty()) {
+    GetDlgItem(IDC_P8_STATS_DETAIL).SetWindowTextW(L"這段期間還沒有紀錄。");
+  } else {
+    stats_list_.SelectItem(0);  // 觸發 LVN_ITEMCHANGED，顯示詳細資訊
+  }
+}
+
+LRESULT SettingsDialog::OnStatsSelChanged(int, LPNMHDR hdr, BOOL&) {
+  const auto* nm = reinterpret_cast<const NMLISTVIEW*>(hdr);
+  if ((nm->uChanged & LVIF_STATE) && (nm->uNewState & LVIS_SELECTED) && nm->iItem >= 0 &&
+      nm->iItem < (int)stats_details_.size())
+    GetDlgItem(IDC_P8_STATS_DETAIL).SetWindowTextW(stats_details_[nm->iItem].c_str());
+  return 0;
+}
+
+LRESULT SettingsDialog::OnStatsPeriod(WORD, WORD, HWND, BOOL&) {
+  RefreshChoiceStats();
+  return 0;
 }
 
 void SettingsDialog::RefreshChoiceLogStatus() {
@@ -3018,6 +3188,7 @@ LRESULT SettingsDialog::OnStatsReset(WORD, WORD, HWND, BOOL&) {
   if (!SendPersonalCommand(8)) {
     std::error_code ec;
     fs::remove(WeaselUserDataPath() / L"weasel_stats.txt", ec);
+    fs::remove(WeaselUserDataPath() / L"weasel_stats_profiles.txt", ec);
   }
   Sleep(200);  // 等輸入法刪檔
   RefreshChoiceStats();

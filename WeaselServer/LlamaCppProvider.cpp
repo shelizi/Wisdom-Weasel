@@ -5,6 +5,7 @@
 #include <rime_api.h>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <sstream>
 
@@ -1164,6 +1165,97 @@ std::string LlamaCppProvider::ApplyChatTemplate(const std::string& system,
   if (m_disable_thinking)
     prompt += "<think>\n\n</think>\n\n";
   return prompt;
+}
+
+bool LlamaCppProvider::ScoreText(const std::wstring& context, const std::wstring& text,
+                                 double* total, std::vector<double>* per_char) {
+  if (!IsAvailable() || text.empty())
+    return false;
+  llama_context* ctx = (llama_context*)m_context;
+  const llama_vocab* vocab = (const llama_vocab*)m_vocab;
+  const std::string ctx_u8 = wtou8(context), text_u8 = wtou8(text);
+  auto tokenize = [&](const std::string& s) {
+    const int n = -llama_tokenize(vocab, s.c_str(), (int32_t)s.size(), NULL, 0, true, true);
+    std::vector<llama_token> t(n > 0 ? n : 0);
+    if (n > 0)
+      llama_tokenize(vocab, s.c_str(), (int32_t)s.size(), t.data(), n, true, true);
+    return t;
+  };
+  // 前文單獨切的 token 數當作文字的起點（接縫處偶爾合併，影響很小）
+  const size_t start = tokenize(ctx_u8).size();
+  const std::vector<llama_token> all = tokenize(ctx_u8 + text_u8);
+  if (all.size() <= start || (int)all.size() > m_ctx_size)
+    return false;
+
+  // 不沿用預測的 system prompt 快取；整段一次解碼，取每個位置的 logits
+  DropSystemPromptCache();
+  llama_memory_seq_rm((llama_memory_t)m_memory, -1, -1, -1);
+  llama_batch batch = llama_batch_init((int32_t)all.size(), 0, 1);
+  for (size_t i = 0; i < all.size(); ++i) {
+    batch.token[i] = all[i];
+    batch.pos[i] = (llama_pos)i;
+    batch.n_seq_id[i] = 1;
+    batch.seq_id[i][0] = 0;
+    batch.logits[i] = i + 1 >= start;  // 預測文字每個 token 的位置
+  }
+  batch.n_tokens = (int32_t)all.size();
+  const bool ok = llama_decode(ctx, batch) == 0;
+  if (!ok) {
+    llama_batch_free(batch);
+    return false;
+  }
+  const int n_vocab = llama_vocab_n_tokens(vocab);
+  // 文字每個字在 UTF-8 裡的起點，把 token 的機率平均分給它涵蓋的字
+  std::vector<size_t> char_start;
+  for (size_t b = 0, i = 0; i < text.size(); ++i) {
+    char_start.push_back(b);
+    const wchar_t c = text[i];
+    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < text.size()) {
+      b += 4;
+      ++i;
+      char_start.push_back(b - 4);  // 代理對的後半跟前半同一個字
+    } else {
+      b += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+    }
+  }
+  if (per_char)
+    per_char->assign(text.size(), 0.0);
+  double sum_lp = 0;
+  size_t byte = 0;  // 目前 token 在文字 UTF-8 裡的起點
+  for (size_t i = start; i < all.size(); ++i) {
+    const float* logits = llama_get_logits_ith(ctx, (int32_t)i - 1);
+    float mx = logits[0];
+    for (int v = 1; v < n_vocab; ++v)
+      mx = logits[v] > mx ? logits[v] : mx;
+    double z = 0;
+    for (int v = 0; v < n_vocab; ++v)
+      z += std::exp(logits[v] - mx);
+    const double lp = logits[all[i]] - mx - std::log(z);
+    sum_lp += lp;
+    char piece[256];
+    const int len = llama_token_to_piece(vocab, all[i], piece, sizeof(piece), 0, true);
+    const size_t end = byte + (len > 0 ? len : 0);
+    if (per_char) {
+      std::vector<size_t> covered;
+      for (size_t c = 0; c < char_start.size(); ++c)
+        if (char_start[c] >= byte && char_start[c] < end)
+          covered.push_back(c);
+      if (covered.empty() && !char_start.empty())  // 字被切在兩個 token 中間：算給所在的字
+        for (size_t c = char_start.size(); c-- > 0;)
+          if (char_start[c] <= byte) {
+            covered.push_back(c);
+            break;
+          }
+      for (size_t c : covered)
+        (*per_char)[c] += lp / covered.size();
+    }
+    byte = end;
+  }
+  llama_batch_free(batch);
+  llama_memory_seq_rm((llama_memory_t)m_memory, -1, -1, -1);
+  if (total)
+    *total = sum_lp;
+  return true;
 }
 
 void LlamaCppProvider::DropSystemPromptCache() {
