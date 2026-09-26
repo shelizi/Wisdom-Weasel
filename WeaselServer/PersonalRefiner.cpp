@@ -165,12 +165,14 @@ void PersonalRefiner::Start() {
   WriteStatus();
 }
 
+void PersonalRefiner::RequestStop() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  stop_ = true;
+  cv_.notify_all();
+}
+
 void PersonalRefiner::Stop() {
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    stop_ = true;
-    cv_.notify_all();
-  }
+  RequestStop();
   if (scheduler_.joinable())
     scheduler_.join();
   std::lock_guard<std::mutex> lock(run_mutex_);
@@ -207,7 +209,11 @@ bool PersonalRefiner::RunAsync(bool full) {
     worker_.join();  // 上一次已結束
   running_ = true;
   WriteStatus();
-  worker_ = std::thread([this, full]() { Run(full); });
+  worker_ = std::thread([this, full]() {
+    // 要求停止時，串流請求與本機模型的生成都會立刻中斷，不讓等待的人（例如重新部署）卡住
+    LLMCancelScope cancel([this]() { return stop_.load(); });
+    Run(full);
+  });
   return true;
 }
 

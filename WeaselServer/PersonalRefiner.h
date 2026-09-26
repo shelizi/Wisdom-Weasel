@@ -57,6 +57,7 @@ class PersonalRefiner {
   void SetUserDictAccess(UserDictAccess access) { user_dict_access_ = std::move(access); }
   void Start();  // 啟動排程執行緒
   void Stop();   // 停止並等待進行中的精煉結束
+  void RequestStop();  // 只通知停止，不等待（進行中的請求會盡快中斷）
 
   // 在背景執行精煉；已有一個在跑時回傳 false
   bool RunAsync(bool full);

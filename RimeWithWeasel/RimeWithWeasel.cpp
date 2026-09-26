@@ -117,6 +117,7 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
 }
 
 RimeWithWeaselHandler::~RimeWithWeaselHandler() {
+  _WaitRetired();
   m_show_notifications.clear();
   m_session_status_map.clear();
   m_app_options.clear();
@@ -254,11 +255,11 @@ void RimeWithWeaselHandler::Initialize() {
               ? (size_t)(std::min)(personal_int, 5)
               : 3;
       if (personal_enabled && !m_personal) {
+        _WaitRetired();  // 上一份還在存檔時先等它，避免同時讀寫檔案（已要求停止，通常很快）
         m_personal = std::make_unique<PersonalLexicon>(WeaselUserDataPath() / L"personal");
         m_personal->Load();
       } else if (!personal_enabled && m_personal) {
-        m_refiner.reset();   // 先等進行中的精煉結束
-        m_personal.reset();  // 解構時存檔
+        _RetirePersonal();  // 背景停止精煉並存檔，不在這裡等
       }
       if (m_personal) {
         personal_int = 0;
@@ -435,10 +436,27 @@ void RimeWithWeaselHandler::Initialize() {
   m_last_schema_id.clear();
 }
 
+void RimeWithWeaselHandler::_RetirePersonal() {
+  if (!m_refiner && !m_personal)
+    return;
+  if (m_refiner)
+    m_refiner->RequestStop();  // 串流請求與本機生成會盡快中斷
+  _WaitRetired();
+  m_retire_thread = std::thread(
+      [refiner = std::move(m_refiner), personal = std::move(m_personal)]() mutable {
+        refiner.reset();   // 等精煉結束
+        personal.reset();  // 解構時存檔
+      });
+}
+
+void RimeWithWeaselHandler::_WaitRetired() {
+  if (m_retire_thread.joinable())
+    m_retire_thread.join();
+}
+
 void RimeWithWeaselHandler::Finalize() {
   // 個人詞庫解構時會存檔（服務結束或重新部署前）；Initialize 會重新載入
-  m_refiner.reset();
-  m_personal.reset();
+  _RetirePersonal();
   m_active_session = 0;
   m_disabled = true;
   m_session_status_map.clear();

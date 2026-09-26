@@ -910,6 +910,11 @@ bool LLMHttpPostStream(const std::string& url, const std::string& api_key,
             *timed_out = true;
           break;
         }
+        // 呼叫端要求取消（例如服務要重新部署、精煉器停止）：不等模型說完
+        if (!done && LLMCancelled()) {
+          aborted = true;
+          break;
+        }
       }
       if (!success && error_body)
         *error_body = all;

@@ -209,7 +209,12 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   std::mutex m_llm_infer_mutex;  // 串行化 LLM 推理：llama.cpp 的 context 不能被多个线程同时使用
   std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在 m_llm_infer_mutex 下读写）
   std::unique_ptr<PersonalLexicon> m_personal;  // 個人詞庫（llm/personal/enabled）
-  std::unique_ptr<PersonalRefiner> m_refiner;   // 個人詞庫定時精煉
+  std::unique_ptr<PersonalRefiner> m_refiner;
+  // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放，
+  // 不在處理輸入法請求的執行緒上等（精煉可能正在等 LLM）
+  std::thread m_retire_thread;
+  void _RetirePersonal();
+  void _WaitRetired();  // 重新載入個人詞庫前，等上一份存檔完成   // 個人詞庫定時精煉
   size_t m_personal_max = 3;                    // 候選中最多幾個來自個人詞庫
   bool m_llm_enabled = false;                   // llm/enabled：所有預測候選的總開關
   bool _PredictionAvailable() const;            // LLM 或個人詞庫至少一個可用
