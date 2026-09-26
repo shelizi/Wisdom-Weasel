@@ -35,6 +35,7 @@ extern const GUID c_guidProfile;
 extern const GUID c_guidLangBarItemButton;
 
 extern const GUID c_guidDisplayAttributeInput;
+extern const GUID c_guidDisplayAttributeTarget;
 
 #ifndef TF_IPP_CAPS_IMMERSIVESUPPORT
 

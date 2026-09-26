@@ -5,6 +5,7 @@
 #include <WeaselConstants.h>
 #include <WeaselUtility.h>
 #include <FixedWMemStreamBuf.h>
+#include "ZhuyinPreview.h"
 
 #include <filesystem>
 #include <fstream>
@@ -1373,6 +1374,39 @@ inline std::string _GetLabelText(const std::vector<Text>& labels,
   return wtou8(std::wstring(buffer));
 }
 
+// speller settings of the schema, used to build the preview preedit
+static ZhuyinSpeller _LoadZhuyinSpeller(RimeApi* api, const char* schema_id) {
+  ZhuyinSpeller sp;
+  RimeConfig config = {NULL};
+  if (!schema_id || !api->schema_open(schema_id, &config))
+    return sp;
+  if (const char* finals = api->config_get_cstring(&config, "speller/finals"))
+    sp.finals = finals;
+  if (const char* delim = api->config_get_cstring(&config, "speller/delimiter"))
+    if (*delim)
+      sp.delimiter = *delim;
+  const size_t n = api->config_list_size(&config, "translator/preedit_format");
+  for (size_t i = 0; i < n; ++i) {
+    const std::string key =
+        "translator/preedit_format/@" + std::to_string(i);
+    const char* rule = api->config_get_cstring(&config, key.c_str());
+    if (!rule || strncmp(rule, "xlit", 4) != 0 || !rule[4])
+      continue;
+    const std::string r(rule + 5);
+    const char sep = rule[4];
+    const size_t mid = r.find(sep);
+    if (mid == std::string::npos)
+      continue;
+    const size_t end = r.find(sep, mid + 1);
+    const std::wstring from = u8tow(r.substr(0, mid));
+    const std::wstring to = u8tow(r.substr(mid + 1, end - mid - 1));
+    for (size_t k = 0; k < from.size() && k < to.size(); ++k)
+      sp.xlit[from[k]] = to[k];
+  }
+  api->config_close(&config);
+  return sp;
+}
+
 bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   std::set<std::string> actions;
   std::list<std::string> messages;
@@ -1467,22 +1501,41 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   }
 
   RIME_STRUCT(RimeContext, ctx);
+  if (!is_composing) {
+    session_status.preview_input.clear();
+    session_status.preview_units.clear();
+  }
   if (rime_api->get_context(session_id, &ctx)) {
     if (is_composing) {
       actions.insert("ctx");
       switch (session_status.style.preedit_type) {
         case UIStyle::PREVIEW:
           if (ctx.commit_text_preview != NULL) {
-            std::string first = ctx.commit_text_preview;
+            char schema_id[256] = {0};
+            rime_api->get_current_schema(session_id, schema_id,
+                                         sizeof(schema_id));
+            const char* input = rime_api->get_input(session_id);
+            const int hl = ctx.menu.highlighted_candidate_index;
+            const char* cand = hl >= 0 && hl < ctx.menu.num_candidates
+                                   ? ctx.menu.candidates[hl].text
+                                   : nullptr;
+            ZhuyinPreview pv = BuildZhuyinPreview(
+                ctx.commit_text_preview,
+                ctx.composition.preedit ? ctx.composition.preedit : "",
+                input ? input : "", rime_api->get_caret_pos(session_id),
+                cand ? cand : "", hl, _LoadZhuyinSpeller(rime_api, schema_id),
+                session_status.preview_input, session_status.preview_units);
+            // without a chosen word the whole preedit is the selection
+            if (pv.sel_start == pv.sel_end) {
+              pv.sel_start = 0;
+              pv.sel_end = (int)pv.text.size();
+            }
             messages.push_back(std::string("ctx.preedit=") +
-                               escape_string<char>(first) + '\n');
-            messages.push_back(
-                std::string("ctx.preedit.cursor=") +
-                std::to_string(utf8towcslen(first.c_str(), 0)) + ',' +
-                std::to_string(utf8towcslen(first.c_str(), (int)first.size())) +
-                ',' +
-                std::to_string(utf8towcslen(first.c_str(), (int)first.size())) +
-                '\n');
+                               escape_string<char>(wtou8(pv.text)) + '\n');
+            messages.push_back(std::string("ctx.preedit.cursor=") +
+                               std::to_string(pv.sel_start) + ',' +
+                               std::to_string(pv.sel_end) + ',' +
+                               std::to_string(pv.cursor) + '\n');
             break;
           }
           // no preview, fall back to composition

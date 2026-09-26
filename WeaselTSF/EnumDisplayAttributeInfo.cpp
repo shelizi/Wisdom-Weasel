@@ -94,8 +94,9 @@ STDAPI CEnumDisplayAttributeInfo::Next(ULONG ulCount,
   while (fetched < ulCount) {
     ITfDisplayAttributeInfo* pDisplayAttributeInfo = nullptr;
 
-    if (_index == 0) {
-      pDisplayAttributeInfo = new (std::nothrow) CDisplayAttributeInfoInput();
+    if (_index < 2) {
+      pDisplayAttributeInfo =
+          new (std::nothrow) CDisplayAttributeInfoInput(_index == 1);
       if ((pDisplayAttributeInfo) == nullptr) {
         return E_OUTOFMEMORY;
       }
@@ -122,8 +123,8 @@ STDAPI CEnumDisplayAttributeInfo::Reset() {
 }
 
 STDAPI CEnumDisplayAttributeInfo::Skip(ULONG ulCount) {
-  if ((ulCount + _index) > 1 || (ulCount + _index) < ulCount) {
-    _index = 1;
+  if ((ulCount + _index) > 2 || (ulCount + _index) < ulCount) {
+    _index = 2;
     return S_FALSE;
   }
   _index += ulCount;

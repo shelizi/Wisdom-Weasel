@@ -16,14 +16,34 @@ const TF_DISPLAYATTRIBUTE _daiDisplayAttribute = {
     TF_ATTR_INPUT     // attribute info
 };
 
-CDisplayAttributeInfoInput::CDisplayAttributeInfoInput() {
+const WCHAR _daiTargetName[] = L"DisplayAttributeTarget";
+const WCHAR _daiTargetDescription[] = L"Weasel Display Attribute Target";
+
+// the segment being selected: highlighted like a box
+const TF_DISPLAYATTRIBUTE _daiTargetDisplayAttribute = {
+    {TF_CT_SYSCOLOR, COLOR_HIGHLIGHTTEXT},  // text color
+    {TF_CT_SYSCOLOR, COLOR_HIGHLIGHT},      // background color
+    TF_LS_SOLID,                            // underline style
+    TRUE,                                   // underline boldness
+    {TF_CT_NONE, 0},                        // underline color
+    TF_ATTR_TARGET_CONVERTED                // attribute info
+};
+
+CDisplayAttributeInfoInput::CDisplayAttributeInfoInput(bool target) {
   DllAddRef();
   _refCount = 1;
 
-  _pguid = &c_guidDisplayAttributeInput;
-  _pDisplayAttribute = &_daiDisplayAttribute;
-  _pDescription = _daiDescription;
-  _pValueName = _daiInputName;
+  if (target) {
+    _pguid = &c_guidDisplayAttributeTarget;
+    _pDisplayAttribute = &_daiTargetDisplayAttribute;
+    _pDescription = _daiTargetDescription;
+    _pValueName = _daiTargetName;
+  } else {
+    _pguid = &c_guidDisplayAttributeInput;
+    _pDisplayAttribute = &_daiDisplayAttribute;
+    _pDescription = _daiDescription;
+    _pValueName = _daiInputName;
+  }
 }
 
 CDisplayAttributeInfoInput::~CDisplayAttributeInfoInput() {

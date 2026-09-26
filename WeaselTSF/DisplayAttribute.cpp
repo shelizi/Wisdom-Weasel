@@ -52,6 +52,32 @@ BOOL WeaselTSF::_SetCompositionDisplayAttributes(TfEditCookie ec,
   return (hr == S_OK);
 }
 
+void WeaselTSF::_SetTargetDisplayAttribute(TfEditCookie ec,
+                                           _In_ ITfContext* pContext,
+                                           ITfRange* pRangeComposition,
+                                           LONG start,
+                                           LONG end) {
+  if (pRangeComposition == nullptr || start >= end)
+    return;
+  com_ptr<ITfRange> pRange;
+  if (FAILED(pRangeComposition->Clone(&pRange)))
+    return;
+  LONG cch;
+  pRange->Collapse(ec, TF_ANCHOR_START);
+  pRange->ShiftEnd(ec, end, &cch, NULL);
+  pRange->ShiftStart(ec, start, &cch, NULL);
+
+  ITfProperty* pDisplayAttributeProperty = nullptr;
+  if (SUCCEEDED(pContext->GetProperty(GUID_PROP_ATTRIBUTE,
+                                      &pDisplayAttributeProperty))) {
+    VARIANT var;
+    var.vt = VT_I4;
+    var.lVal = _gaDisplayAttributeTarget;
+    pDisplayAttributeProperty->SetValue(ec, pRange, &var);
+    pDisplayAttributeProperty->Release();
+  }
+}
+
 BOOL WeaselTSF::_InitDisplayAttributeGuidAtom() {
   ITfCategoryMgr* pCategoryMgr = nullptr;
   HRESULT hr =
@@ -64,6 +90,11 @@ BOOL WeaselTSF::_InitDisplayAttributeGuidAtom() {
 
   hr = pCategoryMgr->RegisterGUID(c_guidDisplayAttributeInput,
                                   &_gaDisplayAttributeInput);
+  if (FAILED(hr)) {
+    goto Exit;
+  }
+  hr = pCategoryMgr->RegisterGUID(c_guidDisplayAttributeTarget,
+                                  &_gaDisplayAttributeTarget);
   if (FAILED(hr)) {
     goto Exit;
   }

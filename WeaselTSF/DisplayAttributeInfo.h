@@ -4,7 +4,7 @@
 
 class CDisplayAttributeInfoInput : public ITfDisplayAttributeInfo {
  public:
-  CDisplayAttributeInfoInput();
+  explicit CDisplayAttributeInfoInput(bool target = false);
   ~CDisplayAttributeInfoInput();
 
   // IUnknown

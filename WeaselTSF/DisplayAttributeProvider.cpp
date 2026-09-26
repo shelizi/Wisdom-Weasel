@@ -38,6 +38,11 @@ STDAPI WeaselTSF::GetDisplayAttributeInfo(
     if ((*ppInfo) == nullptr) {
       return E_OUTOFMEMORY;
     }
+  } else if (IsEqualGUID(guidInfo, c_guidDisplayAttributeTarget)) {
+    *ppInfo = new (std::nothrow) CDisplayAttributeInfoInput(true);
+    if ((*ppInfo) == nullptr) {
+      return E_OUTOFMEMORY;
+    }
   } else {
     return E_INVALIDARG;
   }

@@ -55,6 +55,10 @@ struct SessionStatus {
   RimeStatus status;
   bool __synced;
   RimeSessionId session_id;
+  // last fully converted preview (preedit_type: preview), one unit per
+  // syllable, to keep showing the text after the caret while selecting
+  std::string preview_input;
+  std::vector<std::wstring> preview_units;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;

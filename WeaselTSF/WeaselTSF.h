@@ -144,6 +144,11 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _SetCompositionDisplayAttributes(TfEditCookie ec,
                                         _In_ ITfContext* pContext,
                                         ITfRange* pRangeComposition);
+  void _SetTargetDisplayAttribute(TfEditCookie ec,
+                                  _In_ ITfContext* pContext,
+                                  ITfRange* pRangeComposition,
+                                  LONG start,
+                                  LONG end);
   BOOL _InitDisplayAttributeGuidAtom();
 
   com_ptr<ITfThreadMgr> _GetThreadMgr() { return _pThreadMgr; }
@@ -231,6 +236,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   // guidatom for the display attibute.
   TfGuidAtom _gaDisplayAttributeInput;
+  TfGuidAtom _gaDisplayAttributeTarget;
   BOOL _async_edit = false;
   BOOL _committed = false;
   BOOL _isToOpenClose = false;
