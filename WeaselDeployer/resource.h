@@ -87,6 +87,8 @@
 #define IDC_P1_TYPO_LABEL               3107
 #define IDC_P1_TYPO                     3108
 #define IDC_P1_TYPO_HINT                3109
+#define IDC_P1_TYPO_PROFILE_LABEL       3110
+#define IDC_P1_TYPO_PROFILE             3111
 #define IDC_P2_SCHEME_LABEL             3201
 #define IDC_P2_COLOR_SCHEME             3202
 #define IDC_P2_PREVIEW                  3203

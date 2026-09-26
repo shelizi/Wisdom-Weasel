@@ -40,6 +40,26 @@ void OpenAICompatibleProvider::CloseConnection() {
   m_cached_url.clear();
 }
 
+void OpenAICompatibleProvider::ConfigureDirect(const std::string& api_url,
+                                               const std::string& api_key,
+                                               const std::string& model,
+                                               const std::wstring& prompt) {
+  m_enabled = !api_url.empty();
+  m_api_url = api_url;
+  m_api_key = api_key;
+  m_model = model;
+  m_max_tokens = 10;
+  m_temperature = 0.0;
+  m_top_p = 1.0;
+  m_presence_penalty = 0.0;
+  m_frequency_penalty = 0.0;
+  m_has_seed = false;
+  m_seed = 0;
+  m_extra_body_json.clear();
+  m_prompt = prompt;
+  CloseConnection();
+}
+
 bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
   extern DevConsole* g_dev_console;
   

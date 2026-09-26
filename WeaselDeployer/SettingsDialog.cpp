@@ -397,6 +397,7 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   profile_list_.Attach(GetDlgItem(IDC_P5_LIST));
   model_files_.Attach(GetDlgItem(IDC_P5_FILES));
   predict_profile_.Attach(GetDlgItem(IDC_P3_PROFILE));
+  typo_profile_.Attach(GetDlgItem(IDC_P1_TYPO_PROFILE));
   refine_profile_.Attach(GetDlgItem(IDC_P4_PROFILE));
   test_result_.Attach(GetDlgItem(IDC_P3_TEST_RESULT));
   words_list_.Attach(GetDlgItem(IDC_P6_WORDS));
@@ -960,15 +961,18 @@ void SettingsDialog::UpdateTypoHint() {
   static const wchar_t* const kHints[] = {
       L"打錯的注音不會自動修正。",
       L"按到隔壁鍵、多打或少打一鍵時，Rime 會找相近的注音再選字。只作用在注音方案，套用後重新部署。",
-      L"除了 Rime 容錯，打字停頓時會把注音與前文交給 LLM 校正整句，結果是第一個 LLM 候選（按 Tab "
-      L"選用）。需要啟用「智慧預測」。",
+      L"除了 Rime 容錯，打字停頓時會把注音與前文交給上面選的模型校正整句，結果接在候選後面、"
+      L"標示「校正」（按 Tab 選用）。和「智慧預測」各自獨立。",
   };
   const int sel = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel();
   GetDlgItem(IDC_P1_TYPO_HINT).SetWindowTextW(kHints[sel >= 0 && sel <= 2 ? sel : 0]);
+  GetDlgItem(IDC_P1_TYPO_PROFILE_LABEL).EnableWindow(sel == 2);
+  GetDlgItem(IDC_P1_TYPO_PROFILE).EnableWindow(sel == 2);
 }
 
 LRESULT SettingsDialog::OnTypoChange(WORD, WORD, HWND, BOOL&) {
   UpdateTypoHint();
+  UpdateProfileUsage();
   if (loaded_)
     typo_modified_ = true;
   return 0;
@@ -1236,7 +1240,7 @@ bool SettingsDialog::Save() {
     saved = true;
   }
   CommitProfileEditor();
-  if ((llm_modified_ || personal_modified_) && !ValidateProfiles())
+  if ((llm_modified_ || personal_modified_ || typo_modified_) && !ValidateProfiles())
     return false;
   if (personal_modified_ || typo_modified_)
     llm_modified_ = true;  // 個人詞庫與注音容錯的設定也在 llm 之下，一起儲存
@@ -1509,7 +1513,7 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     profiles_.push_back(p);
   }
 
-  int predict = -1, refine = -1;
+  int predict = -1, refine = -1, typo = -1;
   if (profiles_.empty()) {
     // 舊設定轉換：本機模型、預測用的 API、精煉用的 API 各一組
     const std::wstring provider = ToLower(get("llm/provider_type"));
@@ -1561,9 +1565,12 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     };
     predict = find(get("llm/predict_profile"));
     refine = find(get("llm/personal/refine/profile"));
+    typo = find(get("llm/typo/profile"));
   }
+  if (typo < 0)
+    typo = predict;  // 還沒選過：預設和智慧預測用同一個模型
   PopulateProfileList();
-  RefreshProfileCombos(predict, refine);
+  RefreshProfileCombos(predict, refine, typo);
   SelectProfile(profiles_.empty() ? -1 : 0);
 }
 
@@ -1620,6 +1627,16 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   set("personal/refine/api_url", refine >= 0 && r.remote ? r.api_url : L"");
   set("personal/refine/api_key", refine >= 0 && r.remote ? r.api_key : L"");
   set("personal/refine/model", refine >= 0 && r.remote ? r.model : L"");
+  // 注音校正
+  const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+  const ModelProfile& c = typo >= 0 ? profiles_[typo] : none;
+  set("typo/profile", typo >= 0 ? u8tow(key_of(typo)) : L"");
+  set("typo/type", typo < 0 ? L"" : c.remote ? L"openai" : L"llamacpp");
+  set("typo/model_path", typo >= 0 && !c.remote ? yaml_path(c.model_path) : L"");
+  set("typo/model_type", typo >= 0 && !c.remote ? c.model_type : L"");
+  set("typo/api_url", typo >= 0 && c.remote ? c.api_url : L"");
+  set("typo/api_key", typo >= 0 && c.remote ? c.api_key : L"");
+  set("typo/model", typo >= 0 && c.remote ? c.model : L"");
 }
 
 bool SettingsDialog::ValidateProfiles() {
@@ -1641,8 +1658,15 @@ bool SettingsDialog::ValidateProfiles() {
     SetStatus(L"請選擇預測使用的模型（可在「語言模型」頁新增）。");
     return false;
   }
+  const bool typo_llm = CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel() == 2;
+  const int typo = ComboProfile(IDC_P1_TYPO_PROFILE);
+  if (typo_llm && typo < 0) {
+    GoToPage(kPageSchemas);
+    SetStatus(L"請選擇注音校正使用的模型（可在「語言模型」頁新增）。");
+    return false;
+  }
   const int refine = ComboProfile(IDC_P4_PROFILE);
-  for (int index : {llm_on ? predict : -1, refine}) {
+  for (int index : {llm_on ? predict : -1, refine, typo_llm ? typo : -1}) {
     if (index < 0)
       continue;
     const ModelProfile& p = profiles_[index];
@@ -1724,19 +1748,24 @@ int SettingsDialog::ComboProfile(int combo_id) const {
   return index >= 0 && index < (int)profiles_.size() ? index : -1;
 }
 
-void SettingsDialog::RefreshProfileCombos(int predict, int refine) {
+void SettingsDialog::RefreshProfileCombos(int predict, int refine, int typo) {
   if (predict == -2)
     predict = ComboProfile(IDC_P3_PROFILE);
   if (refine == -2)
     refine = ComboProfile(IDC_P4_PROFILE);
+  if (typo == -2)
+    typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   predict_profile_.ResetContent();
   refine_profile_.ResetContent();
+  typo_profile_.ResetContent();
   refine_profile_.AddString(L"不使用 LLM（只做統計整理）");
   for (const auto& p : profiles_) {
     predict_profile_.AddString(ProfileLabel(p).c_str());
     refine_profile_.AddString(ProfileLabel(p).c_str());
+    typo_profile_.AddString(ProfileLabel(p).c_str());
   }
   predict_profile_.SetCurSel(predict >= 0 && predict < (int)profiles_.size() ? predict : -1);
+  typo_profile_.SetCurSel(typo >= 0 && typo < (int)profiles_.size() ? typo : -1);
   refine_profile_.SetCurSel(refine >= 0 && refine < (int)profiles_.size() ? refine + 1 : 0);
   UpdateProfileUsage();
 }
@@ -1749,8 +1778,11 @@ void SettingsDialog::UpdateProfileUsage() {
       uses.push_back(L"智慧預測");
     if (ComboProfile(IDC_P4_PROFILE) == profile_sel_)
       uses.push_back(L"個人詞庫精煉");
+    if (CComboBox(GetDlgItem(IDC_P1_TYPO)).GetCurSel() == 2 &&
+        ComboProfile(IDC_P1_TYPO_PROFILE) == profile_sel_)
+      uses.push_back(L"注音校正");
     if (uses.empty()) {
-      text = L"目前沒有被使用。可在「智慧預測」或「個人詞庫」頁選用。";
+      text = L"目前沒有被使用。可在「智慧預測」、「個人詞庫」或「輸入方案」頁選用。";
     } else {
       text = L"用於：";
       for (size_t i = 0; i < uses.size(); ++i)
@@ -1797,20 +1829,22 @@ LRESULT SettingsDialog::OnProfileDelete(WORD, WORD, HWND, BOOL&) {
     return 0;
   CommitProfileEditor();
   const int index = profile_sel_;
-  int predict = ComboProfile(IDC_P3_PROFILE), refine = ComboProfile(IDC_P4_PROFILE);
+  int predict = ComboProfile(IDC_P3_PROFILE), refine = ComboProfile(IDC_P4_PROFILE),
+      typo = ComboProfile(IDC_P1_TYPO_PROFILE);
   std::wstring message = L"確定要刪除「" + profiles_[index].name + L"」嗎？";
-  if (predict == index || refine == index)
+  if (predict == index || refine == index || typo == index)
     message += L"\n\n這組設定正在使用中，刪除後請另外選擇模型。";
   if (MessageBoxW(message.c_str(), L"刪除模型設定", MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   auto shift = [&](int i) { return i == index ? -1 : i > index ? i - 1 : i; };
   predict = shift(predict);
   refine = shift(refine);
+  typo = shift(typo);
   profiles_.erase(profiles_.begin() + index);
   profile_sel_ = -1;
   PopulateProfileList();
   SelectProfile((std::min)(index, (int)profiles_.size() - 1));
-  RefreshProfileCombos(predict, refine);
+  RefreshProfileCombos(predict, refine, typo);
   llm_modified_ = true;
   return 0;
 }

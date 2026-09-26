@@ -173,6 +173,11 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
   int m_typo_correction = 0;        // llm/typo_correction：0 關閉、1 Rime 容錯、2 再加 LLM 整句校正
   size_t m_llm_correction_count = 0;  // m_current_llm_candidates 開頭幾個是整句校正（m_llm_mutex 保護）
+  // 注音整句校正用的模型（llm/typo/*），與智慧預測分開；同一個模型時直接共用 m_llm_provider
+  std::unique_ptr<LLMProvider> m_typo_owned;
+  LLMProvider* m_typo_llm = nullptr;  // m_llm_infer_mutex 下使用
+  bool _TypoLLMAvailable() const;
+  void _LoadTypoProvider(RimeConfig* config);
   size_t m_llm_context_max_chars = 100;       // llm/context/max_chars：给模型的前文最多几个字
   unsigned m_llm_context_idle_minutes = 10;   // llm/context/idle_minutes：窗口闲置多久后旧前文失效
   void _UpdateContextKey(WeaselSessionId ipc_id);  // 依前景窗口切换上下文

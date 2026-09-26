@@ -141,6 +141,9 @@ class OpenAICompatibleProvider : public LLMProvider {
                                const std::wstring& draft) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
+  // 不經 rime 設定（也不看 llm/enabled），直接指定 API（注音校正用）
+  void ConfigureDirect(const std::string& api_url, const std::string& api_key,
+                       const std::string& model, const std::wstring& prompt);
 
  private:
   // chat/completions 的請求內容（system + user 兩則訊息，含 extra_body_json）
@@ -190,6 +193,7 @@ class LlamaCppProvider : public LLMProvider {
 
   // 不經 rime 設定，直接指定模型載入（LLMLocalChat 用）
   bool LoadModelDirect(const LLMLocalModelSpec& spec, double temperature);
+  void SetPromptPrefix(const std::wstring& prompt) { m_prompt_prefix = prompt; }
   // 一次對話：Instruct 模型套用模型內建的 chat template，Base 模型用純文字續寫
   std::string Chat(const std::string& system_utf8, const std::string& user_utf8, int max_tokens);
   // 目前模型可用的上下文長度（token）與文字的 token 數

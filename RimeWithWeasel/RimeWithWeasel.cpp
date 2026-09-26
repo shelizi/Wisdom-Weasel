@@ -212,6 +212,8 @@ void RimeWithWeaselHandler::Initialize() {
     // 作废排队中的预测，并等进行中的推理结束，避免后台线程用到已释放的模型
     ++m_llm_request_seq;
     std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
+    m_typo_llm = nullptr;  // 可能指向 m_llm_provider，先放掉
+    m_typo_owned.reset();
     m_llm_provider.reset();
     m_llm_loaded_model.clear();
     // 两种自动触发时机可分别关闭（未设置时默认开启）；关闭后仍可按 ` 键手动触发
@@ -400,6 +402,8 @@ void RimeWithWeaselHandler::Initialize() {
       LOG(INFO) << "LLM configuration not found (llm/enabled not set)";
     }
     
+    // 注音整句校正的模型：不受「智慧預測」開關影響
+    _LoadTypoProvider(&config);
     rime_api->config_close(&config);
   }
   m_last_schema_id.clear();
@@ -705,14 +709,15 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
   // 输入中补全：正在组字时，停顿 300ms 后以 Rime 当前转换结果续写；组字结束则清除补全候选
-  if (handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK) && _PredictionAvailable()) {
+  if (handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK) &&
+      (_PredictionAvailable() || _TypoLLMAvailable())) {
     bool composing = false;
     RIME_STRUCT(RimeStatus, st);
     if (rime_api->get_status(session_id, &st)) {
       composing = st.is_composing && !st.is_ascii_mode;
       rime_api->free_status(&st);
     }
-    if (composing && (m_llm_while_typing || m_typo_correction == 2)) {
+    if (composing && ((m_llm_while_typing && _PredictionAvailable()) || _TypoLLMAvailable())) {
       _ScheduleLLMCompletion(ipc_id, kLLMCompletionDelayMs);
     } else if (composing && m_llm_prediction_mode) {
       // 未开启输入中补全：开始打字后，提交后留下的下一词预测已不适用，直接清掉
@@ -2381,7 +2386,8 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
                                                   const std::wstring& zhuyin,
                                                   bool complete) {
   const bool llm_available = m_llm_provider && m_llm_provider->IsAvailable();
-  if (!llm_available && !m_personal) {
+  const bool correct = _TypoLLMAvailable() && !zhuyin.empty() && !completion_prefix.empty();
+  if (!llm_available && !m_personal && !correct) {
     LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
     return;
   }
@@ -2399,8 +2405,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
     personal.erase(std::remove(personal.begin(), personal.end(), completion_prefix),
                    personal.end());
   }
-  const bool correct = llm_available && !zhuyin.empty() && !completion_prefix.empty();
-  if (!llm_available && personal.empty())
+  if (!llm_available && personal.empty() && !correct)
     return;
 
   // LLM 上下文：当前窗口最近的前文 + 输入中补全时 Rime 当前的转换结果
@@ -2464,7 +2469,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
     // 1) 先显示个人词库的候选（几乎零延迟）
     if (!personal.empty() && !publish(personal, 0))
       return;
-    if (!llm_available)
+    if (!llm_available && !correct)
       return;
 
     // 2) 注音整句校正：LLM 依前文与注音推测真正要打的句子，放在第一个；之后的续写接在校正结果后面
@@ -2475,9 +2480,9 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
       std::wstring corrected;
       {
         std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
-        if (request_seq != m_llm_request_seq.load() || !m_llm_provider)
+        if (request_seq != m_llm_request_seq.load() || !m_typo_llm)
           return;
-        corrected = CleanCorrection(m_llm_provider->CorrectSentence(history, zhuyin, prefix_copy),
+        corrected = CleanCorrection(m_typo_llm->CorrectSentence(history, zhuyin, prefix_copy),
                                     prefix_copy);
       }
       if (m_dev_console && m_dev_console->IsEnabled())
@@ -2491,7 +2496,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
         prefix = corrected;
       }
     }
-    if (!complete)
+    if (!complete || !llm_available)
       return;
 
     // 3) 再用 LLM 补足：同一时间只能有一个推理（llama.cpp context 非线程安全），
@@ -2573,6 +2578,76 @@ void RimeWithWeaselHandler::_UpdateContextKey(WeaselSessionId ipc_id) {
   m_context_history->SetActiveKey(app + L"|" + hwnd_buf + L"|" + title_key, m_dev_console);
 }
 
+bool RimeWithWeaselHandler::_TypoLLMAvailable() const {
+  return m_typo_correction == 2 && m_typo_llm && m_typo_llm->IsAvailable();
+}
+
+void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
+  m_typo_llm = nullptr;
+  m_typo_owned.reset();
+  if (m_typo_correction != 2)
+    return;
+  auto read = [&](const char* key) {
+    char value[4096] = {0};
+    return rime_api->config_get_string(config, key, value, sizeof(value) - 1) ? std::string(value)
+                                                                               : std::string();
+  };
+  // 校正使用的模型由设定程式从「语言模型」清单选用后展开到 llm/typo/*
+  const std::string type = read("llm/typo/type");
+  const std::string model_path = read("llm/typo/model_path");
+  std::string model_type = read("llm/typo/model_type");
+  std::transform(model_type.begin(), model_type.end(), model_type.begin(), ::tolower);
+  const std::string api_url = read("llm/typo/api_url");
+  const std::string api_key = read("llm/typo/api_key");
+  const std::string model = read("llm/typo/model");
+  std::string prompt = read("llm/prompt");
+  if (prompt.empty())
+    prompt = read("llm/llamacpp/prompt_prefix");
+
+  // 和智慧预测是同一个模型：共用，避免同一个模型载入两次
+  if (m_llm_provider && m_llm_provider->IsAvailable()) {
+    const std::string provider_type = read("llm/provider_type");
+    std::string predict_type = read("llm/llamacpp/model_type");
+    std::transform(predict_type.begin(), predict_type.end(), predict_type.begin(), ::tolower);
+    const bool same_local = type == "llamacpp" && provider_type == "llamacpp" &&
+                            model_path == read("llm/llamacpp/model_path") &&
+                            (model_type == "base") == (predict_type == "base");
+    const bool same_api = type == "openai" && provider_type == "openai" &&
+                          api_url == read("llm/openai/api_url") &&
+                          api_key == read("llm/openai/api_key") && model == read("llm/openai/model");
+    if (same_local || same_api) {
+      m_typo_llm = m_llm_provider.get();
+      LOG(INFO) << "Typo correction shares the prediction model.";
+      return;
+    }
+  }
+  if (type == "llamacpp" && !model_path.empty()) {
+    LLMLocalModelSpec spec;
+    spec.model_path = model_path;
+    spec.instruct = model_type != "base";
+    spec.n_ctx = 2048;  // 前文 + 一句话就够
+    int value = 0;
+    if (rime_api->config_get_int(config, "llm/llamacpp/n_gpu_layers", &value))
+      spec.n_gpu_layers = value;
+    if (rime_api->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
+      spec.n_threads = value;
+    auto provider = std::make_unique<LlamaCppProvider>();
+    if (provider->LoadModelDirect(spec, 0.0)) {
+      provider->SetPromptPrefix(u8tow(prompt));
+      m_typo_owned = std::move(provider);
+    } else {
+      LOG(ERROR) << "Typo correction: failed to load model " << model_path;
+    }
+  } else if (type == "openai" && !api_url.empty()) {
+    auto provider = std::make_unique<OpenAICompatibleProvider>();
+    provider->ConfigureDirect(api_url, api_key, model, u8tow(prompt));
+    m_typo_owned = std::move(provider);
+  } else {
+    LOG(WARNING) << "Typo correction: no model selected (llm/typo/type)";
+  }
+  m_typo_llm = m_typo_owned.get();
+}
+
 bool RimeWithWeaselHandler::_PredictionAvailable() const {
   if (!m_llm_enabled)
     return false;
@@ -2580,7 +2655,8 @@ bool RimeWithWeaselHandler::_PredictionAvailable() const {
 }
 
 void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD delay_ms) {
-  if (!_PredictionAvailable())
+  const bool predict = _PredictionAvailable();
+  if (!predict && !_TypoLLMAvailable())
     return;
 
   // Rime 若此刻提交会得到的文字（整句转换）；没有时退回第一个候选
@@ -2598,12 +2674,10 @@ void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD
     return;
   }
 
-  // 续写：开启输入中补全，或按 ` 键手动触发（delay_ms 为 0）；整句校正：注音容错选 LLM
-  const bool complete = m_llm_while_typing || delay_ms == 0;
-  const std::wstring zhuyin = m_typo_correction == 2 && m_llm_provider &&
-                                      m_llm_provider->IsAvailable()
-                                  ? _ComposingZhuyin(ipc_id)
-                                  : std::wstring();
+  // 续写：开启智慧预测且（输入中补全或按 ` 键手动触发，delay_ms 为 0）；
+  // 整句校正：注音容错选 LLM（与智慧预测各自独立）
+  const bool complete = predict && (m_llm_while_typing || delay_ms == 0);
+  const std::wstring zhuyin = _TypoLLMAvailable() ? _ComposingZhuyin(ipc_id) : std::wstring();
   if (!complete && zhuyin.empty()) {
     _CancelLLMCompletion();
     return;
@@ -2693,9 +2767,10 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
   m_pending_llm_commit = selected;
   m_llm_completion_active = false;
 
-  // 继续预测下一个词（可用 llm/predict_after_commit 关闭）
-  m_llm_prediction_mode = m_llm_after_commit;
-  if (m_llm_after_commit)
+  // 继续预测下一个词（可用 llm/predict_after_commit 关闭；关闭智慧预测时只有整句校正，不接着预测）
+  const bool predict_next = m_llm_after_commit && _PredictionAvailable();
+  m_llm_prediction_mode = predict_next;
+  if (predict_next)
     _TriggerLLMPrediction(ipc_id);
   _Respond(ipc_id, eat);
   _UpdateUI(ipc_id);

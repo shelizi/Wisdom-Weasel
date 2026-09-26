@@ -90,6 +90,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_ID_HANDLER(IDC_P1_GET_SCHEMATA, OnGetSchemata)
   NOTIFY_HANDLER(IDC_P1_SCHEMA_LIST, LVN_ITEMCHANGED, OnSchemaListItemChanged)
   COMMAND_HANDLER(IDC_P1_TYPO, CBN_SELCHANGE, OnTypoChange)
+  COMMAND_HANDLER(IDC_P1_TYPO_PROFILE, CBN_SELCHANGE, OnProfileChoice)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
   COMMAND_ID_HANDLER(IDC_P3_ENABLED, OnLLMEnabledClick)
@@ -246,7 +247,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void SelectProfile(int index);    // 顯示到右側編輯區
   void CommitProfileEditor();       // 編輯區 → profiles_
   // 預測與精煉的下拉選單；參數為要選的 profiles_ 索引（-1 = 不選，-2 = 維持目前的選擇）
-  void RefreshProfileCombos(int predict = -2, int refine = -2);
+  void RefreshProfileCombos(int predict = -2, int refine = -2, int typo = -2);
   void UpdateProfileUsage();
   // 模型檔案（使用者資料夾的 models）
   void PopulateModelFiles(const std::wstring& select = L"");
@@ -314,6 +315,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   int api_profile_ = -1;        // 測試的是哪一組
   CListBox profile_list_;
   CComboBox predict_profile_;
+  CComboBox typo_profile_;  // 注音校正使用的模型
   CComboBox refine_profile_;
 
   // 詞庫管理
