@@ -323,6 +323,20 @@ void RimeWithWeaselHandler::Initialize() {
           refine.n_threads = llama_int;
         if (!m_refiner) {
           m_refiner = std::make_unique<PersonalRefiner>(m_personal.get());
+          // 整理選字記憶時要匯出／匯入使用者詞典：在服務端的鎖下關掉所有 session 放開詞典，
+          // 客戶端之後打字時發現 session 不在會自動重建
+          m_refiner->SetUserDictAccess([this](const std::function<void()>& fn) {
+            // 不能一直等鎖：重新載入設定時服務端會持鎖等精煉結束，一直等就互相卡死
+            std::unique_lock<std::mutex> lock(weasel::ServerApiMutex(), std::defer_lock);
+            for (int i = 0; i < 100 && !lock.try_lock(); ++i)
+              Sleep(50);
+            if (!lock.owns_lock() || m_disabled)
+              return false;
+            m_session_status_map.clear();
+            rime_api->cleanup_all_sessions();
+            fn();
+            return true;
+          });
           m_refiner->Configure(refine);
           m_refiner->Start();
         } else {

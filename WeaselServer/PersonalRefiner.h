@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -38,6 +39,9 @@ class PersonalRefiner {
     std::wstring rime_dict_path;   // 使用者資料夾\terra_pinyin.personal.dict.yaml
     std::wstring essay_path;       // 共用資料夾\essay.txt（原本的詞頻）
     std::wstring deployer_path;    // WeaselDeployer.exe
+    // 順便整理 Rime 的選字記憶（使用者詞典）：請 LLM 挑出學到的錯字錯詞並刪除
+    bool clean_rime_memory = true;
+    std::string rime_user_dict = "terra_pinyin";
     bool UsesLLM() const {
       return (type == "openai" && !api_url.empty()) || (type == "llamacpp" && !model_path.empty());
     }
@@ -47,6 +51,10 @@ class PersonalRefiner {
   ~PersonalRefiner();
 
   void Configure(const Config& config);
+  // 使用者詞典被輸入法開著時無法匯出／匯入：由服務端提供，在它的鎖下關掉所有 Rime session
+  // （放開使用者詞典）後執行 fn；客戶端之後打字會自動重建 session。無法執行時回傳 false
+  using UserDictAccess = std::function<bool(const std::function<void()>& fn)>;
+  void SetUserDictAccess(UserDictAccess access) { user_dict_access_ = std::move(access); }
   void Start();  // 啟動排程執行緒
   void Stop();   // 停止並等待進行中的精煉結束
 
@@ -75,8 +83,13 @@ class PersonalRefiner {
                              const std::vector<PersonalLexicon::RawRecord>& records,
                              bool* ok);
 
+  // 整理 Rime 選字記憶：匯出使用者詞典，請 LLM 挑出錯字錯詞（兩字以上、還沒審查過的），
+  // 以匯入負次數的方式刪除。回傳結果說明文字，失敗時 ok = false
+  std::wstring RefineRimeMemory(const Config& config, bool full, bool* ok);
+
+  // system 為空時用個人詞庫精煉的提示詞
   std::wstring CallRemote(const Config& config, const std::wstring& user, size_t words,
-                          size_t examples, bool* ok);
+                          size_t examples, bool* ok, const std::wstring& system = L"");
   // 解析並套用一批的結果；回傳這批刪除的詞，merged 累加合併數
   std::vector<std::wstring> ApplyLLMResult(const std::wstring& content, size_t batch_size,
                                            const std::unordered_set<std::wstring>& known,
@@ -85,6 +98,7 @@ class PersonalRefiner {
   void WriteStatusAs(bool running);
 
   PersonalLexicon* lexicon_;
+  UserDictAccess user_dict_access_;
   mutable std::mutex mutex_;  // config_、last_result_、排程等待
   std::mutex run_mutex_;      // worker_ 的啟動與結束
   Config config_;
