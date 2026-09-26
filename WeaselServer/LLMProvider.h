@@ -4,6 +4,26 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <functional>
+
+// 推論中途取消：呼叫端在工作執行緒上設定檢查函式（例如使用者又打了字，請求已過時），
+// 本機模型每產生一個 token 檢查一次，過時就停止，讓新的請求盡快開始
+inline std::function<bool()>& LLMCancelCheck() {
+  thread_local std::function<bool()> check;
+  return check;
+}
+
+inline bool LLMCancelled() {
+  const auto& check = LLMCancelCheck();
+  return check && check();
+}
+
+struct LLMCancelScope {
+  explicit LLMCancelScope(std::function<bool()> check) { LLMCancelCheck() = std::move(check); }
+  ~LLMCancelScope() { LLMCancelCheck() = nullptr; }
+  LLMCancelScope(const LLMCancelScope&) = delete;
+  LLMCancelScope& operator=(const LLMCancelScope&) = delete;
+};
 
 // LLM提供者抽象基类
 class LLMProvider {

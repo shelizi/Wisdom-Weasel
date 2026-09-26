@@ -2509,6 +2509,9 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
   std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
                prefix_copy, personal, llm_available, history, zhuyin, correct, complete,
                typo_prompt]() {
+    // 生成途中又有新请求（继续打字）：本机模型立即停止，让新的请求接着开始
+    LLMCancelScope cancel_scope(
+        [this, request_seq] { return request_seq != m_llm_request_seq.load(); });
     // 防抖：等待期间若又有新请求（例如继续打字），直接放弃，不占用 GPU
     if (delay_ms > 0) {
       Sleep(delay_ms);

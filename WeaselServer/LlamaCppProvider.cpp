@@ -625,6 +625,14 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
   size_t tokens_generated = 0;
 
   for (size_t i = 0; i < max_tokens; ++i) {
+    // 输入已经变了（请求过时）：停止生成，释放模型给新的请求
+    if (LLMCancelled()) {
+      if (g_dev_console && g_dev_console->IsEnabled()) {
+        g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": 输入已变更，中断生成");
+      }
+      break;
+    }
+
     // 检查上下文大小
     ULONGLONG t0 = GetTickCount64();
     int n_ctx_used = llama_memory_seq_pos_max(mem, 0) + 1;
