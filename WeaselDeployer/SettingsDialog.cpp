@@ -51,6 +51,8 @@ const PageInfo kPages[] = {
      L"用語言模型預測你接下來要打的詞。"},
     {3700, L"注音校正", L"\uE70F", L"注音校正",
      L"注音打錯字時的處理：Rime 容錯選字，或請語言模型依前文校正整句。"},
+    {3800, L"選字策略", L"", L"選字策略",
+     L"用統計語言模型改善整句選字，並記錄選字的準確度，方便比較調整前後的效果。"},
     {3500, L"語言模型", L"\uE950", L"語言模型",
      L"本機（llama.cpp）或 OpenAI 相容 API 的模型設定，可以設定多組。"},
     {3400, L"個人詞庫", L"\uE8F1", L"個人詞庫",
@@ -62,7 +64,7 @@ const int kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
 // 控制項 ID 依範圍分頁（見 kPages 的 id_base）；其餘為共用
 int PageOfControl(int id) {
-  if (id < 3100 || id >= 3800)
+  if (id < 3100 || id >= 3900)
     return -1;
   for (int i = 0; i < kPageCount; ++i) {
     if (kPages[i].id_base == id / 100 * 100)
@@ -89,6 +91,9 @@ bool IsSubtleText(int id) {
     case IDC_P5_USAGE:
     case IDC_P5_FILE_STATUS:
     case IDC_P5_THINK_HINT:
+    case IDC_P8_GRAMMAR_HINT:
+    case IDC_P8_GRAMMAR_STATUS:
+    case IDC_P8_STATS_HINT:
     case IDC_P6_COUNT:
     case IDC_P6_RULES_LABEL:
     case IDC_P6_HINT:
@@ -512,7 +517,7 @@ void SettingsDialog::ApplyFonts() {
   icon_font_ = ::CreateFontIndirectW(&icon);
 
   GetDlgItem(IDC_PAGE_TITLE).SetFont(title_font_);
-  for (int id : {IDC_P7_TYPO_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
+  for (int id : {IDC_P7_TYPO_LABEL, IDC_P8_GRAMMAR_LABEL, IDC_P8_STATS_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
                  IDC_P3_PREFIX_LABEL, IDC_P3_ENABLED, IDC_P4_ENABLED, IDC_P4_REFINE_LABEL,
                  IDC_P4_DATA_LABEL, IDC_P6_WORDS_LABEL, IDC_P6_DICT_LABEL, IDC_P5_FILES_LABEL})
     GetDlgItem(id).SetFont(section_font_);
@@ -556,6 +561,10 @@ void SettingsDialog::ShowPage(int page) {
     UpdateProfileUsage();
     if (!file_busy_)
       PopulateModelFiles(model_files_.GetCurSel() >= 0 ? model_file_paths_[model_files_.GetCurSel()] : L"");
+  }
+  if (page == kPageChoice) {
+    RefreshGrammarStatus();
+    RefreshChoiceStats();
   }
   if (page == kPageDict) {
     if (!words_loaded_)
@@ -957,6 +966,14 @@ void SettingsDialog::LoadLLMSettings() {
   const std::wstring typo_prompt = get_string("llm/typo/prompt");
   SetMultilineText(IDC_P7_TYPO_PROMPT, typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
   UpdateTypoState();
+  // 語言模型：注音方案裡有我們加的區塊就是已啟用
+  {
+    std::ifstream in(WeaselUserDataPath() / L"bopomofo_express.custom.yaml", std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    grammar_loaded_ = text.find("# >>> weasel-grammar") != std::string::npos;
+  }
+  CheckDlgButton(IDC_P8_GRAMMAR, grammar_loaded_ ? BST_CHECKED : BST_UNCHECKED);
+  grammar_modified_ = false;
   llm_modified_ = typo_modified_ = false;
 }
 
@@ -1299,6 +1316,16 @@ bool SettingsDialog::Save() {
   if (style_modified_ || llm_modified_) {
     api_->save_settings(ui_settings_->settings());
     style_modified_ = llm_modified_ = personal_modified_ = typo_modified_ = false;
+    saved = true;
+  }
+  // 語言模型：開關有變才改方案（開啟前已確認模型檔存在）
+  if (grammar_modified_) {
+    const bool grammar = IsDlgButtonChecked(IDC_P8_GRAMMAR) == BST_CHECKED;
+    std::wstring grammar_error;
+    if (!ApplyGrammar(grammar, &grammar_error))
+      boost_error += (boost_error.empty() ? L"" : L"；") + (L"語言模型：" + grammar_error);
+    grammar_loaded_ = grammar;
+    grammar_modified_ = false;
     saved = true;
   }
   if (!saved) {
@@ -2740,6 +2767,221 @@ bool SettingsDialog::ApplyRimeBoost(bool enable, std::wstring* error) {
     fs::remove(dict, ec);
   }
   return ok;
+}
+
+// ---------------------------------------------------------------------------
+// 選字策略：語言模型（RIME octagram）與選字統計
+
+namespace {
+const char kGrammarBegin[] = "  # >>> weasel-grammar";
+const char kGrammarEnd[] = "  # <<< weasel-grammar";
+const wchar_t kGrammarFile[] = L"zh-hant-t-essay-bgw.gram";
+const wchar_t kGrammarUrl[] =
+    L"https://raw.githubusercontent.com/lotem/rime-octagram-data/hant/zh-hant-t-essay-bgw.gram";
+const ULONGLONG kGrammarMinBytes = 30ull * 1024 * 1024;  // 完整的檔案約 41 MB
+
+fs::path GrammarPath() {
+  return WeaselUserDataPath() / kGrammarFile;
+}
+
+bool GrammarReady() {
+  std::error_code ec;
+  return fs::file_size(GrammarPath(), ec) >= kGrammarMinBytes && !ec;
+}
+
+// 在方案加上 octagram 語言模型（設定同 rime-octagram-data 的 grammar:/hant）
+bool PatchSchemaGrammar(const fs::path& file, bool enable, std::wstring* error) {
+  std::vector<std::string> block;
+  if (enable)
+    block = {
+        std::string(kGrammarBegin) + u8"：語言模型改善整句選字（小狼毫設定自動管理）",
+        "  grammar:",
+        "    language: zh-hant-t-essay-bgw",
+        "  translator/contextual_suggestions: true",
+        "  translator/max_homophones: 7",
+        "  translator/max_homographs: 7",
+        kGrammarEnd,
+    };
+  return PatchSchemaBlock(file, kGrammarBegin, kGrammarEnd, block,
+                          {"grammar:", "translator/contextual_suggestions"}, error);
+}
+}  // namespace
+
+bool SettingsDialog::ApplyGrammar(bool enable, std::wstring* error) {
+  // 三個注音方案都改；關閉時只還原已有的檔案
+  const fs::path user_dir = WeaselUserDataPath();
+  bool ok = true;
+  for (const wchar_t* schema : kZhuyinSchemas) {
+    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
+    std::error_code ec;
+    if (!enable && !fs::exists(file, ec))
+      continue;
+    if (!PatchSchemaGrammar(file, enable, error))
+      ok = false;
+  }
+  return ok;
+}
+
+void SettingsDialog::RefreshGrammarStatus() {
+  std::wstring text;
+  if (grammar_downloading_) {
+    text = L"下載中…";
+  } else if (GrammarReady()) {
+    std::error_code ec;
+    text = L"模型檔已下載（" + std::to_wstring(fs::file_size(GrammarPath(), ec) >> 20) + L" MB）";
+  } else {
+    text = L"尚未下載模型檔";
+  }
+  GetDlgItem(IDC_P8_GRAMMAR_STATUS).SetWindowTextW(text.c_str());
+  GetDlgItem(IDC_P8_GRAMMAR_DOWNLOAD)
+      .SetWindowTextW(grammar_downloading_ ? L"取消下載" : GrammarReady() ? L"重新下載" : L"下載模型");
+}
+
+void SettingsDialog::RefreshChoiceStats() {
+  // weasel_stats.txt（輸入法寫的）：日期 送出 字數 換字 LLM出現 LLM採用 校正採用 Backspace
+  struct Sum {
+    int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0;
+  };
+  std::map<std::string, Sum> days;
+  {
+    std::ifstream in(WeaselUserDataPath() / L"weasel_stats.txt", std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+      std::istringstream f(line);
+      std::string date;
+      Sum s;
+      if (f >> date >> s.commits >> s.chars >> s.changed >> s.offered >> s.used >> s.corrections >>
+          s.backs)
+        days[date] = s;
+    }
+  }
+  // n 天前的日期（本機時間）
+  auto date_before = [](int n) {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    FILETIME ft;
+    SystemTimeToFileTime(&st, &ft);
+    ULARGE_INTEGER u;
+    u.LowPart = ft.dwLowDateTime;
+    u.HighPart = ft.dwHighDateTime;
+    u.QuadPart -= (ULONGLONG)n * 24 * 3600 * 10000000ULL;
+    ft.dwLowDateTime = u.LowPart;
+    ft.dwHighDateTime = u.HighPart;
+    FileTimeToSystemTime(&ft, &st);
+    char buf[16];
+    sprintf_s(buf, "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+    return std::string(buf);
+  };
+  auto describe = [&](const wchar_t* title, int span) {
+    Sum t;
+    const std::string from = date_before(span - 1);
+    for (const auto& [date, s] : days) {
+      if (date < from)
+        continue;
+      t.commits += s.commits;
+      t.chars += s.chars;
+      t.changed += s.changed;
+      t.offered += s.offered;
+      t.used += s.used;
+      t.corrections += s.corrections;
+      t.backs += s.backs;
+    }
+    std::wostringstream out;
+    out << title << L"：";
+    if (!t.commits) {
+      out << L"還沒有紀錄\n";
+      return out.str();
+    }
+    const double first = 100.0 * (t.commits - t.changed) / t.commits;
+    out.setf(std::ios::fixed);
+    out.precision(1);
+    out << L"送出 " << t.commits << L" 次（" << t.chars << L" 字），直接用第一候選 " << first
+        << L"%（換字 " << t.changed << L" 次）\n";
+    out << L"　　LLM 候選出現 " << t.offered << L" 次、採用 " << t.used << L" 次（其中校正 "
+        << t.corrections << L" 次）；組字中按 Backspace " << t.backs << L" 次\n";
+    return out.str();
+  };
+  const std::wstring text =
+      describe(L"今天", 1) + L"\n" + describe(L"最近 7 天", 7) + L"\n" + describe(L"最近 30 天", 30);
+  GetDlgItem(IDC_P8_STATS).SetWindowTextW(text.c_str());
+}
+
+LRESULT SettingsDialog::OnGrammarChange(WORD, WORD, HWND, BOOL&) {
+  if (IsDlgButtonChecked(IDC_P8_GRAMMAR) == BST_CHECKED && !GrammarReady()) {
+    CheckDlgButton(IDC_P8_GRAMMAR, BST_UNCHECKED);
+    SetStatus(L"請先下載語言模型檔。");
+    return 0;
+  }
+  if (loaded_)
+    grammar_modified_ = (IsDlgButtonChecked(IDC_P8_GRAMMAR) == BST_CHECKED) != grammar_loaded_;
+  return 0;
+}
+
+LRESULT SettingsDialog::OnGrammarDownload(WORD, WORD, HWND, BOOL&) {
+  if (grammar_downloading_) {
+    if (grammar_cancel_)
+      *grammar_cancel_ = true;
+    return 0;
+  }
+  grammar_downloading_ = true;
+  grammar_cancel_ = std::make_shared<std::atomic<bool>>(false);
+  grammar_error_ = std::make_shared<std::wstring>();
+  RefreshGrammarStatus();
+  // 下載執行緒只用視窗代碼與共用的旗標，對話框關掉也不會碰到已釋放的成員
+  std::thread([hwnd = m_hWnd, cancel = grammar_cancel_, error = grammar_error_]() {
+    const fs::path dest = GrammarPath();
+    fs::path part = dest;
+    part += L".part";
+    int last_percent = -1;
+    const bool ok = HttpDownload(
+        kGrammarUrl, part,
+        [&](ULONGLONG done, ULONGLONG total) {
+          const int percent = total ? (int)(done * 100 / total) : 0;
+          if (percent != last_percent) {
+            last_percent = percent;
+            ::PostMessage(hwnd, WM_APP_GRAMMAR_PROGRESS, 0, percent);
+          }
+          return !cancel->load();
+        },
+        error.get());
+    std::error_code ec;
+    if (ok) {
+      fs::rename(part, dest, ec);
+      if (ec)
+        *error = L"無法儲存模型檔";
+    } else {
+      fs::remove(part, ec);
+    }
+    ::PostMessage(hwnd, WM_APP_GRAMMAR_PROGRESS, ok && error->empty() ? 1 : 2, 0);
+  }).detach();
+  return 0;
+}
+
+LRESULT SettingsDialog::OnGrammarProgress(UINT, WPARAM state, LPARAM percent, BOOL&) {
+  if (state == 0) {
+    GetDlgItem(IDC_P8_GRAMMAR_STATUS)
+        .SetWindowTextW((L"下載中… " + std::to_wstring((int)percent) + L"%").c_str());
+    return 0;
+  }
+  grammar_downloading_ = false;
+  RefreshGrammarStatus();
+  if (state == 1)
+    SetStatus(L"語言模型已下載，勾選「用語言模型改善整句選字」後按套用。");
+  else
+    SetStatus(L"語言模型下載失敗：" + (grammar_error_ ? *grammar_error_ : std::wstring()));
+  return 0;
+}
+
+LRESULT SettingsDialog::OnStatsReset(WORD, WORD, HWND, BOOL&) {
+  if (MessageBoxW(L"要清除所有選字統計嗎？", L"選字統計", MB_YESNO | MB_ICONQUESTION) != IDYES)
+    return 0;
+  if (!SendPersonalCommand(8)) {
+    std::error_code ec;
+    fs::remove(WeaselUserDataPath() / L"weasel_stats.txt", ec);
+  }
+  Sleep(200);  // 等輸入法刪檔
+  RefreshChoiceStats();
+  SetStatus(L"已清除選字統計。");
+  return 0;
 }
 
 bool SettingsDialog::ApplyTypoCorrection(bool enable, std::wstring* error) {

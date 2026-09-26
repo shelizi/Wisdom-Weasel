@@ -67,6 +67,10 @@ struct SessionStatus {
   std::wstring mixed_commit;   // 待送出的混打內容
   bool mixed_active() const { return mixed_english || !mixed_text.empty(); }
   // 注音逐字選字（像新注音）：←/→ 框住的字（音節序號），-1 表示沒有框選
+  // 選字統計：這次組字有沒有換過候選、有沒有出現 LLM 候選（送出時計入）
+  bool choice_changed = false;
+  bool llm_offered = false;
+  int focus_hl = 0;  // 框選時反白停的位置（目前顯示的字），換到別的才算換字
   int focus = -1;
   std::string focus_input;  // 框選時的輸入與游標，改變了就取消框選
   size_t focus_caret = 0;
@@ -210,6 +214,21 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在 m_llm_infer_mutex 下读写）
   std::unique_ptr<PersonalLexicon> m_personal;  // 個人詞庫（llm/personal/enabled）
   std::unique_ptr<PersonalRefiner> m_refiner;
+  // 選字統計：每天一行寫在使用者資料夾 weasel_stats.txt，只有次數、不含打字內容
+  struct ChoiceStats {
+    int64_t commits = 0;           // 送出次數
+    int64_t chars = 0;             // 送出字數
+    int64_t changed = 0;           // 其中換過候選（沒直接用第一候選）的次數
+    int64_t llm_offered = 0;       // 其中出現過 LLM 候選的次數
+    int64_t llm_used = 0;          // 採用 LLM 候選（Tab）的次數
+    int64_t corrections_used = 0;  // 其中採用整句校正的次數
+    int64_t backspaces = 0;        // 組字中按 Backspace 的次數
+  };
+  std::map<std::string, ChoiceStats> m_choice_stats;  // 日期 → 統計
+  bool m_choice_stats_loaded = false;
+  ChoiceStats& _TodayStats();
+  void _CountCommit(SessionStatus& ss, const std::wstring& text);
+  void _SaveChoiceStats();
   // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放，
   // 不在處理輸入法請求的執行緒上等（精煉可能正在等 LLM）
   std::thread m_retire_thread;

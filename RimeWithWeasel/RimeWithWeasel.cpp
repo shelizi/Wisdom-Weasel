@@ -454,6 +454,54 @@ void RimeWithWeaselHandler::_WaitRetired() {
     m_retire_thread.join();
 }
 
+// ---------------------------------------------------------------------------
+// 選字統計（設定程式的「選字策略」頁顯示）：每行 日期 \t 送出 \t 字數 \t 換字 \t
+// LLM 出現 \t LLM 採用 \t 校正採用 \t Backspace
+
+RimeWithWeaselHandler::ChoiceStats& RimeWithWeaselHandler::_TodayStats() {
+  if (!m_choice_stats_loaded) {
+    m_choice_stats_loaded = true;
+    std::ifstream in(WeaselUserDataPath() / L"weasel_stats.txt", std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+      std::istringstream f(line);
+      std::string date;
+      ChoiceStats s;
+      if (f >> date >> s.commits >> s.chars >> s.changed >> s.llm_offered >> s.llm_used >>
+          s.corrections_used >> s.backspaces)
+        m_choice_stats[date] = s;
+    }
+  }
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  char date[16];
+  sprintf_s(date, "%04d-%02d-%02d", t.wYear, t.wMonth, t.wDay);
+  return m_choice_stats[date];
+}
+
+void RimeWithWeaselHandler::_SaveChoiceStats() {
+  // 只留最近 60 天
+  while (m_choice_stats.size() > 60)
+    m_choice_stats.erase(m_choice_stats.begin());
+  std::ofstream out(WeaselUserDataPath() / L"weasel_stats.txt",
+                    std::ios::binary | std::ios::trunc);
+  for (const auto& [date, s] : m_choice_stats)
+    out << date << '\t' << s.commits << '\t' << s.chars << '\t' << s.changed << '\t'
+        << s.llm_offered << '\t' << s.llm_used << '\t' << s.corrections_used << '\t'
+        << s.backspaces << '\n';
+}
+
+void RimeWithWeaselHandler::_CountCommit(SessionStatus& ss, const std::wstring& text) {
+  ChoiceStats& s = _TodayStats();
+  ++s.commits;
+  s.chars += (int64_t)text.size();
+  if (ss.choice_changed)
+    ++s.changed;
+  if (ss.llm_offered)
+    ++s.llm_offered;
+  ss.choice_changed = ss.llm_offered = false;
+  _SaveChoiceStats();
+}
+
 void RimeWithWeaselHandler::Finalize() {
   // 個人詞庫解構時會存檔（服務結束或重新部署前）；Initialize 會重新載入
   _RetirePersonal();
@@ -791,6 +839,10 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
                          ibus::Modifier::SHIFT_MASK))) {
     RIME_STRUCT(RimeStatus, bs_status);
     if (rime_api->get_status(session_id, &bs_status)) {
+      if (bs_status.is_composing) {
+        ++_TodayStats().backspaces;
+        _SaveChoiceStats();
+      }
       const bool zhuyin = bs_status.is_composing && !bs_status.is_ascii_mode &&
                           bs_status.schema_id &&
                           strncmp(bs_status.schema_id, "bopomofo", 8) == 0;
@@ -1070,6 +1122,7 @@ bool RimeWithWeaselHandler::_FocusSyllable(WeaselSessionId ipc_id, int index) {
   });
   if (shown > 0)
     rime_api->highlight_candidate(session_id, shown);
+  ss.focus_hl = shown > 0 ? shown : 0;
   ss.focus = index;
   ss.focus_input = input;
   ss.focus_caret = end;
@@ -1846,6 +1899,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
       actions.insert("commit");
       std::string commit_text = escape_string<char>(wtou8(m_pending_llm_commit));
       messages.push_back(std::string("commit=") + commit_text + '\n');
+      _CountCommit(session_status, m_pending_llm_commit);
     }
 
     // 清空待提交的LLM候选词
@@ -1862,6 +1916,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     if (m_personal)
       m_personal->Record(m_context_history ? m_context_history->GetActiveKey() : L"",
                          session_status.mixed_commit);
+    _CountCommit(session_status, session_status.mixed_commit);
     session_status.mixed_commit.clear();
   }
 
@@ -1882,6 +1937,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     if (commit.text && strlen(commit.text) > 0) {
       std::wstring commit_text_w = u8tow(commit.text);
       if (!commit_text_w.empty()) {
+        _CountCommit(session_status, commit_text_w);
         if (m_context_history) {
           m_context_history->AddText(commit_text_w, m_dev_console);
         }
@@ -1953,9 +2009,18 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     session_status.preview_units.clear();
     session_status.preview_lens.clear();
     session_status.focus = -1;
+    // 沒送出就結束組字（例如 Esc）：這次不計
+    if (!session_status.mixed_active())
+      session_status.choice_changed = session_status.llm_offered = false;
   }
   if (rime_api->get_context(session_id, &ctx)) {
     if (is_composing) {
+      // 選字統計：反白離開第一候選（框選時是離開原本顯示的字）就算換字
+      const int base_hl = session_status.focus >= 0 ? session_status.focus_hl : 0;
+      if (ctx.menu.num_candidates > 0 && ctx.menu.highlighted_candidate_index != base_hl)
+        session_status.choice_changed = true;
+      if (m_llm_prediction_mode && !m_current_llm_candidates.empty())
+        session_status.llm_offered = true;
       actions.insert("ctx");
       switch (session_status.style.preedit_type) {
         case UIStyle::PREVIEW:
@@ -2800,8 +2865,15 @@ static std::vector<std::wstring> CleanLLMCandidates(const std::vector<std::wstri
 }
 
 void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
-  // 1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙 6 套用修改並匯出 7 產生 Rime 詞典；
-  // 狀態寫在 personal/status.txt
+  // 1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙 6 套用修改並匯出 7 產生 Rime 詞典
+  // 8 重設選字統計；狀態寫在 personal/status.txt
+  if (command == 8) {
+    m_choice_stats.clear();
+    m_choice_stats_loaded = true;
+    std::error_code ec;
+    std::filesystem::remove(WeaselUserDataPath() / L"weasel_stats.txt", ec);
+    return;
+  }
   if (!m_personal || !m_refiner) {
     const std::filesystem::path dir = WeaselUserDataPath() / L"personal";
     std::error_code ec;
@@ -3323,12 +3395,21 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
                                                 size_t llm_index,
                                                 EatLine eat) {
   std::wstring selected;
+  bool correction = false;
   {
     std::lock_guard<std::mutex> lock(m_llm_mutex);
     if (llm_index >= m_current_llm_candidates.size())
       return false;
     selected = m_current_llm_candidates[llm_index];
+    correction = llm_index < m_llm_correction_count;
     m_current_llm_candidates.clear();
+  }
+  {
+    ChoiceStats& stats = _TodayStats();
+    ++stats.llm_used;
+    if (correction)
+      ++stats.corrections_used;
+    _SaveChoiceStats();
   }
   if (m_dev_console && m_dev_console->IsEnabled()) {
     m_dev_console->WriteLine(L"[LLM] 选择LLM候选词: " + std::to_wstring(llm_index + 1) +

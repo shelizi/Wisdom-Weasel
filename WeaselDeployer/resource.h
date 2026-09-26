@@ -89,6 +89,15 @@
 #define IDC_P7_TYPO_PROMPT_LABEL        3705
 #define IDC_P7_TYPO_PROMPT              3706
 #define IDC_P7_TYPO_PROMPT_RESET        3707
+#define IDC_P8_GRAMMAR_LABEL            3800
+#define IDC_P8_GRAMMAR                  3801
+#define IDC_P8_GRAMMAR_HINT             3802
+#define IDC_P8_GRAMMAR_STATUS           3803
+#define IDC_P8_GRAMMAR_DOWNLOAD         3804
+#define IDC_P8_STATS_LABEL              3805
+#define IDC_P8_STATS                    3806
+#define IDC_P8_STATS_HINT               3807
+#define IDC_P8_STATS_RESET              3808
 #define IDC_P1_HOTKEY_LABEL             3104
 #define IDC_P1_HOTKEYS                  3105
 #define IDC_P1_GET_SCHEMATA             3106

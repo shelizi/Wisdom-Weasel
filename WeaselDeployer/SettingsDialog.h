@@ -9,6 +9,7 @@
 #include <mutex>
 #include <thread>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +36,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
     kPageStyle,
     kPagePredict,
     kPageTypo,
+    kPageChoice,
     kPageModels,
     kPagePersonal,
     kPageDict,
@@ -60,6 +62,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
     WM_APP_REFONT = WM_APP + 1,  // DPI 變更後重新套用自訂字型
     WM_APP_FILE_PROGRESS,        // 模型檔下載／複製進度（wParam：0 進行中、1 完成、2 失敗）
     WM_APP_API_TEST,             // API 連線測試完成
+    WM_APP_GRAMMAR_PROGRESS,     // 語言模型下載進度（wParam：0 進行中、1 完成、2 失敗）
     WM_APP_WORD_RENAME,          // 詞彙清單的就地編輯結束後，送出修改
     kTimerTestPoll = 1,          // 等待輸入法回覆預測測試
     kTimerStatusPoll = 2,        // 重新部署後，等輸入法載入模型
@@ -74,6 +77,7 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
   MESSAGE_HANDLER(WM_APP_REFONT, OnRefont)
   MESSAGE_HANDLER(WM_APP_FILE_PROGRESS, OnFileProgress)
+  MESSAGE_HANDLER(WM_APP_GRAMMAR_PROGRESS, OnGrammarProgress)
   MESSAGE_HANDLER(WM_APP_API_TEST, OnApiTestDone)
   MESSAGE_HANDLER(WM_APP_WORD_RENAME, OnWordRename)
   MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
@@ -99,6 +103,9 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   COMMAND_HANDLER(IDC_P7_TYPO_PROFILE, CBN_SELCHANGE, OnProfileChoice)
   COMMAND_HANDLER(IDC_P7_TYPO_PROMPT, EN_CHANGE, OnTypoChange)
   COMMAND_ID_HANDLER(IDC_P7_TYPO_PROMPT_RESET, OnTypoPromptReset)
+  COMMAND_ID_HANDLER(IDC_P8_GRAMMAR, OnGrammarChange)
+  COMMAND_ID_HANDLER(IDC_P8_GRAMMAR_DOWNLOAD, OnGrammarDownload)
+  COMMAND_ID_HANDLER(IDC_P8_STATS_RESET, OnStatsReset)
   COMMAND_HANDLER(IDC_P2_COLOR_SCHEME, LBN_SELCHANGE, OnColorSchemeChange)
   COMMAND_ID_HANDLER(IDC_P2_SELECT_FONT, OnSelectFont)
   COMMAND_ID_HANDLER(IDC_P3_ENABLED, OnLLMEnabledClick)
@@ -170,6 +177,10 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   LRESULT OnDpiChangedPre(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnRefont(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnFileProgress(UINT, WPARAM, LPARAM, BOOL&);
+  LRESULT OnGrammarProgress(UINT, WPARAM, LPARAM, BOOL&);
+  LRESULT OnGrammarChange(WORD, WORD, HWND, BOOL&);
+  LRESULT OnGrammarDownload(WORD, WORD, HWND, BOOL&);
+  LRESULT OnStatsReset(WORD, WORD, HWND, BOOL&);
   LRESULT OnApiTest(WORD, WORD, HWND, BOOL&);
   LRESULT OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&);
   LRESULT OnWordRename(UINT, WPARAM, LPARAM, BOOL&);
@@ -245,6 +256,10 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void ShowSchemaDetails(RimeSchemaInfo* info);
   // 注音容錯：Rime 容錯（llm/typo/rime）與 LLM 整句校正（llm/typo/llm）各自開關
   void UpdateTypoState();
+  // 選字策略頁
+  void RefreshGrammarStatus();
+  void RefreshChoiceStats();
+  bool ApplyGrammar(bool enable, std::wstring* error);
   void SetMultilineText(int id, const std::wstring& text);
   std::wstring GetMultilineText(int id);
   // Rime 容錯：在注音方案的 custom.yaml 打開 translator/enable_correction
@@ -328,6 +343,12 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   std::vector<std::wstring> model_file_paths_;  // 與 model_files_ 的項目一一對應
   std::thread file_worker_;
   std::atomic<bool> file_busy_{false};
+  // 語言模型（octagram）：載入時是否已啟用、是否改過、下載狀態
+  bool grammar_loaded_ = false;
+  bool grammar_modified_ = false;
+  bool grammar_downloading_ = false;
+  std::shared_ptr<std::atomic<bool>> grammar_cancel_;
+  std::shared_ptr<std::wstring> grammar_error_;
   std::atomic<bool> file_cancel_{false};
   std::mutex file_mutex_;
   std::wstring file_message_;   // 背景工作的進度／結果文字（file_mutex_）
