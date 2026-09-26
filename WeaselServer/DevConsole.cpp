@@ -6,6 +6,62 @@
 #include <fcntl.h>
 #include <iostream>
 #include <sstream>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+
+struct DevConsole::Queue {
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::deque<std::string> lines;
+  size_t bytes = 0;
+  size_t dropped = 0;
+  bool stop = false;
+  HANDLE output = INVALID_HANDLE_VALUE;
+};
+
+// 佇列上限：主控台暫停太久時丟掉最舊的內容，不佔用過多記憶體
+static const size_t kMaxQueuedBytes = 4 * 1024 * 1024;
+
+void DevConsole::StartWriter() {
+  m_queue = std::make_shared<Queue>();
+  m_queue->output = m_hConsoleOutput;
+  // 執行緒持有佇列的 shared_ptr：關閉時不等它（寫入可能正卡在主控台），直接分離
+  std::thread([q = m_queue]() {
+    std::unique_lock<std::mutex> lock(q->mutex);
+    for (;;) {
+      q->cv.wait(lock, [&] { return q->stop || !q->lines.empty(); });
+      if (q->lines.empty() && q->stop)
+        return;
+      std::string batch;
+      if (q->dropped) {
+        batch = "[DevConsole] 主控台暫停期間略過 " + std::to_string(q->dropped) + " 段記錄\r\n";
+        q->dropped = 0;
+      }
+      while (!q->lines.empty()) {
+        batch += q->lines.front();
+        q->lines.pop_front();
+      }
+      q->bytes = 0;
+      const HANDLE output = q->output;
+      lock.unlock();
+      DWORD written = 0;
+      WriteFile(output, batch.data(), static_cast<DWORD>(batch.size()), &written, NULL);
+      lock.lock();
+    }
+  }).detach();
+}
+
+void DevConsole::StopWriter() {
+  if (!m_queue)
+    return;
+  {
+    std::lock_guard<std::mutex> lock(m_queue->mutex);
+    m_queue->stop = true;
+  }
+  m_queue->cv.notify_all();
+  m_queue.reset();
+}
 
 DevConsole::DevConsole()
     : m_enabled(false),
@@ -42,6 +98,7 @@ bool DevConsole::Initialize() {
     FreeConsole();
     return false;
   }
+  StartWriter();
 
   // 设置控制台标题
   std::wstring title = L"Weasel 开发终端 - 调试日志";
@@ -167,13 +224,21 @@ void DevConsole::RestoreStdout() {
 }
 
 void DevConsole::Write(const std::string& message) {
-  if (!m_enabled || m_hConsoleOutput == INVALID_HANDLE_VALUE) {
+  if (!m_enabled || !m_queue || message.empty()) {
     return;
   }
 
-  DWORD written = 0;
-  WriteFile(m_hConsoleOutput, message.c_str(),
-            static_cast<DWORD>(message.length()), &written, NULL);
+  {
+    std::lock_guard<std::mutex> lock(m_queue->mutex);
+    m_queue->lines.push_back(message);
+    m_queue->bytes += message.size();
+    while (m_queue->bytes > kMaxQueuedBytes && m_queue->lines.size() > 1) {
+      m_queue->bytes -= m_queue->lines.front().size();
+      m_queue->lines.pop_front();
+      ++m_queue->dropped;
+    }
+  }
+  m_queue->cv.notify_one();
 }
 
 void DevConsole::WriteLine(const std::string& message) {
@@ -218,6 +283,7 @@ void DevConsole::Close() {
     WriteLine("========================================");
   }
 
+  StopWriter();
   RestoreStdout();
   FreeConsole();
   m_enabled = false;
