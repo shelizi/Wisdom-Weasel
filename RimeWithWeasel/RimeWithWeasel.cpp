@@ -977,19 +977,17 @@ bool RimeWithWeaselHandler::_HandleMixedInput(const weasel::KeyEvent& keyEvent,
 bool RimeWithWeaselHandler::_FocusSyllable(WeaselSessionId ipc_id, int index) {
   SessionStatus& ss = get_session_status(ipc_id);
   const RimeSessionId session_id = ss.session_id;
-  char schema_id[256] = {0};
-  rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
-  const ZhuyinSpeller sp = _LoadZhuyinSpeller(rime_api, schema_id);
   const char* raw = rime_api->get_input(session_id);
   const std::string input = raw ? raw : "";
-  const auto syllables = zhuyin_preview::SplitSyllables(sp, input);
+  // 每個字對應的按鍵數，依整句轉換時 Rime 的切法（省略聲調的連打也對得上）
   const auto& units = ss.preview_units;
-  if (index < 0 || index >= (int)syllables.size() || units.size() != syllables.size() ||
+  const std::vector<size_t> lens = ss.preview_lens;
+  if (index < 0 || index >= (int)lens.size() || units.size() != lens.size() ||
       ss.preview_input != input)
     return false;
   size_t end = 0;
   for (int i = 0; i <= index; ++i)
-    end += syllables[i].size();
+    end += lens[i];
 
   // 找候選清單裡符合條件的候選序號
   auto find_candidate = [&](auto&& match) {
@@ -1077,10 +1075,10 @@ bool RimeWithWeaselHandler::_HandleZhuyinFocus(const weasel::KeyEvent& keyEvent,
 
   const char* raw = rime_api->get_input(session_id);
   const std::string input = raw ? raw : "";
-  char schema_id[256] = {0};
-  rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
-  const int count =
-      (int)zhuyin_preview::SplitSyllables(_LoadZhuyinSpeller(rime_api, schema_id), input).size();
+  // 字數依整句轉換時記下的切法；對不上（例如句中插入過字）就交回 Rime 原本的游標移動
+  if (ss.preview_input != input || ss.preview_lens.empty())
+    return false;
+  const int count = (int)ss.preview_lens.size();
   // 回到句尾：取消框選，接著打字
   auto unfocus = [&]() {
     rime_api->set_caret_pos(session_id, input.size());
@@ -1921,6 +1919,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   if (!is_composing) {
     session_status.preview_input.clear();
     session_status.preview_units.clear();
+    session_status.preview_lens.clear();
     session_status.focus = -1;
   }
   if (rime_api->get_context(session_id, &ctx)) {
@@ -1950,6 +1949,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
                 input ? input : "", caret_pos,
                 cand ? cand : "", hl, _LoadZhuyinSpeller(rime_api, schema_id),
                 session_status.preview_input, session_status.preview_units,
+                session_status.preview_lens,
                 session_status.focus >= 0);
             // without a chosen word the whole preedit is the selection
             if (pv.sel_start == pv.sel_end) {

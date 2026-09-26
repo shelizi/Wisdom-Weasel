@@ -59,6 +59,7 @@ struct SessionStatus {
   // syllable, to keep showing the text after the caret while selecting
   std::string preview_input;
   std::vector<std::wstring> preview_units;
+  std::vector<size_t> preview_lens;  // 每個字對應的按鍵數（Rime 的音節切法）
   // 中英混打：組字中按 Shift 切到英文後，已轉好的中文與打的英文暫存在這裡，
   // 顯示在組字區最前面，Enter 一起送出（沒在組字時切英文照舊直接輸出）
   std::wstring mixed_text;

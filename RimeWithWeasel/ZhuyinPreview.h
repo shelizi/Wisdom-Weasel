@@ -3,6 +3,7 @@
 // 新注音: completed syllables show as converted text, the syllable still being
 // typed stays as zhuyin, and while choosing a word backwards the text after
 // the caret stays visible with the chosen word marked.
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -102,10 +103,9 @@ inline std::vector<std::wstring> PendingSyllables(const std::wstring& pre) {
       --start;
     if (start == end || (start > 0 && IsTone(pre[start - 1])))
       break;  // toned syllable or non-zhuyin text
-    pending.insert(pending.begin(), pre.substr(start, end - start));
-    if (start > 0 && pre[start - 1] != L' ')
-      break;  // preceded directly by converted text
-    end = start;
+    // 只有正在拼的最後一個音節留成注音；前面省略聲調的音節照樣轉成字（快打常整句不打聲調）
+    pending.push_back(pre.substr(start, end - start));
+    break;
   }
   return pending;
 }
@@ -133,6 +133,64 @@ inline std::wstring Join(const std::vector<std::wstring>& units,
   return out;
 }
 
+// 每個音節（字）對應幾個按鍵，依 Rime 組字的切法：注音之間以空白分開，省略聲調的連打也切得對，
+// 每個注音符號或聲調對應一個按鍵。前面已確定成中文的部分沿用上一次的切法。對不上時回傳空的
+inline std::vector<size_t> SyllableLengths(const ZhuyinSpeller& sp,
+                                           const std::wstring& preedit,
+                                           const std::string& input,
+                                           const std::string& old_input,
+                                           const std::vector<size_t>& old_lens) {
+  std::vector<size_t> lens;
+  if (input.find(sp.delimiter) != std::string::npos) {
+    // 手動分隔的輸入：依聲調與分隔符切
+    for (const auto& s : SplitSyllables(sp, input))
+      lens.push_back(s.size());
+    return lens;
+  }
+  size_t last_other = std::wstring::npos;  // 最後一個不是注音的字（已確定的中文）
+  for (size_t i = 0; i < preedit.size(); ++i) {
+    const wchar_t c = preedit[i];
+    if (!IsBopomofo(c) && !IsTone(c) && c != L' ')
+      last_other = i;
+  }
+  std::vector<size_t> tokens;
+  size_t current = 0;
+  for (size_t i = last_other == std::wstring::npos ? 0 : last_other + 1; i < preedit.size(); ++i) {
+    if (preedit[i] == L' ') {
+      if (current)
+        tokens.push_back(current);
+      current = 0;
+    } else {
+      ++current;
+    }
+  }
+  if (current)
+    tokens.push_back(current);
+  size_t zhuyin_keys = 0;
+  for (size_t t : tokens)
+    zhuyin_keys += t;
+  if (zhuyin_keys > input.size())
+    return {};
+  const size_t prefix_keys = input.size() - zhuyin_keys;
+  if (prefix_keys > 0) {
+    if (old_input.size() < prefix_keys || old_input.compare(0, prefix_keys, input, 0, prefix_keys))
+      return {};
+    size_t sum = 0;
+    for (size_t l : old_lens) {
+      if (sum >= prefix_keys)
+        break;
+      sum += l;
+      lens.push_back(l);
+    }
+    if (sum != prefix_keys)
+      return {};
+  } else if (last_other != std::wstring::npos) {
+    return {};
+  }
+  lens.insert(lens.end(), tokens.begin(), tokens.end());
+  return lens;
+}
+
 }  // namespace zhuyin_preview
 
 // preview: RIME's commit_text_preview, which covers the input up to the caret;
@@ -147,9 +205,13 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
                                         const ZhuyinSpeller& sp,
                                         std::string& cache_input,
                                         std::vector<std::wstring>& cache_units,
+                                        std::vector<size_t>& cache_lens,
                                         bool focused = false) {
   using namespace zhuyin_preview;
   ZhuyinPreview out;
+  // 組字顯示在候選窗時 Weasel 開啟 soft_cursor，preedit 裡會插入游標符號 ‸，解析前先拿掉
+  std::wstring pre = u8tow(preedit);
+  pre.erase(std::remove(pre.begin(), pre.end(), L'‸'), pre.end());
   std::wstring head = u8tow(preview);
   // keys of the active input not covered by the highlighted candidate
   std::string rem;
@@ -168,17 +230,20 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
   if (caret == input.size() && rem.empty()) {
     // typing at the end: convert all but the syllables still being typed
     auto units = SplitChars(head);
-    auto pending = PendingSyllables(u8tow(preedit));
+    auto pending = PendingSyllables(pre);
     if (pending.size() <= units.size()) {
       units.resize(units.size() - pending.size());
       units.insert(units.end(), pending.begin(), pending.end());
     }
-    if (CountSyllables(sp, input) == units.size()) {
+    auto lens = SyllableLengths(sp, pre, input, cache_input, cache_lens);
+    if (!lens.empty() && lens.size() == units.size()) {
       cache_input = input;
       cache_units = units;
+      cache_lens = std::move(lens);
     } else {
       cache_input.clear();
       cache_units.clear();
+      cache_lens.clear();
     }
     out.text = Join(units);
     out.sel_start = out.sel_end = out.cursor =
@@ -194,6 +259,35 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
   // choosing backwards: keep the converted text after the chosen word,
   // taken from the last full conversion where the keys still match
   const size_t tail_start = caret - rem.size();
+  const std::wstring cw = u8tow(cand);
+  const bool choosing = caret < input.size() || highlighted > 0 || focused;
+  auto finish = [&](const std::wstring& rem_text, const std::wstring& after_text) {
+    out.text = head + rem_text + after_text;
+    out.cursor = (int)(head.size() + rem_text.size());
+    out.sel_start = out.sel_end = out.cursor;
+    if (choosing && !cw.empty() && head.size() >= cw.size() &&
+        head.compare(head.size() - cw.size(), cw.size(), cw) == 0) {
+      out.sel_start = (int)(head.size() - cw.size());
+      out.sel_end = (int)head.size();
+    }
+    return out;
+  };
+  // 輸入和最後一次整句轉換相同：照記下的切法取後面的字
+  if (cache_input == input && !cache_lens.empty() && cache_lens.size() == cache_units.size()) {
+    size_t sum = 0, k = std::string::npos, m = std::string::npos;
+    for (size_t i = 0; i <= cache_lens.size(); ++i) {
+      if (sum == tail_start && k == std::string::npos)
+        k = i;
+      if (sum == caret) {
+        m = i;
+        break;
+      }
+      if (i < cache_lens.size())
+        sum += cache_lens[i];
+    }
+    if (k != std::string::npos && m != std::string::npos && k <= m)
+      return finish(Join(cache_units, k, m), Join(cache_units, m));
+  }
   const auto syllables = SplitSyllables(sp, input.substr(tail_start));
   std::vector<std::wstring> tail_units;
   size_t matched = syllables.size();
@@ -217,17 +311,5 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
   tail_units.insert(tail_units.end(), cache_units.end() - n_cached,
                     cache_units.end());
   const size_t n_rem = CountSyllables(sp, rem);
-  const std::wstring rem_text = Join(tail_units, 0, n_rem);
-  const std::wstring after_text = Join(tail_units, n_rem);
-  out.text = head + rem_text + after_text;
-  out.cursor = (int)(head.size() + rem_text.size());
-  out.sel_start = out.sel_end = out.cursor;
-  const std::wstring cw = u8tow(cand);
-  const bool choosing = caret < input.size() || highlighted > 0 || focused;
-  if (choosing && !cw.empty() && head.size() >= cw.size() &&
-      head.compare(head.size() - cw.size(), cw.size(), cw) == 0) {
-    out.sel_start = (int)(head.size() - cw.size());
-    out.sel_end = (int)head.size();
-  }
-  return out;
+  return finish(Join(tail_units, 0, n_rem), Join(tail_units, n_rem));
 }
