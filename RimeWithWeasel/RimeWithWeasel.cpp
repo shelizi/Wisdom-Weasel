@@ -676,10 +676,17 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   
   // 如果处于LLM预测模式，处理特殊按键
   if (m_llm_prediction_mode && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK)) {
-    // ESC键：退出LLM预测模式
+    // ESC键：退出LLM预测模式；正在组字时继续交给 Rime 清除组字，一次关闭候选栏
     if (keyEvent.keycode == ibus::Keycode::Escape) {
       _ExitLLMPredictionMode(ipc_id);
-      return TRUE;
+      RIME_STRUCT(RimeStatus, esc_status);
+      bool esc_composing = false;
+      if (rime_api->get_status(session_id, &esc_status)) {
+        esc_composing = !!esc_status.is_composing;
+        rime_api->free_status(&esc_status);
+      }
+      if (!esc_composing)
+        return TRUE;
     }
     
     // Tab 选第一个 LLM 候选，Shift+1~5 选第几个。
