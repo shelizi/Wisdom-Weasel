@@ -1,0 +1,36 @@
+name: macOS core
+
+# 在 macOS 上編譯共用核心（core/）、鼠鬚管的橋接層與網頁設定視窗，並執行不需要輸入方案資料的測試
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'core/**'
+      - 'mac/**'
+      - 'include/**'
+      - 'test/**'
+      - '.github/workflows/macos-core.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'mac/**'
+      - 'include/**'
+      - 'test/**'
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install librime
+        run: brew install librime
+
+      - name: Configure
+        run: cmake -S mac -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

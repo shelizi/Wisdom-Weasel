@@ -235,7 +235,7 @@ void Controller::LoadConfig(RimeConfig* config) {
     else
       llm_provider_ = std::make_unique<RemoteLLMProvider>("openai");  // 預設用 OpenAI 相容 API
     LOG(INFO) << "LLM Provider type: " << provider_type;
-    if (llm_provider_->LoadConfig("weasel")) {
+    if (llm_provider_->LoadConfig(options_.config_id)) {
       LOG(INFO) << "LLM Provider initialized successfully: " << llm_provider_->GetProviderName();
       // 記下目前載入的模型，供設定畫面顯示
       char model_buf[1024] = {0};

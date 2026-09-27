@@ -9,6 +9,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace personal_crypto {
@@ -86,6 +87,29 @@ bool RandomBytes(void* buf, size_t size) {
   return SecRandomCopyBytes(kSecRandomDefault, size, buf) == errSecSuccess;
 }
 
+#ifdef PERSONAL_CRYPTO_TEST_KEY_FILE
+// 測試用：金鑰以明文存在指定的檔案，不碰使用者的鑰匙圈（CI 上沒有可用的登入鑰匙圈）
+bool LoadOrCreateKey(uint8_t key[kKeySize]) {
+  const char* path = PERSONAL_CRYPTO_TEST_KEY_FILE;
+  if (FILE* f = std::fopen(path, "rb")) {
+    const bool ok = std::fread(key, 1, kKeySize, f) == kKeySize;
+    std::fclose(f);
+    return ok;
+  }
+  uint8_t fresh[kKeySize];
+  if (!RandomBytes(fresh, sizeof(fresh)))
+    return false;
+  if (FILE* f = std::fopen(path, "wb")) {
+    std::fwrite(fresh, 1, kKeySize, f);
+    std::fclose(f);
+  }
+  FILE* f = std::fopen(path, "rb");
+  const bool ok = f && std::fread(key, 1, kKeySize, f) == kKeySize;
+  if (f)
+    std::fclose(f);
+  return ok;
+}
+#else
 bool LoadOrCreateKey(uint8_t key[kKeySize]) {
   switch (ReadKey(key)) {
     case ReadResult::kOk:
@@ -102,6 +126,7 @@ bool LoadOrCreateKey(uint8_t key[kKeySize]) {
   std::memset(fresh, 0, sizeof(fresh));
   return added && ReadKey(key) == ReadResult::kOk;
 }
+#endif
 
 bool LegacyUnprotect(const std::string&, std::string*) {
   return false;  // macOS 沒有舊版格式

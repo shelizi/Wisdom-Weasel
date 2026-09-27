@@ -71,6 +71,7 @@ class Controller {
   struct Options {
     std::filesystem::path user_dir;    // Rime 使用者資料夾
     std::filesystem::path shared_dir;  // Rime 共用資料夾
+    std::string config_id = "weasel";  // 前端的設定檔：weasel（小狼毫）／squirrel（鼠鬚管）
     // 選字統計的「組合」用：版本、編譯時間、版本說明
     std::string version;
     std::string build_time;
@@ -85,7 +86,7 @@ class Controller {
   void SetContextHistory(ContextHistory* history) { history_ = history; }
   ContextHistory* History() const { return history_; }
 
-  // 讀 weasel 設定的 llm/*，載入模型與個人詞庫（重新部署時也呼叫）
+  // 讀前端設定檔（Options::config_id）的 llm/*，載入模型與個人詞庫（重新部署時也呼叫）
   void LoadConfig(RimeConfig* config);
   // 停用或重新部署前：停止精煉並存檔（在背景做，不在這裡等）
   void Retire();

@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 static int failures = 0;
@@ -47,8 +48,9 @@ int main(int argc, char** argv) {
       CHECK(first[3] == L"候選四");  // 「4. 」編號去掉
     }
     const int after = ConnectionCount();
-    // WinHTTP 的連線池是整個行程共用的：預測重用連線時，三次預測加一次查詢最多只多一條連線
-    CHECK(before > 0 && after - before <= 1);
+    // 三次預測重用同一條連線，加上一次查詢，最多多兩條連線
+    // （WinHTTP 的連線池整個行程共用，通常一條都不多；libcurl 每個 handle 各自一份）
+    CHECK(before > 0 && after - before <= 2);
     std::printf("  new connections for 3 predictions: %d\n", after - before);
   }
 
