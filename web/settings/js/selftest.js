@@ -3,6 +3,7 @@
 //   apply   修改各類設定並套用；另外測驗證、下載進度與取消、錯誤路徑
 //   verify  重新啟動後讀回的狀態（由外部比對 apply 的 expected）
 import { state, newProfile, validate } from './state.js';
+import { addFont, setToken } from './fontface.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,7 +50,7 @@ async function applyPhase(ctx) {
   // 唯讀的方法都要能回應
   for (const [method, params] of [['stats.get', { span: 0 }], ['choicelog.status', {}], ['grammar.status', {}],
     ['models.files', {}], ['models.scan', { current: '' }], ['dicts.list', {}], ['personal.status', {}],
-    ['llm.probe', {}], ['style.preview', { id: state.style.active }], ['schemas.details', { id: state.schemas[0].id }]]) {
+    ['llm.probe', {}], ['fonts.list', {}], ['style.preview', { id: state.style.active }], ['schemas.details', { id: state.schemas[0].id }]]) {
     try {
       const r = await ctx.call(method, params);
       results.checks.push({ name: method, ok: true, detail: JSON.stringify(r).slice(0, 160) });
@@ -80,7 +81,8 @@ async function applyPhase(ctx) {
   const schemes = state.init.style.schemes;
   const index = schemes.findIndex((s) => s.id === state.style.active);
   state.style.active = schemes[(index + 1) % schemes.length].id;
-  state.style.fonts = { ...state.style.fonts, font_point: state.style.fonts.font_point + 1 };
+  const face = setToken(addFont(state.style.fonts.font_face, 'Segoe UI', { start: '0', end: '7f' }), 'weight', 'bold');
+  state.style.fonts = { ...state.style.fonts, font_point: state.style.fonts.font_point + 1, font_face: face };
   expected.style = { active: state.style.active, fonts: state.style.fonts };
   ctx.markDirty('style');
 

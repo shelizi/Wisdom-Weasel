@@ -1,7 +1,6 @@
 #include "stdafx.h"
 #include "SettingsBackend.h"
 #include "Configurator.h"
-#include "FontSettingDialog.h"
 #include "SettingsOps.h"
 #include "UIStyleSettings.h"
 #include "resource.h"
@@ -372,7 +371,7 @@ SettingsBackend::SettingsBackend(Configurator* configurator, Emit emit) : s_(new
 SettingsBackend::~SettingsBackend() = default;
 
 SettingsBackend::Thread SettingsBackend::ThreadOf(const std::string& method) {
-  static const std::set<std::string> kUi = {"fonts.pick", "models.pickFile", "dicts.pickFile",
+  static const std::set<std::string> kUi = {"models.pickFile", "dicts.pickFile",
                                             "app.setTheme"};
   static const std::set<std::string> kRime = {"init", "schemas.details", "schemas.install",
                                               "style.preview", "settings.apply", "dicts.list",
@@ -470,34 +469,11 @@ json SettingsBackend::Call(const std::string& method, const json& p, void* owner
     const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     return "data:image/png;base64," + Base64(data);
   }
-  if (method == "fonts.pick") {
-    // 沿用原本的字型設定視窗；網頁上尚未套用的值先帶進去
-    const json& f = p;
-    UIStyleSettings& ui = *s.ui;
-    const auto saved = FontsJson(ui);
-    ui.font_face = W(f.value("font_face", json()));
-    ui.label_font_face = W(f.value("label_font_face", json()));
-    ui.comment_font_face = W(f.value("comment_font_face", json()));
-    ui.font_point = f.value("font_point", ui.font_point);
-    ui.label_font_point = f.value("label_font_point", ui.label_font_point);
-    ui.comment_font_point = f.value("comment_font_point", ui.comment_font_point);
-    FontSettingDialog dialog(&ui, (HWND)owner);
-    json result = nullptr;
-    if (dialog.ShowDialog() == IDOK)
-      result = {{"font_face", U8(dialog.m_font_face)},
-                {"font_point", dialog.m_font_point},
-                {"label_font_face", U8(dialog.m_label_font_face)},
-                {"label_font_point", dialog.m_label_font_point},
-                {"comment_font_face", U8(dialog.m_comment_font_face)},
-                {"comment_font_point", dialog.m_comment_font_point}};
-    // 真正寫入等「套用」
-    ui.font_face = W(saved["font_face"]);
-    ui.label_font_face = W(saved["label_font_face"]);
-    ui.comment_font_face = W(saved["comment_font_face"]);
-    ui.font_point = saved["font_point"];
-    ui.label_font_point = saved["label_font_point"];
-    ui.comment_font_point = saved["comment_font_point"];
-    return result;
+  if (method == "fonts.list") {
+    json list = json::array();
+    for (const auto& font : ops::ListSystemFonts())
+      list.push_back(U8(font));
+    return list;
   }
 
   // --- 智慧預測：透過正在執行的輸入法 ------------------------------------------

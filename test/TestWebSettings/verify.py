@@ -100,6 +100,9 @@ check(patch_get(weasel, 'style/color_scheme') == expected['style']['active'], 's
       str(patch_get(weasel, 'style/color_scheme')))
 check(str(patch_get(weasel, 'style/font_point')) == str(expected['style']['fonts']['font_point']),
       'style/font_point saved', str(patch_get(weasel, 'style/font_point')))
+face = patch_get(weasel, 'style/font_face') or ''
+check(face == expected['style']['fonts']['font_face'] and ':bold' in face and 'Segoe UI::7f' in face,
+      'style/font_face saved (added font with range, bold)', face)
 
 default = load_yaml('default.custom.yaml')
 schema_list = [item.get('schema') for item in (patch_get(default, 'schema_list') or [])]

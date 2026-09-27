@@ -12,8 +12,10 @@
 #include <shobjidl.h>
 #include <shlwapi.h>
 #include <winhttp.h>
+#include <dwrite.h>
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "dwrite.lib")
 
 namespace settings_ops {
 
@@ -157,6 +159,39 @@ bool MoveToRecycleBin(const std::wstring& path) {
   op.pFrom = from.c_str();
   op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
   return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
+std::vector<std::wstring> ListSystemFonts() {
+  std::vector<std::wstring> fonts;
+  wchar_t locale[LOCALE_NAME_MAX_LENGTH] = {0};
+  GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH);
+  CComPtr<IDWriteFactory> factory;
+  CComPtr<IDWriteFontCollection> collection;
+  if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                 reinterpret_cast<IUnknown**>(&factory))) ||
+      FAILED(factory->GetSystemFontCollection(&collection)))
+    return fonts;
+  for (UINT32 i = 0; i < collection->GetFontFamilyCount(); ++i) {
+    CComPtr<IDWriteFontFamily> family;
+    CComPtr<IDWriteLocalizedStrings> names;
+    if (FAILED(collection->GetFontFamily(i, &family)) || FAILED(family->GetFamilyNames(&names)))
+      continue;
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    if (FAILED(names->FindLocaleName(locale, &index, &exists)) || !exists)
+      index = 0;  // 沒有這個語系的名稱：用第一個
+    UINT32 length = 0;
+    if (FAILED(names->GetStringLength(index, &length)))
+      continue;
+    std::wstring name(length + 1, L'\0');
+    if (FAILED(names->GetString(index, &name[0], length + 1)))
+      continue;
+    name.resize(length);
+    fonts.push_back(name);
+  }
+  std::sort(fonts.begin(), fonts.end());
+  fonts.erase(std::unique(fonts.begin(), fonts.end()), fonts.end());
+  return fonts;
 }
 
 // ---------------------------------------------------------------------------

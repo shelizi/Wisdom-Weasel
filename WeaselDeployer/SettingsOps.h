@@ -50,6 +50,9 @@ std::wstring SaveFileDialog(void* owner, const std::wstring& title,
 // 移到資源回收筒
 bool MoveToRecycleBin(const std::wstring& path);
 
+// 系統字型的家族名稱（使用者語系的名稱優先），排序、去重
+std::vector<std::wstring> ListSystemFonts();
+
 // ---------------------------------------------------------------------------
 // 模型檔（%USERPROFILE%\models 裡的 GGUF）
 
