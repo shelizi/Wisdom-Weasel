@@ -27,6 +27,7 @@ const wchar_t kClassName[] = L"WisdomWebSettings";
 constexpr UINT WM_APP_POST = WM_APP + 100;    // lParam：要送給網頁的 JSON（std::string*）
 constexpr UINT WM_APP_RUN_UI = WM_APP + 101;  // lParam：要在視窗執行緒執行的工作（std::function*）
 constexpr UINT_PTR kTimerScreenshot = 1;
+constexpr UINT_PTR kTimerSelftestLimit = 2;
 
 std::wstring Widen(const std::string& s) {
   return u8tow(s);
@@ -135,7 +136,7 @@ class WebSettingsWindow {
       return 1;
     *target_ = hwnd_;
     ApplyTitleBar(DarkTheme(theme_));
-    if (options_.screenshot.empty()) {
+    if (options_.screenshot.empty() && options_.selftest.empty()) {
       // 置中
       RECT rc, work;
       GetWindowRect(hwnd_, &rc);
@@ -145,10 +146,12 @@ class WebSettingsWindow {
                    SWP_NOSIZE | SWP_NOZORDER);
       ShowWindow(hwnd_, SW_SHOW);
     } else {
-      // 截圖模式：放在畫面外，不打擾使用者
+      // 截圖、自我測試：放在畫面外，不打擾使用者
       SetWindowPos(hwnd_, nullptr, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
       ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
     }
+    if (!options_.selftest.empty())
+      SetTimer(hwnd_, kTimerSelftestLimit, 5 * 60 * 1000, nullptr);
     if (!CreateWebView()) {
       DestroyWindow(hwnd_);
       return -1;
@@ -319,6 +322,8 @@ class WebSettingsWindow {
       url += L"&theme=" + std::to_wstring(options_.theme);
     if (!options_.screenshot.empty())
       url += L"&screenshot=1";
+    if (!options_.selftest.empty())
+      url += L"&selftest=" + options_.selftest_phase;
     webview_->Navigate(url.c_str());
   }
 
@@ -342,6 +347,19 @@ class WebSettingsWindow {
       return;
     }
     if (method == "app.close") {
+      Reply(id, nullptr);
+      allow_close_ = true;
+      PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+      return;
+    }
+    if (method == "app.selftestDone") {
+      // 結果以 UTF-8 JSON 寫檔，然後結束
+      FILE* file = _wfopen(options_.selftest.c_str(), L"wb");
+      if (file) {
+        const std::string text = params.dump(2);
+        fwrite(text.data(), 1, text.size(), file);
+        fclose(file);
+      }
       Reply(id, nullptr);
       allow_close_ = true;
       PostMessageW(hwnd_, WM_CLOSE, 0, 0);
@@ -441,8 +459,13 @@ class WebSettingsWindow {
         return 0;
       }
       case WM_TIMER:
-        if (wp == kTimerScreenshot)
+        if (wp == kTimerScreenshot) {
           Screenshot();
+        } else if (wp == kTimerSelftestLimit) {
+          // 自我測試卡住：結束，沒有結果檔就算失敗
+          allow_close_ = true;
+          PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+        }
         return 0;
       case WM_CLOSE:
         // 先問網頁（有沒有尚未套用的變更）；網頁同意後會呼叫 app.close

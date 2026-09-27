@@ -5,6 +5,9 @@
 
 fs::path WeaselUserDataPath() {
   WCHAR _path[MAX_PATH] = {0};
+  // 測試用：讓設定程式改用沙盒資料夾，不動到真正的使用者設定
+  if (GetEnvironmentVariableW(L"WEASEL_TEST_USER_DIR", _path, _countof(_path)) && _path[0])
+    return fs::path(_path);
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
   HKEY hKey;
   LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);

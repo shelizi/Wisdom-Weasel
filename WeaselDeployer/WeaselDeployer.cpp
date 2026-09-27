@@ -95,13 +95,15 @@ static int Run(LPTSTR lpCmdLine) {
         options.screenshot = argv[++i];
       else if (arg == L"--theme" && i + 1 < argc)
         options.theme = _wtoi(argv[++i]);
+      else if (arg == L"--selftest" && i + 2 < argc)
+        options.selftest = argv[++i], options.selftest_phase = argv[++i];
       else if (arg == L"--size" && i + 2 < argc)
         options.width = _wtoi(argv[++i]), options.height = _wtoi(argv[++i]);
     }
     LocalFree(argv);
     const int result = RunWebSettings(&configurator, options);
     // 無法使用 WebView2：改開原本的設定視窗
-    if (result == -1 && options.screenshot.empty())
+    if (result == -1 && options.screenshot.empty() && options.selftest.empty())
       return configurator.Run(false, options.start_page);
     return result;
   }

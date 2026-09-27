@@ -203,6 +203,13 @@ async function boot() {
   }
   // 截圖模式等畫面穩定；一般模式讓視窗知道網頁已就緒
   call('app.ready');
+  const selftest = params.get('selftest');
+  if (selftest) {
+    const { runSelftest } = await import('./selftest.js');
+    runSelftest(ctx, selftest);
+  }
 }
+
+ctx.apply = apply;
 
 boot();

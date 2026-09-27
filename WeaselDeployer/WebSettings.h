@@ -12,6 +12,9 @@ struct WebSettingsOptions {
   std::wstring screenshot;
   int theme = 0;
   int width = 0, height = 0;
+  // 開發用：網頁跑自我測試（phase 決定測試的階段），結果以 JSON 寫到這個檔案後結束
+  std::wstring selftest;
+  std::wstring selftest_phase;
 };
 
 // 0：正常關閉；-1：無法使用 WebView2（呼叫端可改開舊的設定視窗）
