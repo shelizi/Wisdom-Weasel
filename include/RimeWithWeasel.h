@@ -10,19 +10,11 @@
 
 #include <rime_api.h>
 
+#include "../core/ime/controller.h"
+
 // 前向声明
 class ContextHistory;
-class PersonalLexicon;
-class PersonalRefiner;
 class DevConsole;
-class LLMProvider;
-namespace ime {
-struct ChoiceStats;
-class ChoiceStatsStore;
-class HomophoneFinder;
-class PredictionEngine;
-struct PredictionSet;
-}  // namespace ime
 
 class ScopedThread {
  public:
@@ -54,44 +46,16 @@ typedef std::map<std::string, bool> AppOptions;
 typedef std::map<std::string, AppOptions, CaseInsensitiveCompare>
     AppOptionsByAppName;
 
-struct SessionStatus {
-  SessionStatus() : style(weasel::UIStyle()), __synced(false), session_id(0) {
-    RIME_STRUCT(RimeStatus, status);
-  }
+// Rime 之外的輸入法狀態在 ime::SessionState（core/ime/session_state.h），這裡只多了 Weasel 的介面狀態
+struct SessionStatus : ime::SessionState {
+  SessionStatus() : style(weasel::UIStyle()), __synced(false) { RIME_STRUCT(RimeStatus, status); }
   weasel::UIStyle style;
   RimeStatus status;
   bool __synced;
-  RimeSessionId session_id;
-  // last fully converted preview (preedit_type: preview), one unit per
-  // syllable, to keep showing the text after the caret while selecting
-  std::string preview_input;
-  std::vector<std::wstring> preview_units;
-  std::vector<size_t> preview_lens;  // 每個字對應的按鍵數（Rime 的音節切法）
-  // 中英混打：組字中按 Shift 切到英文後，已轉好的中文與打的英文暫存在這裡，
-  // 顯示在組字區最前面，Enter 一起送出（沒在組字時切英文照舊直接輸出）
-  std::wstring mixed_text;
-  bool mixed_english = false;  // 正在混打的英文段
-  std::wstring mixed_commit;   // 待送出的混打內容
-  bool mixed_active() const { return mixed_english || !mixed_text.empty(); }
-  // 注音逐字選字（像新注音）：←/→ 框住的字（音節序號），-1 表示沒有框選
-  // 選字統計：這次組字有沒有換過候選、有沒有出現 LLM 候選（送出時計入）
-  bool choice_changed = false;
-  bool llm_offered = false;
-  bool focus_used = false;      // 這次組字用過逐字選字
-  bool recommend_offered = false;  // 這次組字出現過「推薦」
-  bool llm_committed = false;   // 這次送出的是 LLM 候選
-  bool correction_committed = false;
-  // 選字紀錄：還沒換字前 Rime 的預設轉換（整句）與對應的注音
-  std::wstring default_text;
-  std::wstring default_zhuyin;
-  int focus_hl = 0;  // 框選時反白停的位置（目前顯示的字），換到別的才算換字
-  int focus = -1;
-  std::string focus_input;  // 框選時的輸入與游標，改變了就取消框選
-  size_t focus_caret = 0;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
-class RimeWithWeaselHandler : public weasel::RequestHandler {
+class RimeWithWeaselHandler : public weasel::RequestHandler, private ime::Frontend {
  public:
   RimeWithWeaselHandler(weasel::UI* ui);
   virtual ~RimeWithWeaselHandler();
@@ -144,13 +108,6 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                                 bool ignore_app_name = false);
   bool _ShowMessage(weasel::Context& ctx, weasel::Status& status);
   bool _Respond(WeaselSessionId ipc_id, EatLine eat);
-  // 中英混打：處理 Shift 切換與混打中的按鍵，已處理時回傳 true
-  bool _HandleMixedInput(const weasel::KeyEvent& keyEvent, WeaselSessionId ipc_id, EatLine eat);
-  // 送出目前的組字並取回轉換好的文字（不交給應用程式）
-  std::wstring _TakeComposition(RimeSessionId session_id);
-  // 注音逐字選字：←/→/Home/End 移動框選
-  bool _HandleZhuyinFocus(const weasel::KeyEvent& keyEvent, WeaselSessionId ipc_id, EatLine eat);
-  bool _FocusSyllable(WeaselSessionId ipc_id, int index);
   void _ReadClientInfo(WeaselSessionId ipc_id, LPWSTR buffer);
   void _GetCandidateInfo(weasel::CandidateInfo& cinfo, RimeContext& ctx);
   void _GetStatus(weasel::Status& stat,
@@ -201,77 +158,16 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   ContextHistory* m_context_history;
   DevConsole* m_dev_console;
 
-  // LLM相关（上下文统一从 m_context_history 获取，不再单独维护 buffer）
-  std::unique_ptr<LLMProvider> m_llm_provider;
-  bool m_llm_prediction_mode;
-  std::wstring m_pending_llm_commit;  // 待提交的LLM候选词
-  bool m_mixed_shift_tap = false;     // Shift 按下後還沒按其他鍵（放開時算一次切換）
-  bool m_llm_completion_active = false;  // 当前 LLM 候选是输入中补全（Rime 首选 + 续写）
+  // 輸入法行為（混打、逐字選字、LLM 預測、個人詞庫、選字統計）在 core/ime 的控制器
+  std::unique_ptr<ime::Controller> m_controller;
   bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
-  bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
-  bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
-  bool m_typo_llm_on = false;       // llm/typo/llm：LLM 整句校正（Rime 容錯由注音方案處理）
-  // 注音整句校正用的模型（llm/typo/*），與智慧預測分開；同一個模型時直接共用 m_llm_provider
-  std::unique_ptr<LLMProvider> m_typo_owned;
-  std::wstring m_typo_prompt;        // llm/typo/prompt：自訂校正指令（m_llm_mutex 保護）
-  LLMProvider* m_typo_llm = nullptr;  // m_llm_infer_mutex 下使用
-  bool _TypoLLMAvailable() const;
-  void _LoadTypoProvider(RimeConfig* config);
-  size_t m_llm_context_max_chars = 100;       // llm/context/max_chars：给模型的前文最多几个字
-  unsigned m_llm_context_idle_minutes = 10;   // llm/context/idle_minutes：窗口闲置多久后旧前文失效
-  void _UpdateContextKey(WeaselSessionId ipc_id);  // 依前景窗口切换上下文
-  // 預測引擎（core/ime/prediction_engine.h）：候選、請求序號與推理鎖
-  std::unique_ptr<ime::PredictionEngine> m_prediction;
-  bool _RescoreInput(WeaselSessionId ipc_id, uint64_t seq, std::vector<std::wstring>* units,
-                     std::vector<std::vector<std::wstring>>* homophones);
-  void _OnPredictionUpdate(WeaselSessionId ipc_id, uint64_t seq, const ime::PredictionSet& set);
-  std::mutex m_llm_mutex;                      // 保護 m_typo_prompt
-  std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在推理鎖 m_prediction->InferMutex() 下读写）
-  std::unique_ptr<PersonalLexicon> m_personal;  // 個人詞庫（llm/personal/enabled）
-  std::unique_ptr<PersonalRefiner> m_refiner;
-  // 推薦（llm/choice/rescore）：用本機模型比較同音字的整句通順度，推薦更好的一句（按 Tab 套用）
-  bool m_rescore_on = false;
-  std::unique_ptr<ime::HomophoneFinder> m_homophones;  // 查同音字（背景 session，不送出、不學習）
-  LLMProvider* _RescoreProvider() const;  // 已載入的本機模型（預測優先，其次校正）
-  std::vector<std::wstring> _Homophones(const std::string& schema, const std::string& keys);
-  // 把組字整句改成 desired（每個音節一個字），用 Rime 逐段選字，送出時 Rime 會照常學習
-  bool _ConfirmText(WeaselSessionId ipc_id, const std::wstring& desired);
-  ULONGLONG m_last_commit_tick = 0;  // 最近一次送出的時間（算送出後刪除）
-  bool m_choice_log = false;         // llm/choice/log：記錄選字過程（加密）
-  void _LogChoice(SessionStatus& ss, const std::wstring& text, bool mixed);
-  // 選字統計（core/ime/choice_stats.h），依「組合」（版本＋當時的設定）分開累計
-  std::unique_ptr<ime::ChoiceStatsStore> m_choice_store;
-  std::map<std::string, std::string> m_schema_flags;     // 方案 → 方案裡的設定（語言模型等）
-  std::string _ChoiceProfile(RimeSessionId session_id);
-  ime::ChoiceStats& _Stats(RimeSessionId session_id);  // 今天、這個 session 目前組合的統計
-  void _CountCommit(SessionStatus& ss, const std::wstring& text, bool mixed = false);
-  void _SaveChoiceStats();
-  // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放，
-  // 不在處理輸入法請求的執行緒上等（精煉可能正在等 LLM）
-  std::thread m_retire_thread;
-  void _RetirePersonal();
-  void _WaitRetired();  // 重新載入個人詞庫前，等上一份存檔完成   // 個人詞庫定時精煉
-  size_t m_personal_max = 3;                    // 候選中最多幾個來自個人詞庫
-  bool m_llm_enabled = false;                   // llm/enabled：所有預測候選的總開關
-  bool _PredictionAvailable() const;            // LLM 或個人詞庫至少一個可用
-  
-  // 双击·键检测（用于清空上下文）
-  DWORD m_last_grave_key_time;  // 上次·键按下的时间（毫秒）
-  static const DWORD GRAVE_DOUBLE_CLICK_TIMEOUT = 500;  // 双击时间间隔阈值（毫秒）
-  static const DWORD kLLMCompletionDelayMs = 300;  // 输入中停顿多久触发补全预测（毫秒）
 
-  // LLM预测相关方法
-  // delay_ms>0 时为防抖：延迟后若已有更新的请求则放弃；completion_prefix 非空时为输入中补全模式
-  // zhuyin 非空时先请 LLM 校正整句（注音打错字）；complete=false 时只校正、不续写
-  void _TriggerLLMPrediction(WeaselSessionId ipc_id, const std::wstring& current_input = L"",
-                             DWORD delay_ms = 0, const std::wstring& completion_prefix = L"",
-                             const std::wstring& zhuyin = L"", bool complete = true);
-  // 目前组字的注音（大千键位的按键转回注音符号）；不是注音方案时回传空字串
-  std::wstring _ComposingZhuyin(WeaselSessionId ipc_id);
-  // 选中第 llm_index 个 LLM 候选：清空 composition、提交并继续预测下一个词
-  bool _CommitLLMCandidate(WeaselSessionId ipc_id, size_t llm_index, EatLine eat);
-  // 输入中补全：安排（防抖）或清除补全候选
-  void _ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD delay_ms);
-  void _CancelLLMCompletion();
-  void _ExitLLMPredictionMode(WeaselSessionId ipc_id);
+  // ime::Frontend：控制器用到的 Weasel 功能
+  ime::SessionState* Session(uint64_t id) override;
+  void Refresh(uint64_t id) override;
+  void HideCandidates() override;
+  std::mutex& ApiMutex() override;
+  std::wstring ContextKey(uint64_t id) override;  // 應用程式＋前景視窗＋標題
+  void Redeploy() override;
+  bool ReleaseSessions() override;
 };
