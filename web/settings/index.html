@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小狼毫設定</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <nav id="nav" class="nav" aria-label="設定分頁"></nav>
+    <div class="main">
+      <main id="content" class="content"></main>
+      <footer class="footer">
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+        <div class="footer-buttons">
+          <button id="apply" class="button" disabled>套用</button>
+          <button id="ok" class="button primary">確定</button>
+          <button id="cancel" class="button">取消</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+  <script>
+    // 腳本出錯時直接顯示在畫面上（模組載入失敗時 app.js 不會執行）
+    window.addEventListener('error', (e) => {
+      const box = document.getElementById('content');
+      if (!box) return;
+      const pre = document.createElement('pre');
+      pre.className = 'script-error';
+      pre.textContent = (e.message || 'Script error') + (e.filename ? ' — ' + e.filename + ':' + e.lineno : '');
+      box.prepend(pre);
+    }, true);
+    window.addEventListener('unhandledrejection', (e) => {
+      const box = document.getElementById('content');
+      const pre = document.createElement('pre');
+      pre.className = 'script-error';
+      pre.textContent = 'Unhandled: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason);
+      if (box) box.prepend(pre);
+    });
+  </script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

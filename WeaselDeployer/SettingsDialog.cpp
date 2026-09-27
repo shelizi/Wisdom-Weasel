@@ -2,6 +2,7 @@
 #include "SettingsDialog.h"
 #include "FontSettingDialog.h"
 #include "WeaselDeployer.h"
+#include "SettingsOps.h"
 #include <PersonalCrypto.h>
 #include "../WeaselServer/LLMProvider.h"
 #include <WeaselIPC.h>
@@ -119,69 +120,6 @@ bool IsRemoteOnly(int id) {
          id == IDC_P5_REMOTE_HINT || id == IDC_P5_API_TEST;
 }
 
-const wchar_t kDefaultApiUrl[] = L"https://api.openai.com/v1/chat/completions";
-
-std::string LLMJsonEscapeLite(const std::string& s) {
-  std::string out;
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\') {
-      out += '\\';
-      out += (char)c;
-    } else if (c < 0x20) {
-      char buf[8];
-      sprintf_s(buf, "\\u%04x", c);
-      out += buf;
-    } else {
-      out += (char)c;
-    }
-  }
-  return out;
-}
-
-// 詞庫管理：開啟檔案所在資料夾並選取檔案（沿用原本「用戶詞典管理」的行為）
-void OpenFolderAndSelectItem(std::wstring filepath) {
-  filepath = std::filesystem::path(filepath).make_preferred().wstring();
-  std::wstring directory = std::filesystem::path(filepath).parent_path();
-  CoInitializeEx(0, COINIT_MULTITHREADED);
-  ITEMIDLIST* folder = ILCreateFromPath(directory.c_str());
-  std::vector<LPITEMIDLIST> v;
-  v.push_back(ILCreateFromPath(filepath.c_str()));
-  SHOpenFolderAndSelectItems(folder, (UINT)v.size(), (LPCITEMIDLIST*)v.data(), 0);
-  for (auto idl : v)
-    ILFree(idl);
-  ILFree(folder);
-  CoUninitialize();
-}
-
-template <typename T, typename U>
-std::wstring DoFileDialog(HWND owner, LPCWSTR title, UINT filter_size, COMDLG_FILTERSPEC filter[],
-                          LPCWSTR filename, LPCWSTR def_ext) {
-  std::wstring path;
-  CoInitialize(NULL);
-  {
-    CComPtr<T> dialog;
-    if (SUCCEEDED(dialog.CoCreateInstance(__uuidof(U)))) {
-      dialog->SetFileTypes(filter_size, filter);
-      dialog->SetTitle(title);
-      if (filename)
-        dialog->SetFileName(filename);
-      dialog->SetDefaultExtension(def_ext);
-      if (SUCCEEDED(dialog->Show(owner))) {
-        CComPtr<IShellItem> result;
-        if (SUCCEEDED(dialog->GetResult(&result))) {
-          wchar_t* name;
-          if (SUCCEEDED(result->GetDisplayName(SIGDN_FILESYSPATH, &name))) {
-            path = name;
-            CoTaskMemFree(name);
-          }
-        }
-      }
-    }
-  }
-  CoUninitialize();
-  return path;
-}
-
 bool FontExists(const wchar_t* face) {
   LOGFONTW lf = {0};
   lf.lfCharSet = DEFAULT_CHARSET;
@@ -199,66 +137,17 @@ bool FontExists(const wchar_t* face) {
   return found;
 }
 
-std::wstring ToLower(std::wstring s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
-  return s;
-}
-
-std::wstring FileNameOf(const std::wstring& path) {
-  return fs::path(path).filename().wstring();
-}
+using settings_ops::FileNameOf;
+using settings_ops::FormatTime;
+using settings_ops::GuessModelType;
+using settings_ops::kDefaultApiUrl;
+using settings_ops::LoadedModelDisplay;
+using settings_ops::ModelsDir;
+using settings_ops::OpenFolderAndSelectItem;
+using settings_ops::ToLower;
 
 std::wstring LLMTrim(const std::wstring& s) {
-  const wchar_t* ws = L" \t\r\n　";
-  const size_t b = s.find_first_not_of(ws);
-  return b == std::wstring::npos ? std::wstring() : s.substr(b, s.find_last_not_of(ws) - b + 1);
-}
-
-// 輸入法回報的「目前載入」：本機模型是檔案路徑，只顯示檔名；OpenAI 相容 API 原樣顯示
-std::wstring LoadedModelDisplay(const std::wstring& model) {
-  if (model.empty())
-    return model;
-  if (ToLower(fs::path(model).extension().wstring()) == L".gguf")
-    return FileNameOf(model);
-  return model;
-}
-
-// 依檔名猜模型類型：含 base → Base；含 instruct / chat / -it → Instruct；否則維持原值
-const wchar_t* GuessModelType(const std::wstring& path) {
-  const std::wstring name = ToLower(FileNameOf(path));
-  if (name.find(L"base") != std::wstring::npos)
-    return L"Base";
-  if (name.find(L"instruct") != std::wstring::npos || name.find(L"chat") != std::wstring::npos ||
-      name.find(L"-it") != std::wstring::npos)
-    return L"Instruct";
-  return nullptr;
-}
-
-fs::path RequestFile() {
-  return WeaselUserDataPath() / L"llm_test_request.txt";
-}
-fs::path ResponseFile() {
-  return WeaselUserDataPath() / L"llm_test_response.txt";
-}
-fs::path PersonalStatusFile() {
-  return WeaselUserDataPath() / L"personal" / L"status.txt";
-}
-
-std::wstring FormatTime(int64_t t) {
-  if (t <= 0)
-    return L"—";
-  FILETIME ft;
-  const ULONGLONG ticks = (ULONGLONG)t * 10000000ULL + 116444736000000000ULL;
-  ft.dwLowDateTime = (DWORD)ticks;
-  ft.dwHighDateTime = (DWORD)(ticks >> 32);
-  FILETIME local;
-  SYSTEMTIME st;
-  if (!FileTimeToLocalFileTime(&ft, &local) || !FileTimeToSystemTime(&local, &st))
-    return L"—";
-  wchar_t buf[32];
-  swprintf_s(buf, L"%04d/%02d/%02d %02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour,
-             st.wMinute);
-  return buf;
+  return settings_ops::Trim(s);
 }
 
 }  // namespace
@@ -999,11 +888,7 @@ void SettingsDialog::LoadLLMSettings() {
   SetMultilineText(IDC_P7_TYPO_PROMPT, typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
   UpdateTypoState();
   // 語言模型：注音方案裡有我們加的區塊就是已啟用
-  {
-    std::ifstream in(WeaselUserDataPath() / L"bopomofo_express.custom.yaml", std::ios::binary);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    grammar_loaded_ = text.find("# >>> weasel-grammar") != std::string::npos;
-  }
+  grammar_loaded_ = settings_ops::GrammarEnabled();
   CheckDlgButton(IDC_P8_GRAMMAR, grammar_loaded_ ? BST_CHECKED : BST_UNCHECKED);
   grammar_modified_ = false;
   llm_modified_ = typo_modified_ = false;
@@ -1185,20 +1070,12 @@ bool SettingsDialog::SaveLLMSettings() {
 void SettingsDialog::SendLLMRequest(const std::wstring& context, bool is_test) {
   ++request_id_;
   request_is_test_ = is_test;
-  std::error_code ec;
-  fs::remove(ResponseFile(), ec);
-  {
-    std::ofstream out(RequestFile(), std::ios::binary | std::ios::trunc);
-    out << request_id_ << "\n" << wtou8(context);
-  }
-  weasel::Client client;
-  if (!client.Connect()) {
+  if (!settings_ops::SendLLMTestRequest(request_id_, context)) {
     GetDlgItem(IDC_P3_LOADED).SetWindowTextW(L"無法連線到輸入法服務。");
     if (is_test)
       GetDlgItem(IDC_P3_TEST_STATUS).SetWindowTextW(L"無法連線到輸入法服務，請確認小狼毫正在執行。");
     return;
   }
-  client.LLMTestRequest();
   request_started_ = GetTickCount64();
   if (is_test) {
     GetDlgItem(IDC_P3_TEST_RUN).EnableWindow(FALSE);
@@ -1209,34 +1086,15 @@ void SettingsDialog::SendLLMRequest(const std::wstring& context, bool is_test) {
 }
 
 bool SettingsDialog::PollLLMResponse() {
-  std::string text;
-  {
-    std::ifstream in(ResponseFile(), std::ios::binary);
-    if (!in)
-      return false;
-    text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-  }
-  std::string id, status, model, ms;
-  std::vector<std::wstring> candidates;
-  std::istringstream lines(text);
-  for (std::string line; std::getline(lines, line);) {
-    if (!line.empty() && line.back() == '\r')
-      line.pop_back();
-    const size_t eq = line.find('=');
-    if (eq == std::string::npos)
-      continue;
-    const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
-    if (key == "id") id = value;
-    else if (key == "status") status = value;
-    else if (key == "model") model = value;
-    else if (key == "ms") ms = value;
-    else if (key == "cand") candidates.push_back(u8tow(value));
-  }
-  if (id != std::to_string(request_id_))
+  const auto response = settings_ops::PollLLMTestResponse(request_id_);
+  if (!response)
     return false;  // 還沒輪到這次的回覆
+  const std::string& status = response->status;
+  const std::string& ms = response->ms;
+  const std::vector<std::wstring>& candidates = response->candidates;
 
   KillTimer(kTimerTestPoll);
-  const std::wstring model_name = LoadedModelDisplay(u8tow(model));
+  const std::wstring model_name = LoadedModelDisplay(response->model);
   GetDlgItem(IDC_P3_LOADED)
       .SetWindowTextW(status == "disabled"
                           ? L"輸入法目前沒有載入 LLM 模型（LLM 智慧預測已關閉）。"
@@ -1466,58 +1324,13 @@ LRESULT SettingsDialog::OnPersonalChanged(WORD, WORD, HWND, BOOL&) {
 }
 
 bool SettingsDialog::SendPersonalCommand(DWORD command) {
-  weasel::Client client;
-  if (!client.Connect())
-    return false;
-  client.PersonalCommand(command);
-  return true;
+  return settings_ops::SendPersonalCommand(command);
 }
 
 void SettingsDialog::RefreshPersonalStatus() {
-  std::map<std::string, std::string> v;
-  {
-    std::ifstream in(PersonalStatusFile(), std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      const size_t eq = line.find('=');
-      if (eq != std::string::npos)
-        v[line.substr(0, eq)] = line.substr(eq + 1);
-    }
-  }
-  auto num = [&](const char* key) { return _atoi64(v[key].c_str()); };
-  std::wostringstream text;
-  if (v.empty()) {
-    text << L"無法取得狀態：請確認小狼毫正在執行。";
-    personal_running_ = false;
-  } else if (v.count("disabled")) {
-    text << L"個人詞庫目前關閉。勾選上方的「啟用個人詞庫」並按「套用」即可開始學習。";
-    personal_running_ = false;
-  } else {
-    personal_running_ = v["running"] == "1";
-    text << L"詞庫：" << num("words") << L" 個詞、" << num("pairs") << L" 組接續\n"
-         << L"原始紀錄：累積中 " << num("active_records") << L" 筆；已封存 "
-         << num("archived_files") << L" 批、共 " << num("archived_records") << L" 筆\n";
-    const int64_t last = num("last_refine");
-    const double interval = atof(v["interval_days"].c_str());
-    text << L"上次精煉：" << FormatTime(last);
-    if (interval > 0 && last > 0)
-      text << L"　下次：" << FormatTime(last + (int64_t)(interval * 86400)) << L" 之後的閒置時間";
-    else
-      text << L"　（自動精煉已關閉，只手動）";
-    if (v["rime_boost"] == "1")
-      text << L"\n注音排序：已加入 " << num("rime_words") << L" 個常打的詞"
-           << (num("rime_updated") > 0 ? L"（更新於 " + FormatTime(num("rime_updated")) + L"）" : L"");
-    const std::wstring method = u8tow(v["method"]);
-    text << L"\n精煉方式：" << (method.empty() ? L"只做統計整理（未選擇精煉模型）" : method) << L"\n";
-    if (personal_running_)
-      text << L"精煉中…" << (v["progress"].empty() ? L"" : L"（" + u8tow(v["progress"]) + L"）");
-    else if (!v["last_result"].empty())
-      text << L"上次結果：" << u8tow(v["last_result"]);
-  }
+  const std::wstring next = settings_ops::PersonalStatusText(&personal_running_);
   CString current;
   GetDlgItem(IDC_P4_STATUS).GetWindowTextW(current);
-  const std::wstring next = text.str();
   // 內容沒變就不重設，避免每秒閃爍
   std::wstring display;
   for (wchar_t c : next) {
@@ -2001,163 +1814,16 @@ LRESULT SettingsDialog::OnGoDict(WORD, WORD, HWND, BOOL&) {
 // ---------------------------------------------------------------------------
 // 模型檔案：%USERPROFILE%\models 裡的 GGUF（加入、下載、移到回收筒）
 
-namespace {
-
-fs::path ModelsDir() {
-  wchar_t profile[MAX_PATH] = {0};
-  GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
-  return fs::path(profile) / L"models";
-}
-
-std::wstring FormatSize(ULONGLONG bytes) {
-  wchar_t buf[32];
-  if (bytes >= (1ULL << 30))
-    swprintf_s(buf, L"%.2f GB", bytes / 1073741824.0);
-  else
-    swprintf_s(buf, L"%.0f MB", bytes / 1048576.0);
-  return buf;
-}
-
-bool IsGguf(const fs::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  char magic[4] = {0};
-  return in.read(magic, 4) && memcmp(magic, "GGUF", 4) == 0;
-}
-
-// 網址 → 檔名；Hugging Face 的頁面網址（/blob/）換成下載網址（/resolve/）
-std::wstring NormalizeModelUrl(std::wstring url, std::wstring* file_name) {
-  url = LLMTrim(url);
-  const size_t blob = url.find(L"/blob/");
-  if (url.find(L"huggingface.co/") != std::wstring::npos && blob != std::wstring::npos)
-    url.replace(blob, 6, L"/resolve/");
-  std::wstring path = url.substr(0, url.find_first_of(L"?#"));
-  *file_name = path.substr(path.find_last_of(L'/') + 1);
-  // 百分比編碼的檔名（例如 %2B）
-  wchar_t decoded[MAX_PATH] = {0};
-  DWORD len = MAX_PATH;
-  if (SUCCEEDED(UrlUnescapeW((LPWSTR)file_name->c_str(), decoded, &len, 0)))
-    *file_name = decoded;
-  return url;
-}
-
-// 以 WinHTTP 下載（自動跟隨轉址，例如 Hugging Face → CDN）
-bool HttpDownload(const std::wstring& url, const fs::path& dest,
-                  const std::function<bool(ULONGLONG, ULONGLONG)>& progress, std::wstring* error) {
-  URL_COMPONENTS uc = {0};
-  uc.dwStructSize = sizeof(uc);
-  wchar_t host[256] = {0};
-  wchar_t path[4096] = {0};
-  uc.lpszHostName = host;
-  uc.dwHostNameLength = _countof(host);
-  uc.lpszUrlPath = path;
-  uc.dwUrlPathLength = _countof(path);
-  wchar_t extra[4096] = {0};
-  uc.lpszExtraInfo = extra;
-  uc.dwExtraInfoLength = _countof(extra);
-  if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.size(), 0, &uc)) {
-    *error = L"網址格式不正確";
-    return false;
-  }
-  HINTERNET session = WinHttpOpen(L"Weasel Deployer", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!session)
-    session = WinHttpOpen(L"Weasel Deployer", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!session) {
-    *error = L"無法建立連線";
-    return false;
-  }
-  WinHttpSetTimeouts(session, 30000, 30000, 30000, 60000);
-  const std::wstring object = std::wstring(path) + extra;
-  HINTERNET connect = WinHttpConnect(session, std::wstring(host, uc.dwHostNameLength).c_str(),
-                                     uc.nPort, 0);
-  HINTERNET request =
-      connect ? WinHttpOpenRequest(connect, L"GET", object.c_str(), NULL, WINHTTP_NO_REFERER,
-                                   WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                   uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
-              : NULL;
-  bool ok = false;
-  if (!request) {
-    *error = L"無法連線到伺服器";
-  } else if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA,
-                                 0, 0, 0) ||
-             !WinHttpReceiveResponse(request, NULL)) {
-    *error = L"連線失敗（錯誤 " + std::to_wstring(GetLastError()) + L"）";
-  } else {
-    DWORD status = 0, size = sizeof(status);
-    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
-    ULONGLONG total = 0;
-    size = sizeof(total);
-    WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER64,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &total, &size, WINHTTP_NO_HEADER_INDEX);
-    if (status != 200) {
-      *error = L"伺服器回應 HTTP " + std::to_wstring(status) +
-               (status == 401 || status == 403 ? L"（可能需要登入或同意授權條款）" : L"");
-    } else {
-      std::ofstream out(dest, std::ios::binary | std::ios::trunc);
-      std::vector<char> buf(1 << 20);
-      ULONGLONG done = 0;
-      ok = !!out;
-      if (!ok)
-        *error = L"無法寫入檔案";
-      while (ok) {
-        DWORD read = 0;
-        if (!WinHttpReadData(request, buf.data(), (DWORD)buf.size(), &read)) {
-          *error = L"下載中斷（錯誤 " + std::to_wstring(GetLastError()) + L"）";
-          ok = false;
-          break;
-        }
-        if (read == 0)
-          break;
-        out.write(buf.data(), read);
-        done += read;
-        if (!progress(done, total)) {
-          *error = L"已取消";
-          ok = false;
-        }
-      }
-      if (ok && total && done != total) {
-        *error = L"下載不完整";
-        ok = false;
-      }
-    }
-  }
-  if (request)
-    WinHttpCloseHandle(request);
-  if (connect)
-    WinHttpCloseHandle(connect);
-  WinHttpCloseHandle(session);
-  return ok;
-}
-
-struct ModelCopyContext {
-  std::function<bool(ULONGLONG, ULONGLONG)> progress;
-};
-
-DWORD CALLBACK CopyProgress(LARGE_INTEGER total, LARGE_INTEGER done, LARGE_INTEGER, LARGE_INTEGER,
-                            DWORD, DWORD, HANDLE, HANDLE, LPVOID data) {
-  auto* ctx = (ModelCopyContext*)data;
-  return ctx->progress(done.QuadPart, total.QuadPart) ? PROGRESS_CONTINUE : PROGRESS_CANCEL;
-}
-
-}  // namespace
+using settings_ops::FormatSize;
+using settings_ops::IsGguf;
 
 void SettingsDialog::PopulateModelFiles(const std::wstring& select) {
   model_files_.ResetContent();
   model_file_paths_.clear();
-  std::vector<fs::path> files;
-  std::error_code ec;
-  for (const auto& entry : fs::directory_iterator(ModelsDir(), ec)) {
-    if (entry.is_regular_file(ec) && ToLower(entry.path().extension().wstring()) == L".gguf")
-      files.push_back(entry.path());
-  }
-  std::sort(files.begin(), files.end(), [](const fs::path& a, const fs::path& b) {
-    return ToLower(a.filename().wstring()) < ToLower(b.filename().wstring());
-  });
   int selected = -1;
-  for (const auto& file : files) {
-    std::wstring text = file.filename().wstring() + L"　" + FormatSize(fs::file_size(file, ec));
+  for (const auto& model : settings_ops::ListModelFiles()) {
+    const fs::path file = model.path;
+    std::wstring text = file.filename().wstring() + L"　" + FormatSize(model.size);
     int uses = 0;
     for (const auto& p : profiles_) {
       if (!p.remote && ToLower(p.model_path) == ToLower(file.wstring()))
@@ -2236,7 +1902,7 @@ LRESULT SettingsDialog::OnModelDownload(WORD, WORD, HWND, BOOL&) {
   CString text;
   GetDlgItem(IDC_P5_URL).GetWindowTextW(text);
   std::wstring name;
-  const std::wstring url = NormalizeModelUrl((LPCWSTR)text, &name);
+  const std::wstring url = settings_ops::NormalizeModelUrl((LPCWSTR)text, &name);
   if (url.rfind(L"http://", 0) != 0 && url.rfind(L"https://", 0) != 0) {
     SetFileStatus(L"請貼上以 https:// 開頭的下載網址。");
     GetDlgItem(IDC_P5_URL).SetFocus();
@@ -2292,15 +1958,10 @@ void SettingsDialog::StartModelFileJob(const std::wstring& src, const std::wstri
     };
     std::wstring error;
     bool ok;
-    if (download) {
-      ok = HttpDownload(src, part, progress, &error);
-    } else {
-      ModelCopyContext ctx{progress};
-      BOOL cancel = FALSE;
-      ok = !!CopyFileExW(src.c_str(), part.c_str(), CopyProgress, &ctx, &cancel, 0);
-      if (!ok)
-        error = file_cancel_ ? L"已取消" : L"複製失敗（錯誤 " + std::to_wstring(GetLastError()) + L"）";
-    }
+    if (download)
+      ok = settings_ops::HttpDownload(src, part, progress, &error);
+    else
+      ok = settings_ops::CopyFileWithProgress(src, part, progress, &error);
     std::error_code ec2;
     if (ok && !IsGguf(part)) {
       ok = false;
@@ -2363,20 +2024,11 @@ LRESULT SettingsDialog::OnModelFileDelete(WORD, WORD, HWND, BOOL&) {
   if (MessageBoxW(message.c_str(), L"移除模型檔", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
     return 0;
   // 輸入法載入中的模型檔會被鎖住：先試著獨占開啟，打不開就說明原因
-  HANDLE h = CreateFileW(path.c_str(), DELETE, 0, NULL, OPEN_EXISTING, 0, NULL);
-  if (h == INVALID_HANDLE_VALUE) {
+  if (settings_ops::FileInUse(path)) {
     SetFileStatus(L"檔案正在使用中（輸入法已載入這個模型）。請先改用其他模型並套用。");
     return 0;
   }
-  CloseHandle(h);
-  std::wstring from = path;
-  from.push_back(L'\0');  // SHFileOperation 需要雙 NUL 結尾
-  SHFILEOPSTRUCTW op = {0};
-  op.hwnd = m_hWnd;
-  op.wFunc = FO_DELETE;
-  op.pFrom = from.c_str();
-  op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
-  if (SHFileOperationW(&op) != 0 || op.fAnyOperationsAborted) {
+  if (!settings_ops::MoveToRecycleBin(path)) {
     SetFileStatus(L"移除失敗。");
     return 0;
   }
@@ -2390,217 +2042,6 @@ LRESULT SettingsDialog::OnModelFileDelete(WORD, WORD, HWND, BOOL&) {
 
 // ---------------------------------------------------------------------------
 // API 連線測試：直接用畫面上的網址、金鑰、模型名稱送一個很小的請求（不必先套用）
-
-namespace {
-
-bool HttpRequest(const wchar_t* method, const std::wstring& url, const std::wstring& key,
-                 const std::string& body, DWORD* status, std::string* response,
-                 std::wstring* error) {
-  URL_COMPONENTS uc = {0};
-  uc.dwStructSize = sizeof(uc);
-  wchar_t host[256] = {0}, path[2048] = {0}, extra[2048] = {0};
-  uc.lpszHostName = host;
-  uc.dwHostNameLength = _countof(host);
-  uc.lpszUrlPath = path;
-  uc.dwUrlPathLength = _countof(path);
-  uc.lpszExtraInfo = extra;
-  uc.dwExtraInfoLength = _countof(extra);
-  if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.size(), 0, &uc)) {
-    *error = L"網址格式不正確";
-    return false;
-  }
-  const std::wstring host_s(host, uc.dwHostNameLength);
-  const bool local = host_s == L"localhost" || host_s == L"127.0.0.1";
-  HINTERNET session = WinHttpOpen(L"Weasel Deployer",
-                                  local ? WINHTTP_ACCESS_TYPE_NO_PROXY
-                                        : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!session)
-    session = WinHttpOpen(L"Weasel Deployer", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!session) {
-    *error = L"無法建立連線";
-    return false;
-  }
-  WinHttpSetTimeouts(session, 10000, 10000, 30000, 60000);
-  const std::wstring object = std::wstring(path) + extra;
-  HINTERNET connect = WinHttpConnect(session, host_s.c_str(), uc.nPort, 0);
-  HINTERNET request =
-      connect ? WinHttpOpenRequest(connect, method, object.c_str(), NULL, WINHTTP_NO_REFERER,
-                                   WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                   uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
-              : NULL;
-  bool ok = false;
-  if (request) {
-    std::wstring headers = L"Content-Type: application/json\r\n";
-    if (!key.empty())
-      headers += L"Authorization: Bearer " + key + L"\r\n";
-    if (WinHttpSendRequest(request, headers.c_str(), (DWORD)-1,
-                           body.empty() ? WINHTTP_NO_REQUEST_DATA : (LPVOID)body.data(),
-                           (DWORD)body.size(), (DWORD)body.size(), 0) &&
-        WinHttpReceiveResponse(request, NULL)) {
-      DWORD size = sizeof(*status);
-      WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                          WINHTTP_HEADER_NAME_BY_INDEX, status, &size, WINHTTP_NO_HEADER_INDEX);
-      DWORD avail = 0;
-      while (WinHttpQueryDataAvailable(request, &avail) && avail > 0 && response->size() < (1 << 20)) {
-        std::vector<char> buf(avail);
-        DWORD read = 0;
-        if (!WinHttpReadData(request, buf.data(), avail, &read))
-          break;
-        response->append(buf.data(), read);
-      }
-      ok = true;
-    } else {
-      const DWORD err = GetLastError();
-      *error = err == ERROR_WINHTTP_TIMEOUT             ? L"連線逾時"
-               : err == ERROR_WINHTTP_CANNOT_CONNECT    ? L"無法連線到伺服器（服務沒開或網址錯誤）"
-               : err == ERROR_WINHTTP_NAME_NOT_RESOLVED ? L"找不到主機名稱"
-               : err == ERROR_WINHTTP_SECURE_FAILURE    ? L"HTTPS 憑證驗證失敗"
-                                                        : L"連線失敗（錯誤 " + std::to_wstring(err) + L"）";
-    }
-  } else {
-    *error = L"無法連線到伺服器";
-  }
-  if (request)
-    WinHttpCloseHandle(request);
-  if (connect)
-    WinHttpCloseHandle(connect);
-  WinHttpCloseHandle(session);
-  return ok;
-}
-
-// 取出 JSON 裡第一個 "key": "..." 的字串值（處理跳脫與 \uXXXX）
-bool JsonString(const std::string& json, const char* key, std::wstring* out, size_t from = 0) {
-  const std::string pattern = std::string("\"") + key + "\"";
-  size_t pos = from;
-  while ((pos = json.find(pattern, pos)) != std::string::npos) {
-    size_t p = json.find_first_not_of(" \t\r\n", pos + pattern.size());
-    if (p == std::string::npos || json[p] != ':') {
-      pos += pattern.size();
-      continue;
-    }
-    p = json.find_first_not_of(" \t\r\n", p + 1);
-    if (p == std::string::npos || json[p] != '"') {
-      if (p == std::string::npos)
-        return false;
-      pos = p;  // 不是字串（例如物件），繼續找下一個
-      continue;
-    }
-    std::wstring w;
-    std::string run;
-    auto flush = [&]() {
-      w += u8tow(run);
-      run.clear();
-    };
-    for (size_t i = p + 1; i < json.size(); ++i) {
-      const char c = json[i];
-      if (c == '"') {
-        flush();
-        *out = w;
-        return true;
-      }
-      if (c != '\\' || i + 1 >= json.size()) {
-        run += c;
-        continue;
-      }
-      const char e = json[++i];
-      if (e == 'u' && i + 4 < json.size()) {
-        flush();
-        w += (wchar_t)strtoul(json.substr(i + 1, 4).c_str(), nullptr, 16);
-        i += 4;
-      } else {
-        run += e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e;
-      }
-    }
-    return false;
-  }
-  return false;
-}
-
-// 由 chat/completions 網址推出 models 網址
-std::wstring ModelsUrl(const std::wstring& url) {
-  const std::wstring tail = L"/chat/completions";
-  const size_t p = url.rfind(tail);
-  if (p != std::wstring::npos)
-    return url.substr(0, p) + L"/models";
-  return L"";
-}
-
-std::wstring ListModels(const std::wstring& url, const std::wstring& key) {
-  const std::wstring models_url = ModelsUrl(url);
-  if (models_url.empty())
-    return L"";
-  DWORD status = 0;
-  std::string response;
-  std::wstring error;
-  if (!HttpRequest(L"GET", models_url, key, "", &status, &response, &error) || status != 200)
-    return L"";
-  std::wstring names;
-  int count = 0;
-  size_t pos = 0;
-  std::wstring id;
-  while ((pos = response.find("\"id\"", pos)) != std::string::npos) {
-    if (JsonString(response, "id", &id, pos)) {
-      if (count < 8)
-        names += (count ? L"、" : L"") + id;
-      ++count;
-    }
-    pos += 4;
-  }
-  if (!count)
-    return L"";
-  return L"可用的模型：" + names + (count > 8 ? L"…（共 " + std::to_wstring(count) + L" 個）" : L"");
-}
-
-std::wstring TestApi(const SettingsDialog::ModelProfile& p) {
-  std::string body = "{\"model\":\"" + LLMJsonEscapeLite(wtou8(p.model)) +
-                     "\",\"messages\":[{\"role\":\"user\",\"content\":\"" +
-                     LLMJsonEscapeLite(u8"請只回覆「OK」兩個字。") +
-                     "\"}],\"max_tokens\":64,\"temperature\":0,\"stream\":false}";
-  const ULONGLONG t0 = GetTickCount64();
-  DWORD status = 0;
-  std::string response;
-  std::wstring error;
-  if (!HttpRequest(L"POST", p.api_url, p.api_key, body, &status, &response, &error))
-    return L"✗ " + error;
-  const ULONGLONG ms = GetTickCount64() - t0;
-  std::wstring server_message;
-  JsonString(response, "message", &server_message);
-  if (server_message.size() > 120)
-    server_message = server_message.substr(0, 120) + L"…";
-  if (status == 200) {
-    std::wstring content;
-    const size_t choices = response.find("\"choices\"");
-    if (choices == std::string::npos || !JsonString(response, "content", &content, choices))
-      return L"✗ 連線成功，但回應不是 OpenAI 相容格式（網址是否指向 /v1/chat/completions？）";
-    content = LLMTrim(content);
-    if (content.size() > 40)
-      content = content.substr(0, 40) + L"…";
-    return L"✓ 連線成功（" + std::to_wstring(ms) + L" ms）：" +
-           (content.empty() ? L"回覆是空的（推理模型可能需要較多 token）" : L"模型回覆「" + content + L"」");
-  }
-  std::wstring reason;
-  switch (status) {
-    case 401:
-    case 403: reason = L"金鑰錯誤或沒有權限"; break;
-    case 404: reason = L"網址或模型名稱不正確"; break;
-    case 400: reason = L"請求被拒絕（常見原因：模型名稱不正確）"; break;
-    case 429: reason = L"超過使用頻率或額度"; break;
-    default: reason = status >= 500 ? L"伺服器錯誤" : L"失敗";
-  }
-  std::wstring text = L"✗ HTTP " + std::to_wstring(status) + L" " + reason;
-  if (!server_message.empty())
-    text += L"：" + server_message;
-  if (status == 400 || status == 404 || p.model.empty()) {
-    const std::wstring models = ListModels(p.api_url, p.api_key);
-    if (!models.empty())
-      text += L"\r\n" + models;
-  }
-  return text;
-}
-
-}  // namespace
 
 LRESULT SettingsDialog::OnApiTest(WORD, WORD, HWND, BOOL&) {
   if (api_busy_ || profile_sel_ < 0)
@@ -2619,7 +2060,7 @@ LRESULT SettingsDialog::OnApiTest(WORD, WORD, HWND, BOOL&) {
   GetDlgItem(IDC_P5_REMOTE_HINT).SetWindowTextW(L"測試中…");
   HWND hwnd = m_hWnd;
   api_worker_ = std::thread([this, hwnd, p]() {
-    const std::wstring result = TestApi(p);
+    const std::wstring result = settings_ops::TestApi(p.api_url, p.api_key, p.model);
     {
       std::lock_guard<std::mutex> lock(file_mutex_);
       api_result_ = result;
@@ -2652,209 +2093,18 @@ LRESULT SettingsDialog::OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&) {
 // 再加上輸入法產生的常用詞（權重較高）。使用者詞典仍是 terra_pinyin.userdb，學到的排序不受影響。
 // 方案的 custom.yaml 只增刪我們自己的標記區塊，保留使用者原有的設定與註解。
 
-namespace {
-
-const wchar_t* const kZhuyinSchemas[] = {L"bopomofo", L"bopomofo_express", L"bopomofo_tw"};
-const char kBoostBegin[] = "  # >>> weasel-personal-dict";
-const char kBoostEnd[] = "  # <<< weasel-personal-dict";
-const char kTypoBegin[] = "  # >>> weasel-typo-correction";
-const char kTypoEnd[] = "  # <<< weasel-typo-correction";
-
-// 改寫一個方案的 custom.yaml：拿掉 begin ~ end 標記的區塊，block 非空時再加在 patch: 下面。
-// 使用者自己設定過 conflict_keys 其中一項時不修改，回傳 false
-bool PatchSchemaBlock(const fs::path& file, const char* begin, const char* end,
-                      const std::vector<std::string>& block,
-                      const std::vector<std::string>& conflict_keys, std::wstring* error) {
-  const bool enable = !block.empty();
-  std::string text;
-  {
-    std::ifstream in(file, std::ios::binary);
-    if (in)
-      text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-  }
-  if (text.empty() && !enable)
-    return true;
-  if (text.size() >= 3 && text.compare(0, 3, "\xEF\xBB\xBF") == 0)
-    text.erase(0, 3);
-  // 拆行並拿掉我們之前加的區塊
-  std::vector<std::string> lines;
-  {
-    std::istringstream in(text);
-    bool inside = false;
-    for (std::string line; std::getline(in, line);) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      if (line.rfind(begin, 0) == 0) {
-        inside = true;
-        continue;
-      }
-      if (inside) {
-        if (line.rfind(end, 0) == 0)
-          inside = false;
-        continue;
-      }
-      lines.push_back(line);
-    }
-  }
-  if (enable) {
-    for (const auto& line : lines) {
-      for (const auto& key : conflict_keys) {
-        if (line.find(key) != std::string::npos) {
-          *error = file.filename().wstring() + L" 已自行設定 " + u8tow(key) + L"，沒有修改";
-          return false;
-        }
-      }
-    }
-    auto patch = std::find_if(lines.begin(), lines.end(), [](const std::string& l) {
-      return l.rfind("patch:", 0) == 0;
-    });
-    if (patch != lines.end() && patch->find_first_not_of(" \t", 6) != std::string::npos &&
-        (*patch)[patch->find_first_not_of(" \t", 6)] != '#') {
-      *error = file.filename().wstring() + L" 的 patch 格式無法自動修改";
-      return false;
-    }
-    if (patch == lines.end()) {
-      lines.push_back("patch:");
-      patch = lines.end() - 1;
-    }
-    lines.insert(patch + 1, block.begin(), block.end());
-  }
-  std::string result;
-  for (const auto& line : lines)
-    result += line + "\n";
-  std::ofstream out(file, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    *error = L"無法寫入 " + file.filename().wstring();
-    return false;
-  }
-  out << result;
-  return true;
-}
-
-// 注音排序：改用 terra_pinyin.personal 詞典
-bool PatchSchemaDictionary(const fs::path& file, bool enable, std::wstring* error) {
-  std::vector<std::string> block;
-  if (enable)
-    block = {
-        std::string(kBoostBegin) + u8"：個人詞庫的常用詞影響選字排序（小狼毫設定自動管理）",
-        "  translator/dictionary: terra_pinyin.personal",
-        "  translator/user_dict: terra_pinyin",
-        kBoostEnd,
-    };
-  return PatchSchemaBlock(file, kBoostBegin, kBoostEnd, block,
-                          {"translator/dictionary", "translator/user_dict"}, error);
-}
-
-// 注音容錯：打開 Rime 的拼寫糾錯（依鍵盤鄰鍵與編輯距離找相近的音節）
-bool PatchSchemaCorrection(const fs::path& file, bool enable, std::wstring* error) {
-  std::vector<std::string> block;
-  if (enable)
-    block = {
-        std::string(kTypoBegin) + u8"：打錯注音時找相近的音節（小狼毫設定自動管理）",
-        "  translator/enable_correction: true",
-        kTypoEnd,
-    };
-  return PatchSchemaBlock(file, kTypoBegin, kTypoEnd, block, {"translator/enable_correction"},
-                          error);
-}
-
-}  // namespace
-
 bool SettingsDialog::ApplyRimeBoost(bool enable, std::wstring* error) {
-  const fs::path user_dir = WeaselUserDataPath();
-  const fs::path dict = user_dir / L"terra_pinyin.personal.dict.yaml";
-  // 目前選用的方案
-  std::set<std::wstring> selected;
-  RimeSchemaList list = {0};
-  if (api_->get_selected_schema_list(switcher_settings_, &list)) {
-    for (size_t i = 0; i < list.size; ++i)
-      selected.insert(u8tow(list.list[i].schema_id));
-    api_->schema_list_destroy(&list);
-  }
-  if (enable) {
-    // 先準備詞典檔：請輸入法產生；輸入法沒回應時放一份空的，確保方案編譯得過
-    std::error_code ec;
-    fs::remove(dict, ec);
-    SendPersonalCommand(7);
-    if (!fs::exists(dict, ec)) {
-      std::ofstream f(dict, std::ios::binary | std::ios::trunc);
-      f << u8"# 小狼毫個人詞庫：你常打的詞（由輸入法自動產生，請勿手動修改）\n"
-           "---\nname: terra_pinyin.personal\nversion: \"1\"\nsort: by_weight\n"
-           "use_preset_vocabulary: true\nmax_phrase_length: 7\nmin_phrase_weight: 100\n"
-           "import_tables:\n  - terra_pinyin\ncolumns:\n  - text\n  - weight\n...\n";
-    }
-  }
-  bool ok = true;
-  for (const wchar_t* schema : kZhuyinSchemas) {
-    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
-    std::error_code ec;
-    if (enable && !selected.count(schema)) {
-      PatchSchemaDictionary(file, false, error);  // 沒選用的方案不改（之前改過的還原）
-      continue;
-    }
-    if (!enable && !fs::exists(file, ec))
-      continue;
-    if (!PatchSchemaDictionary(file, enable, error))
-      ok = false;
-  }
-  if (!enable) {
-    std::error_code ec;
-    fs::remove(dict, ec);
-  }
-  return ok;
+  return settings_ops::ApplyRimeBoost(api_, switcher_settings_, enable, error);
 }
 
 // ---------------------------------------------------------------------------
 // 選字策略：語言模型（RIME octagram）與選字統計
 
-namespace {
-const char kGrammarBegin[] = "  # >>> weasel-grammar";
-const char kGrammarEnd[] = "  # <<< weasel-grammar";
-const wchar_t kGrammarFile[] = L"zh-hant-t-essay-bgw.gram";
-const wchar_t kGrammarUrl[] =
-    L"https://raw.githubusercontent.com/lotem/rime-octagram-data/hant/zh-hant-t-essay-bgw.gram";
-const ULONGLONG kGrammarMinBytes = 30ull * 1024 * 1024;  // 完整的檔案約 41 MB
-
-fs::path GrammarPath() {
-  return WeaselUserDataPath() / kGrammarFile;
-}
-
-bool GrammarReady() {
-  std::error_code ec;
-  return fs::file_size(GrammarPath(), ec) >= kGrammarMinBytes && !ec;
-}
-
-// 在方案加上 octagram 語言模型（設定同 rime-octagram-data 的 grammar:/hant）
-bool PatchSchemaGrammar(const fs::path& file, bool enable, std::wstring* error) {
-  std::vector<std::string> block;
-  if (enable)
-    block = {
-        std::string(kGrammarBegin) + u8"：語言模型改善整句選字（小狼毫設定自動管理）",
-        "  grammar:",
-        "    language: zh-hant-t-essay-bgw",
-        "  translator/contextual_suggestions: true",
-        "  translator/max_homophones: 7",
-        "  translator/max_homographs: 7",
-        kGrammarEnd,
-    };
-  return PatchSchemaBlock(file, kGrammarBegin, kGrammarEnd, block,
-                          {"grammar:", "translator/contextual_suggestions"}, error);
-}
-}  // namespace
+using settings_ops::GrammarPath;
+using settings_ops::GrammarReady;
 
 bool SettingsDialog::ApplyGrammar(bool enable, std::wstring* error) {
-  // 三個注音方案都改；關閉時只還原已有的檔案
-  const fs::path user_dir = WeaselUserDataPath();
-  bool ok = true;
-  for (const wchar_t* schema : kZhuyinSchemas) {
-    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
-    std::error_code ec;
-    if (!enable && !fs::exists(file, ec))
-      continue;
-    if (!PatchSchemaGrammar(file, enable, error))
-      ok = false;
-  }
-  return ok;
+  return settings_ops::ApplyGrammar(enable, error);
 }
 
 void SettingsDialog::RefreshGrammarStatus() {
@@ -2892,178 +2142,26 @@ LRESULT CALLBACK SettingsDialog::HeaderTextSubclass(HWND hwnd, UINT msg, WPARAM 
 }
 
 void SettingsDialog::RefreshChoiceStats() {
-  // weasel_stats.txt（輸入法寫的）：日期 組合代碼 送出 字數 換字 LLM出現 LLM採用 校正採用 Backspace
-  //   送出後刪除 逐字選字 推薦出現 推薦套用；舊格式沒有組合代碼
-  // weasel_stats_profiles.txt：組合代碼 版本 編譯時間 版本說明 設定 第一次出現
-  struct Sum {
-    int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0,
-            deleted = 0, focus = 0, rec_offered = 0, rec_used = 0;
-    void Add(const Sum& s) {
-      commits += s.commits;
-      chars += s.chars;
-      changed += s.changed;
-      offered += s.offered;
-      used += s.used;
-      corrections += s.corrections;
-      backs += s.backs;
-      deleted += s.deleted;
-      focus += s.focus;
-      rec_offered += s.rec_offered;
-      rec_used += s.rec_used;
-    }
-  };
-  struct Profile {
-    std::wstring version, time, subject, settings;
-  };
-  std::map<std::string, Profile> profiles;
-  {
-    std::ifstream in(WeaselUserDataPath() / L"weasel_stats_profiles.txt", std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      std::vector<std::wstring> f;
-      std::string key;
-      size_t start = 0;
-      for (int i = 0; i < 6; ++i) {
-        const size_t tab = line.find('\t', start);
-        const std::string part = line.substr(start, tab == std::string::npos ? tab : tab - start);
-        if (i == 0)
-          key = part;
-        else
-          f.push_back(u8tow(part));
-        if (tab == std::string::npos)
-          break;
-        start = tab + 1;
-      }
-      f.resize(5);
-      if (!key.empty())
-        profiles[key] = {f[0], f[1], f[2], f[3]};
-    }
-  }
-  // 期間的起始日（本機時間，n 天前）
-  auto date_before = [](int n) {
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    FILETIME ft;
-    SystemTimeToFileTime(&st, &ft);
-    ULARGE_INTEGER u;
-    u.LowPart = ft.dwLowDateTime;
-    u.HighPart = ft.dwHighDateTime;
-    u.QuadPart -= (ULONGLONG)n * 24 * 3600 * 10000000ULL;
-    ft.dwLowDateTime = u.LowPart;
-    ft.dwHighDateTime = u.HighPart;
-    FileTimeToSystemTime(&ft, &st);
-    char buf[16];
-    sprintf_s(buf, "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
-    return std::string(buf);
-  };
   static const int kSpans[] = {1, 7, 30, 0};  // 0：全部
   const int period = stats_period_.GetCurSel();
-  const int span = kSpans[period >= 0 && period < 4 ? period : 1];
-  const std::string from = span ? date_before(span - 1) : std::string();
-
-  std::map<std::string, Sum> sums;          // 組合代碼 → 期間內合計
-  std::map<std::string, std::string> last;  // 組合代碼 → 最後使用日
-  {
-    std::ifstream in(WeaselUserDataPath() / L"weasel_stats.txt", std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
-      std::istringstream f(line);
-      std::string date, key;
-      if (!(f >> date >> key) || date < from)
-        continue;
-      std::istringstream numbers;
-      if (key.find_first_not_of("0123456789") == std::string::npos) {
-        numbers.str(line.substr(line.find(date) + date.size()));
-        key = "legacy";
-      } else {
-        numbers.str(line.substr(line.find(key) + key.size()));
-      }
-      Sum s;
-      if (numbers >> s.commits >> s.chars >> s.changed >> s.offered >> s.used >> s.corrections >>
-          s.backs) {
-        numbers >> s.deleted >> s.focus >> s.rec_offered >> s.rec_used;  // 較新的欄位
-        sums[key].Add(s);
-        last[key] = (std::max)(last[key], date);
-      }
-    }
-  }
-
-  auto percent = [](int64_t n, int64_t d) {
-    if (!d)
-      return std::wstring(L"—");
-    wchar_t buf[32];
-    swprintf_s(buf, L"%.1f%%", 100.0 * n / d);
-    return std::wstring(buf);
-  };
-  auto ratio = [](int64_t n, int64_t d) {
-    return d ? std::to_wstring(n) + L"／" + std::to_wstring(d) : std::wstring(L"—");
-  };
-  auto counts = [](const Sum& t) {
-    std::wostringstream out;
-    out << t.chars << L" 字、逐字選字 " << t.focus << L"、推薦出現 " << t.rec_offered
-        << L"、LLM 出現 " << t.offered << L"（校正採用 " << t.corrections << L"）、Backspace "
-        << t.backs << L"、送出後刪除 " << t.deleted << L" 次";
-    return out.str();
-  };
-
-  // 最近用過的組合排前面
-  std::vector<std::string> keys;
-  for (const auto& [key, s] : sums)
-    keys.push_back(key);
-  std::sort(keys.begin(), keys.end(), [&](const std::string& a, const std::string& b) {
-    return last[a] != last[b] ? last[a] > last[b] : a < b;
-  });
-
+  const std::vector<settings_ops::StatsRow> rows =
+      settings_ops::ChoiceStats(kSpans[period >= 0 && period < 4 ? period : 1]);
   stats_list_.SetRedraw(FALSE);
   stats_list_.DeleteAllItems();
   stats_details_.clear();
-  auto add_row = [&](const std::wstring& version, const std::wstring& settings, const Sum& t,
-                     const std::wstring& detail) {
+  for (const auto& r : rows) {
     const int row = stats_list_.GetItemCount();
-    stats_list_.InsertItem(row, version.c_str());
+    stats_list_.InsertItem(row, r.version.c_str());
     int col = 1;
     auto set = [&](const std::wstring& text) { stats_list_.SetItemText(row, col++, text.c_str()); };
-    set(settings);
-    set(std::to_wstring(t.commits));
-    set(percent(t.commits - t.changed, t.commits));
-    set(percent(t.deleted, t.chars));
-    set(std::to_wstring(t.changed));
-    set(ratio(t.rec_used, t.rec_offered));
-    set(ratio(t.used, t.offered));
-    stats_details_.push_back(detail);
-  };
-  if (keys.size() > 1) {
-    Sum total;
-    for (const auto& [key, s] : sums)
-      total.Add(s);
-    add_row(L"（合計）", L"所有組合", total, L"所有版本與設定組合的合計\n" + counts(total));
-  }
-  for (const auto& key : keys) {
-    const Sum& t = sums[key];
-    std::wstring version, settings, detail;
-    if (key == "legacy") {
-      version = L"舊資料";
-      settings = L"（未記錄）";
-      detail = L"分版本統計之前的紀錄，沒有版本與設定資訊\n";
-    } else {
-      auto p = profiles.find(key);
-      const Profile info = p != profiles.end() ? p->second : Profile{L"?", L"", L"", L"?"};
-      version = info.version;
-      // 列表只放短的：方案名稱留給詳細資訊
-      settings = info.settings;
-      const size_t bar = settings.find(L'｜');
-      if (bar != std::wstring::npos)
-        settings = settings.substr(bar + 1);
-      detail = L"版本 " + info.version;
-      if (!info.version.empty() && info.version.back() == L'*')
-        detail += L"（含未提交的修改）";
-      if (!info.time.empty())
-        detail += L"，" + info.time + L" 編譯";
-      if (!info.subject.empty())
-        detail += L"：" + info.subject;
-      detail += L"\n設定：" + info.settings + L"\n";
-    }
-    add_row(version, settings, t, detail + counts(t));
+    set(r.settings);
+    set(std::to_wstring(r.commits));
+    set(r.first_ok);
+    set(r.deleted);
+    set(std::to_wstring(r.changed));
+    set(r.recommended);
+    set(r.llm);
+    stats_details_.push_back(r.detail);
   }
   stats_list_.SetRedraw(TRUE);
   if (stats_details_.empty()) {
@@ -3087,17 +2185,9 @@ LRESULT SettingsDialog::OnStatsPeriod(WORD, WORD, HWND, BOOL&) {
 }
 
 void SettingsDialog::RefreshChoiceLogStatus() {
-  // personal/choice_log.dat：每筆是 4 位元組長度 + 加密內容，只數筆數不解密
-  const fs::path file = WeaselUserDataPath() / L"personal" / L"choice_log.dat";
-  size_t records = 0;
-  std::error_code ec;
-  const uintmax_t bytes = fs::file_size(file, ec);
-  if (!ec) {
-    std::ifstream in(file, std::ios::binary);
-    uint32_t len = 0;
-    while (in.read((char*)&len, sizeof(len)) && in.seekg(len, std::ios::cur))
-      ++records;
-  }
+  const settings_ops::ChoiceLogInfo info = settings_ops::ChoiceLogStatus();
+  const size_t records = info.records;
+  const auto bytes = info.bytes;
   std::wstring text = records ? L"已記錄 " + std::to_wstring(records) + L" 筆（" +
                                     std::to_wstring((bytes + 1023) / 1024) + L" KB）"
                               : L"還沒有紀錄";
@@ -3109,10 +2199,9 @@ LRESULT SettingsDialog::OnChoiceLogClear(WORD, WORD, HWND, BOOL&) {
   if (MessageBoxW(L"要刪除所有選字紀錄嗎？之後訓練選字模型會少了這些資料。", L"選字紀錄",
                   MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
-  std::error_code ec;
-  fs::remove(WeaselUserDataPath() / L"personal" / L"choice_log.dat", ec);
+  const bool ok = settings_ops::ClearChoiceLog();
   RefreshChoiceLogStatus();
-  SetStatus(ec ? L"無法刪除選字紀錄。" : L"已刪除選字紀錄。");
+  SetStatus(ok ? L"已刪除選字紀錄。" : L"無法刪除選字紀錄。");
   return 0;
 }
 
@@ -3143,8 +2232,8 @@ LRESULT SettingsDialog::OnGrammarDownload(WORD, WORD, HWND, BOOL&) {
     fs::path part = dest;
     part += L".part";
     int last_percent = -1;
-    const bool ok = HttpDownload(
-        kGrammarUrl, part,
+    const bool ok = settings_ops::HttpDownload(
+        settings_ops::kGrammarUrl, part,
         [&](ULONGLONG done, ULONGLONG total) {
           const int percent = total ? (int)(done * 100 / total) : 0;
           if (percent != last_percent) {
@@ -3185,30 +2274,14 @@ LRESULT SettingsDialog::OnGrammarProgress(UINT, WPARAM state, LPARAM percent, BO
 LRESULT SettingsDialog::OnStatsReset(WORD, WORD, HWND, BOOL&) {
   if (MessageBoxW(L"要清除所有選字統計嗎？", L"選字統計", MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
-  if (!SendPersonalCommand(8)) {
-    std::error_code ec;
-    fs::remove(WeaselUserDataPath() / L"weasel_stats.txt", ec);
-    fs::remove(WeaselUserDataPath() / L"weasel_stats_profiles.txt", ec);
-  }
-  Sleep(200);  // 等輸入法刪檔
+  settings_ops::ResetChoiceStats();
   RefreshChoiceStats();
   SetStatus(L"已清除選字統計。");
   return 0;
 }
 
 bool SettingsDialog::ApplyTypoCorrection(bool enable, std::wstring* error) {
-  // 三個注音方案都改（沒選用的也改，之後改選時不必再套用一次）；關閉時只還原已有的檔案
-  const fs::path user_dir = WeaselUserDataPath();
-  bool ok = true;
-  for (const wchar_t* schema : kZhuyinSchemas) {
-    const fs::path file = user_dir / (std::wstring(schema) + L".custom.yaml");
-    std::error_code ec;
-    if (!enable && !fs::exists(file, ec))
-      continue;
-    if (!PatchSchemaCorrection(file, enable, error))
-      ok = false;
-  }
-  return ok;
+  return settings_ops::ApplyTypoCorrection(enable, error);
 }
 
 // ---------------------------------------------------------------------------
@@ -3216,46 +2289,23 @@ bool SettingsDialog::ApplyTypoCorrection(bool enable, std::wstring* error) {
 
 namespace {
 const size_t kMaxShownWords = 3000;
-fs::path PersonalDir() {
-  return WeaselUserDataPath() / L"personal";
-}
 }  // namespace
 
 void SettingsDialog::LoadPersonalWords() {
   words_.clear();
   rules_.clear();
   words_loaded_ = true;
-  personal_disabled_ = false;
-  const fs::path file = PersonalDir() / L"export.dat";
-  std::error_code ec;
-  fs::remove(file, ec);
-  std::string plain;
-  if (!SendPersonalCommand(5)) {
-    personal_disabled_ = true;
-    GetDlgItem(IDC_P6_COUNT).SetWindowTextW(L"無法連線到輸入法服務。");
-  } else if (!personal_crypto::ReadProtected(file, &plain)) {
-    personal_disabled_ = true;  // 個人詞庫關閉時輸入法不匯出
-  } else {
-    std::istringstream lines(plain);
-    for (std::string line; std::getline(lines, line);) {
-      std::vector<std::wstring> f;
-      size_t start = 0, tab;
-      while ((tab = line.find('\t', start)) != std::string::npos) {
-        f.push_back(u8tow(line.substr(start, tab - start)));
-        start = tab + 1;
-      }
-      f.push_back(u8tow(line.substr(start)));
-      if (f.size() == 3 && f[0] == L"W")
-        words_.emplace_back(f[1], _wtof(f[2].c_str()));
-      else if (f.size() == 2 && f[0] == L"A")
-        rules_.push_back({WordRule::kAdd, f[1], L""});
-      else if (f.size() == 2 && f[0] == L"R")
-        rules_.push_back({WordRule::kBlock, f[1], L""});
-      else if (f.size() == 3 && f[0] == L"M")
-        rules_.push_back({WordRule::kMerge, f[1], f[2]});
-    }
+  settings_ops::PersonalWords data = settings_ops::LoadPersonalWords();
+  personal_disabled_ = !data.available;
+  if (!data.error.empty())
+    GetDlgItem(IDC_P6_COUNT).SetWindowTextW(data.error.c_str());
+  words_ = std::move(data.words);
+  for (const auto& r : data.rules) {
+    const WordRule::Kind kind = r.kind == settings_ops::WordRule::kAdd     ? WordRule::kAdd
+                                : r.kind == settings_ops::WordRule::kBlock ? WordRule::kBlock
+                                                                           : WordRule::kMerge;
+    rules_.push_back({kind, r.from, r.to});
   }
-  fs::remove(file, ec);
   // 清單本身不停用（深色主題下停用的清單會變成淺灰底），只停用操作
   for (int id : {IDC_P6_FILTER, IDC_P6_WORD, IDC_P6_ADD, IDC_P6_MERGE, IDC_P6_DELETE, IDC_P6_BLOCK,
                  IDC_P6_UNRULE})
@@ -3311,15 +2361,9 @@ void SettingsDialog::PopulateRuleList() {
 }
 
 bool SettingsDialog::SendWordEdits(const std::vector<std::wstring>& lines) {
-  std::string plain = "WWPE1\n";
-  for (const auto& line : lines)
-    plain += wtou8(line) + "\n";
-  if (!personal_crypto::WriteProtected(PersonalDir() / L"edit.dat", plain)) {
-    SetStatus(L"無法寫入修改檔。");
-    return false;
-  }
-  if (!SendPersonalCommand(6)) {
-    SetStatus(L"無法連線到輸入法服務。");
+  std::wstring error;
+  if (!settings_ops::SendWordEdits(lines, &error)) {
+    SetStatus(error);
     return false;
   }
   return true;
@@ -3469,23 +2513,7 @@ LRESULT SettingsDialog::OnWordEndEdit(int, LPNMHDR pnmh, BOOL&) {
 // ---------------------------------------------------------------------------
 // 詞庫管理：輸入法的使用者詞典（原本的「用戶詞典管理」）
 
-namespace {
-// 詞典檔由輸入法服務開著；操作期間讓服務暫停（和原本的用戶詞典管理相同）
-class ServiceMaintenance {
- public:
-  ServiceMaintenance() {
-    if (client_.Connect())
-      client_.StartMaintenance();
-  }
-  ~ServiceMaintenance() {
-    if (client_.Connect())
-      client_.EndMaintenance();
-  }
-
- private:
-  weasel::Client client_;
-};
-}  // namespace
+using settings_ops::ServiceMaintenance;
 
 void SettingsDialog::PopulateDicts() {
   // 與原本的用戶詞典管理相同：先跑 installation_update（設定同步資料夾），詞典清單才讀得到
@@ -3495,11 +2523,8 @@ void SettingsDialog::PopulateDicts() {
     dict_task_ready_ = true;
   }
   dicts_.ResetContent();
-  RimeUserDictIterator iter = {0};
-  api_->user_dict_iterator_init(&iter);
-  while (const char* dict = api_->next_user_dict(&iter))
-    dicts_.AddString(u8tow(dict).c_str());
-  api_->user_dict_iterator_destroy(&iter);
+  for (const auto& dict : settings_ops::ListUserDicts(api_))
+    dicts_.AddString(dict.c_str());
   dicts_loaded_ = true;
   UpdateDictButtons();
 }
@@ -3538,24 +2563,23 @@ LRESULT SettingsDialog::OnDictCommand(WORD, WORD id, HWND, BOOL&) {
     const std::wstring snapshot = load(IDS_STR_DICT_SNAPSHOT) + L" (*.userdb.txt)";
     const std::wstring kcss = load(IDS_STR_KCSS_DICT_SNAPSHOT) + L" (*.userdb.kct.snapshot)";
     const std::wstring all = load(IDS_STR_ALL_FILES);
-    COMDLG_FILTERSPEC filter[3] = {{snapshot.c_str(), L"*.userdb.txt"},
-                                   {kcss.c_str(), L"*.userdb.kct.snapshot"},
-                                   {all.c_str(), L"*.*"}};
-    selected_path = DoFileDialog<IFileOpenDialog, FileOpenDialog>(
-        m_hWnd, load(IDS_STR_OPEN).c_str(), ARRAYSIZE(filter), filter, NULL, L"snapshot");
+    selected_path = settings_ops::OpenFileDialog(
+        m_hWnd, load(IDS_STR_OPEN),
+        {{snapshot, L"*.userdb.txt"}, {kcss, L"*.userdb.kct.snapshot"}, {all, L"*.*"}}, NULL,
+        L"snapshot");
     if (selected_path.empty())
       return 0;
   } else if (id == IDC_P6_EXPORT || id == IDC_P6_IMPORT) {
     const std::wstring txt = load(IDS_STR_TXT_FILES) + L" (*.txt)";
     const std::wstring all = load(IDS_STR_ALL_FILES);
-    COMDLG_FILTERSPEC filter[2] = {{txt.c_str(), L"*.txt"}, {all.c_str(), L"*.*"}};
+    const std::vector<settings_ops::FileFilter> filter = {{txt, L"*.txt"}, {all, L"*.*"}};
     const std::wstring file_name = dict_name + L"_export.txt";
     if (id == IDC_P6_EXPORT)
-      selected_path = DoFileDialog<IFileSaveDialog, FileSaveDialog>(
-          m_hWnd, load(IDS_STR_SAVE_AS).c_str(), ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
+      selected_path = settings_ops::SaveFileDialog(m_hWnd, load(IDS_STR_SAVE_AS), filter,
+                                                   file_name.c_str(), L"txt");
     else
-      selected_path = DoFileDialog<IFileOpenDialog, FileOpenDialog>(
-          m_hWnd, load(IDS_STR_OPEN).c_str(), ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
+      selected_path = settings_ops::OpenFileDialog(m_hWnd, load(IDS_STR_OPEN), filter,
+                                                   file_name.c_str(), L"txt");
     if (selected_path.empty())
       return 0;
   }

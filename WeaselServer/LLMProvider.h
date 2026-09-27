@@ -351,7 +351,8 @@ class LlamaCppProvider : public LLMProvider {
   bool m_model_loaded;             // 模型是否已加载
 };
 
-// 本機模型的對話工作階段：載入一次，連續多次對話（個人詞庫分批精煉用）
+// 本機模型的對話工作階段：載入一次，連續多次對話（個人詞庫分批精煉用）。
+// 推理行程裡直接載入模型（LlamaCppProvider.cpp）；輸入法服務裡轉給推理行程（RemoteLLMProvider.cpp）
 class LLMLocalChatSession {
  public:
   LLMLocalChatSession();
@@ -361,7 +362,8 @@ class LLMLocalChatSession {
             std::string* output, std::wstring* error);
 
  private:
-  LlamaCppProvider* provider_ = nullptr;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 // HF Constraint 接口提供者（/v1/generate/completions）

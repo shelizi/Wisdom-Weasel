@@ -259,11 +259,13 @@ program_files:
     ${If} ${IsNativeARM64}
       File "WeaselDeployer.exe"
       File "WeaselServer.exe"
+      File "WisdomLLMHost.exe"
       File "rime.dll"
       File "WinSparkle.dll"
     ${ElseIf} ${IsNativeAMD64}
       File "WeaselDeployer.exe"
       File "WeaselServer.exe"
+      File "WisdomLLMHost.exe"
       File "rime.dll"
       File "WinSparkle.dll"
     ${Else}
@@ -277,6 +279,7 @@ program_files:
     ${If} ${IsNativeAMD64}
       File "WeaselDeployer.exe"
       File "WeaselServer.exe"
+      File "WisdomLLMHost.exe"
       File "rime.dll"
       File "WinSparkle.dll"
     ${Else}
@@ -298,6 +301,9 @@ program_files:
   File "data\opencc\*.json"
   File "data\opencc\*.ocd*"
   ; images
+  ; 網頁版設定（WeaselDeployer.exe /websettings）
+  SetOutPath $INSTDIR\web
+  File /r "web\*.*"
   SetOutPath $INSTDIR\data\preview
   File "data\preview\*.png"
 
@@ -409,6 +415,7 @@ Section "Uninstall"
   Delete  "$INSTDIR\data\preview\*.*"
   Delete  "$INSTDIR\data\*.*"
   Delete  "$INSTDIR\*.*"
+  RMDir /r "$INSTDIR\web"
   RMDir  "$INSTDIR\data\opencc"
   RMDir  "$INSTDIR\data\preview"
   RMDir  "$INSTDIR\data"

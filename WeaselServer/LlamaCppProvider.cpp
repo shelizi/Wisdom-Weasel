@@ -1321,24 +1321,24 @@ std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
   return result;
 }
 
+struct LLMLocalChatSession::Impl {
+  LlamaCppProvider provider;
+};
+
 LLMLocalChatSession::LLMLocalChatSession() = default;
 
-LLMLocalChatSession::~LLMLocalChatSession() {
-  delete provider_;
-}
+LLMLocalChatSession::~LLMLocalChatSession() = default;
 
 bool LLMLocalChatSession::Open(const LLMLocalModelSpec& spec, std::wstring* error) {
-  delete provider_;
-  provider_ = nullptr;
+  impl_.reset();
   std::error_code ec;
   if (spec.model_path.empty() || !std::filesystem::exists(u8tow(spec.model_path), ec)) {
     *error = L"找不到模型檔：" + u8tow(spec.model_path);
     return false;
   }
-  provider_ = new LlamaCppProvider();
-  if (!provider_->LoadModelDirect(spec, 0.2)) {
-    delete provider_;
-    provider_ = nullptr;
+  impl_ = std::make_unique<Impl>();
+  if (!impl_->provider.LoadModelDirect(spec, 0.2)) {
+    impl_.reset();
     *error = L"無法載入模型（記憶體不足或檔案格式不支援）";
     return false;
   }
@@ -1348,24 +1348,25 @@ bool LLMLocalChatSession::Open(const LLMLocalModelSpec& spec, std::wstring* erro
 bool LLMLocalChatSession::Chat(const std::string& system, const std::string& user,
                                int max_tokens, std::string* output, std::wstring* error) {
   output->clear();
-  if (!provider_) {
+  if (!impl_) {
     *error = L"模型尚未載入";
     return false;
   }
+  LlamaCppProvider* provider = &impl_->provider;
   // 開啟思考時再加思考額度；不限制或放不下時，用完剩下的上下文（至少要放得下原本的結論額度）
   const int base = max_tokens;
-  const int prompt_tokens = provider_->CountTokens(system + user) + 64;
-  const int room = provider_->ContextSize() - prompt_tokens;
-  max_tokens = provider_->ChatBudget(base);
+  const int prompt_tokens = provider->CountTokens(system + user) + 64;
+  const int room = provider->ContextSize() - prompt_tokens;
+  max_tokens = provider->ChatBudget(base);
   if (max_tokens < 0 || max_tokens > room)
     max_tokens = (std::max)(room, 0);
   const int need = prompt_tokens + base;
-  if (need > provider_->ContextSize()) {
+  if (need > provider->ContextSize()) {
     *error = L"提示太長（需要 " + std::to_wstring(need) + L" token，上下文 " +
-             std::to_wstring(provider_->ContextSize()) + L"）";
+             std::to_wstring(provider->ContextSize()) + L"）";
     return false;
   }
-  *output = provider_->Chat(system, user, max_tokens);
+  *output = provider->Chat(system, user, max_tokens);
   if (output->empty()) {
     *error = L"模型沒有產生內容";
     return false;

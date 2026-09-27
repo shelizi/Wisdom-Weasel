@@ -5,6 +5,7 @@
 #include <fstream>
 #include "WeaselDeployer.h"
 #include "Configurator.h"
+#include "WebSettings.h"
 #include <ShellScalingApi.h>
 
 CAppModule _Module;
@@ -79,6 +80,30 @@ static int Run(LPTSTR lpCmdLine) {
                  L"Weasel Deployer", MB_ICONINFORMATION | MB_OK);
     }
     return 0;
+  }
+
+  // 網頁版設定：/websettings [--page N] [--screenshot 檔案 --theme 1|2 --size 寬 高]
+  if (!wcsncmp(L"/websettings", lpCmdLine, 12)) {
+    WebSettingsOptions options;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; argv && i < argc; ++i) {
+      const std::wstring arg = argv[i];
+      if (arg == L"--page" && i + 1 < argc)
+        options.start_page = _wtoi(argv[++i]);
+      else if (arg == L"--screenshot" && i + 1 < argc)
+        options.screenshot = argv[++i];
+      else if (arg == L"--theme" && i + 1 < argc)
+        options.theme = _wtoi(argv[++i]);
+      else if (arg == L"--size" && i + 2 < argc)
+        options.width = _wtoi(argv[++i]), options.height = _wtoi(argv[++i]);
+    }
+    LocalFree(argv);
+    const int result = RunWebSettings(&configurator, options);
+    // 無法使用 WebView2：改開原本的設定視窗
+    if (result == -1 && options.screenshot.empty())
+      return configurator.Run(false, options.start_page);
+    return result;
   }
 
   bool deployment_scheduled = !wcscmp(L"/deploy", lpCmdLine);

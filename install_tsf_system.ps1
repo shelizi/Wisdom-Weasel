@@ -11,9 +11,12 @@ $pairs = @(
 )
 foreach ($p in $pairs) {
   if (-not (Test-Path "$backup\$($p.bak)")) { Copy-Item $p.dst "$backup\$($p.bak)" }
-  # loaded by running apps: rename aside, then copy (new processes pick up the new file)
-  Remove-Item "$($p.dst).old" -Force -ErrorAction SilentlyContinue
-  Move-Item $p.dst "$($p.dst).old" -Force
+  # loaded by running apps: rename aside, then copy (new processes pick up the new file).
+  # An older .old may still be loaded too: clean up what we can, and use a fresh name if it stays locked
+  Get-ChildItem "$($p.dst).old*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  $aside = "$($p.dst).old"
+  if (Test-Path $aside) { $aside = "$($p.dst).old-$(Get-Date -Format yyyyMMddHHmmss)" }
+  Move-Item $p.dst $aside -Force
   Copy-Item $p.src $p.dst -Force
 }
 "done" | Out-File "$root\install_tsf_system.done"

@@ -56,6 +56,7 @@ static bool CommitHasMeaningfulContent(const std::wstring& text) {
 #include "../WeaselServer/PersonalRefiner.h"
 // 包含 LLMProvider 的完整定义
 #include "../WeaselServer/LLMProvider.h"
+#include "../WeaselServer/RemoteLLMProvider.h"
 // 包含 DevConsole 的完整定义（需要调用其方法）
 #include "../WeaselServer/DevConsole.h"
 
@@ -372,16 +373,16 @@ void RimeWithWeaselHandler::Initialize() {
           provider_type = provider_type_buf;
         }
         
-        // 根据 provider_type 创建相应的 provider
+        // 根据 provider_type 创建相应的 provider；模型在独立的推理行程里执行，当掉不影响打字
         if (provider_type == "llamacpp") {
-          m_llm_provider = std::make_unique<LlamaCppProvider>();
+          m_llm_provider = std::make_unique<RemoteLLMProvider>("llamacpp");
           LOG(INFO) << "LLM Provider type: llamacpp";
         } else if (provider_type == "hf_constraint") {
-          m_llm_provider = std::make_unique<HFConstraintProvider>();
+          m_llm_provider = std::make_unique<RemoteLLMProvider>("hf_constraint");
           LOG(INFO) << "LLM Provider type: hf_constraint";
         } else {
-          // 默认使用 OpenAICompatibleProvider
-          m_llm_provider = std::make_unique<OpenAICompatibleProvider>();
+          // 默认使用 OpenAI 相容 API
+          m_llm_provider = std::make_unique<RemoteLLMProvider>("openai");
           LOG(INFO) << "LLM Provider type: " << provider_type << " (defaulting to openai)";
         }
         
@@ -3711,7 +3712,7 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
       spec.n_gpu_layers = value;
     if (rime_api->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
       spec.n_threads = value;
-    auto provider = std::make_unique<LlamaCppProvider>();
+    auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
     if (provider->LoadModelDirect(spec, 0.0)) {
       provider->SetPromptPrefix(u8tow(prompt));
       m_typo_owned = std::move(provider);
@@ -3719,7 +3720,7 @@ void RimeWithWeaselHandler::_LoadTypoProvider(RimeConfig* config) {
       LOG(ERROR) << "Typo correction: failed to load model " << model_path;
     }
   } else if (type == "openai" && !api_url.empty()) {
-    auto provider = std::make_unique<OpenAICompatibleProvider>();
+    auto provider = std::make_unique<RemoteLLMProvider>("openai");
     provider->ConfigureDirect(api_url, api_key, model, u8tow(prompt), no_think, think_tokens);
     m_typo_owned = std::move(provider);
   } else {

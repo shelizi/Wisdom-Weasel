@@ -71,6 +71,15 @@
     <ClCompile Include="..\RimeWithWeasel\WeaselUtility.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\core\crypto\personal_crypto.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\core\platform\win\key_store_win.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\core\third_party\monocypher\monocypher.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="FontSettingDialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

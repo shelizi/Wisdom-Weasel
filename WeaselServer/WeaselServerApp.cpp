@@ -75,6 +75,9 @@ void WeaselServerApp::SetupMenuHandlers() {
   m_server.AddMenuHandler(
       ID_WEASELTRAY_SETTINGS,
       std::bind(execute, dir / L"WeaselDeployer.exe", std::wstring()));
+  m_server.AddMenuHandler(ID_WEASELTRAY_WEB_SETTINGS,
+                          std::bind(execute, dir / L"WeaselDeployer.exe",
+                                    std::wstring(L"/websettings")));
   m_server.AddMenuHandler(
       ID_WEASELTRAY_DICT_MANAGEMENT,
       std::bind(execute, dir / L"WeaselDeployer.exe", std::wstring(L"/dict")));

@@ -63,3 +63,4 @@ lib64/*.exp
 bench/results/
 bench/__pycache__/
 /include/WeaselBuildInfo.h
+/output/web/

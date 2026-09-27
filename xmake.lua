@@ -52,6 +52,11 @@ if is_arch("x64") or is_arch("x86") then
   includes("RimeWithWeasel", "WeaselIPCServer", "WeaselServer", "WeaselDeployer")
 end
 
+-- LLM 推理行程：只有 x64 有 llama.cpp 的函式庫
+if is_arch("x64") then
+  includes("WisdomLLMHost")
+end
+
 if is_arch("x86") then
   includes("WeaselSetup")
 end

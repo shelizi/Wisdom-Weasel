@@ -24,5 +24,8 @@ set FILE_VERSION=0.17.4.0
 powershell -NoProfile -Command "$t=[IO.File]::ReadAllText('%~dp0weasel.props.template');foreach($v in 'BOOST_ROOT','PLATFORM_TOOLSET','VERSION_MAJOR','VERSION_MINOR','VERSION_PATCH','PRODUCT_VERSION','FILE_VERSION'){$t=$t.Replace('$'+$v,[Environment]::GetEnvironmentVariable($v))};[IO.File]::WriteAllText('%~dp0weasel.props',$t)" || exit /b 1
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0gen_buildinfo.ps1"
-msbuild.exe "%~dp0weasel.sln" /t:WeaselServer;WeaselDeployer /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=%PLATFORM_TOOLSET% /v:minimal /fl /flp:logfile=msbuild_x64.log;verbosity=normal
+msbuild.exe "%~dp0weasel.sln" /t:WeaselServer;WeaselDeployer;WisdomLLMHost /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=%PLATFORM_TOOLSET% /v:minimal /fl /flp:logfile=msbuild_x64.log;verbosity=normal
+if errorlevel 1 exit /b 1
+rem web settings pages
+xcopy /E /I /Y /Q "%~dp0web" "%~dp0output\web" >nul
 exit /b %errorlevel%

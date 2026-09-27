@@ -50,6 +50,15 @@ using personal_crypto::Protect;
 using personal_crypto::Unprotect;
 using personal_crypto::WriteFileAtomic;
 
+// 解不開的檔案（金鑰遺失、換了帳號、檔案損毀）改名保留，免得之後存檔把它蓋掉；
+// 找回金鑰後改回原名就能再讀
+void SetAsideUnreadable(const fs::path& path) {
+  fs::path aside = path;
+  aside += L".unreadable-" + std::to_wstring((long long)time(nullptr));
+  std::error_code ec;
+  fs::rename(path, aside, ec);
+}
+
 }  // namespace
 
 PersonalLexicon::PersonalLexicon(fs::path dir) : dir_(std::move(dir)) {
@@ -298,13 +307,17 @@ bool PersonalLexicon::Load() {
     cipher.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
   std::string plain;
-  if (!Unprotect(cipher, &plain))
-    return false;  // 不同帳號或檔案損毀
+  if (!Unprotect(cipher, &plain)) {
+    SetAsideUnreadable(dir_ / L"lexicon.dat");
+    return false;
+  }
   LoadRefinement();
   std::istringstream lines(plain);
   std::string line;
-  if (!std::getline(lines, line) || line != kMagic)
+  if (!std::getline(lines, line) || line != kMagic) {
+    SetAsideUnreadable(dir_ / L"lexicon.dat");
     return false;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   words_.clear();
   next_.clear();
@@ -356,12 +369,16 @@ void PersonalLexicon::LoadRefinement() {
     cipher.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
   std::string plain;
-  if (!Unprotect(cipher, &plain))
+  if (!Unprotect(cipher, &plain)) {
+    SetAsideUnreadable(dir_ / L"refine.dat");
     return;
+  }
   std::istringstream lines(plain);
   std::string line;
-  if (!std::getline(lines, line) || line != "WWPR1")
+  if (!std::getline(lines, line) || line != "WWPR1") {
+    SetAsideUnreadable(dir_ / L"refine.dat");
     return;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   removed_.clear();
   merged_.clear();
