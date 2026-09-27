@@ -6,7 +6,12 @@
 #include <WeaselUtility.h>
 #include <FixedWMemStreamBuf.h>
 #include <shellapi.h>
-#include "ZhuyinPreview.h"
+#include "../core/ime/ZhuyinPreview.h"
+#include "../core/ime/choice_log.h"
+#include "../core/ime/choice_stats.h"
+#include "../core/ime/rescore.h"
+#include "../core/ime/rime_helpers.h"
+#include "../core/ime/text_rules.h"
 #include <PersonalCrypto.h>
 
 #include <cstring>
@@ -17,39 +22,6 @@
 #include <regex>
 #include <sstream>
 #include <rime_api.h>
-
-// 判断字符是否为分隔符（仅空格/标点），用于决定 commit 是否触发进入 LLM 预测模式
-static bool IsSeparatorOrPunctuation(wchar_t ch) {
-  if (ch == L' ' || ch == L'\t' || ch == L'\n' || ch == L'\r')
-    return true;
-  // 常见中文标点
-  if (ch == L'，' || ch == L'。' || ch == L'、' || ch == L'；' ||
-      ch == L'：' || ch == L'？' || ch == L'！' || ch == L'…' ||
-      ch == L'—' || ch == L'–' || ch == L'（' || ch == L'）' ||
-      ch == L'【' || ch == L'】' || ch == L'《' || ch == L'》' ||
-      ch == L'“' || ch == L'”' || ch == L'‘' || ch == L'’')
-    return true;
-  // 常见英文/通用标点
-  if (ch == L',' || ch == L'.' || ch == L';' || ch == L':' ||
-      ch == L'?' || ch == L'!' || ch == L'-' || ch == L'_' ||
-      ch == L'(' || ch == L')' || ch == L'[' || ch == L']' ||
-      ch == L'{' || ch == L'}' || ch == L'"' || ch == L'\'' ||
-      ch == L'/' || ch == L'\\' || ch == L'*' || ch == L'#' ||
-      ch == L'@' || ch == L'$' || ch == L'%' || ch == L'^' ||
-      ch == L'&' || ch == L'+' || ch == L'=' || ch == L'~' ||
-      ch == L'`' || ch == L'|' || ch == L'<' || ch == L'>')
-    return true;
-  return false;
-}
-
-// 文本是否包含至少一个“有意义”字符（非纯标点/空格），用于避免仅输入符号时误入 LLM 预测模式
-static bool CommitHasMeaningfulContent(const std::wstring& text) {
-  for (wchar_t ch : text) {
-    if (!IsSeparatorOrPunctuation(ch))
-      return true;
-  }
-  return false;
-}
 
 // 包含 ContextHistory 的完整定义（需要调用其方法）
 #include "../core/llm/ContextHistory.h"
@@ -107,6 +79,8 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
       m_last_grave_key_time(0) {
   rime_api = rime_get_api();
   assert(rime_api);
+  m_homophones = std::make_unique<ime::HomophoneFinder>(rime_api);
+  m_choice_store = std::make_unique<ime::ChoiceStatsStore>(WeaselUserDataPath());
   m_pid = GetCurrentProcessId();
   uint16_t msbit = 0;
   for (auto i = 31; i >= 0; i--) {
@@ -234,7 +208,7 @@ void RimeWithWeaselHandler::Initialize() {
     // 推薦：本機模型比較同音字整句的通順度（預設關閉）
     llm_flag = false;
     m_rescore_on = rime_api->config_get_bool(&config, "llm/choice/rescore", &llm_flag) && llm_flag;
-    m_homophone_cache.clear();  // 重新部署後詞典可能變了
+    m_homophones->ClearCache();  // 重新部署後詞典可能變了
     // LLM 整句校正（llm/typo/llm）；Rime 容錯另外設定在注音方案裡，與此無關。
     // 舊設定 llm/typo_correction: llm 視為開啟
     {
@@ -468,10 +442,7 @@ void RimeWithWeaselHandler::_WaitRetired() {
 }
 
 // ---------------------------------------------------------------------------
-// 選字統計（設定程式的「選字策略」頁顯示），依「組合」（版本＋當時的設定）分開累計。
-// weasel_stats.txt 每行：日期 \t 組合代碼 \t 送出 \t 字數 \t 換字 \t LLM 出現 \t LLM 採用 \t
-//   校正採用 \t Backspace \t 送出後刪除 \t 逐字選字 \t 推薦出現 \t 推薦套用
-// weasel_stats_profiles.txt 每行：組合代碼 \t 版本 \t 編譯時間 \t 版本說明 \t 設定 \t 第一次出現
+// 選字統計（設定程式的「選字策略」頁顯示），檔案格式見 core/ime/choice_stats.h
 
 #if __has_include(<WeaselBuildInfo.h>)
 #include <WeaselBuildInfo.h>
@@ -482,16 +453,6 @@ void RimeWithWeaselHandler::_WaitRetired() {
 #define WEASEL_BUILD_SUBJECT L""
 #define WEASEL_BUILD_TIME L""
 #endif
-
-namespace {
-std::string TodayString() {
-  SYSTEMTIME t;
-  GetLocalTime(&t);
-  char date[16];
-  sprintf_s(date, "%04d-%02d-%02d", t.wYear, t.wMonth, t.wDay);
-  return date;
-}
-}  // namespace
 
 std::string RimeWithWeaselHandler::_ChoiceProfile(RimeSessionId session_id) {
   char schema[256] = {0};
@@ -530,93 +491,22 @@ std::string RimeWithWeaselHandler::_ChoiceProfile(RimeSessionId session_id) {
     settings = "（無）";
   settings = std::string(*schema ? schema : "?") + "｜" + settings;
   const std::string version = wtou8(WEASEL_BUILD_HASH) + (WEASEL_BUILD_DIRTY ? "*" : "");
-  // 組合代碼：版本與設定的 FNV-1a 雜湊
-  uint64_t h = 1469598103934665603ULL;
-  for (unsigned char c : version + "|" + settings) {
-    h ^= c;
-    h *= 1099511628211ULL;
-  }
-  char key[20];
-  sprintf_s(key, "%08llx", (unsigned long long)(h & 0xffffffffULL));
-  if (!m_choice_profiles.count(key)) {
-    const std::string line = std::string(key) + '\t' + version + '\t' + wtou8(WEASEL_BUILD_TIME) +
-                             '\t' + wtou8(WEASEL_BUILD_SUBJECT) + '\t' + settings + '\t' +
-                             TodayString();
-    m_choice_profiles[key] = line;
-    std::ofstream out(WeaselUserDataPath() / L"weasel_stats_profiles.txt",
-                      std::ios::binary | std::ios::app);
-    out << line << '\n';
-  }
+  const std::string key = ime::ProfileKey(version, settings);
+  m_choice_store->AddProfile(key, version, wtou8(WEASEL_BUILD_TIME), wtou8(WEASEL_BUILD_SUBJECT),
+                             settings);
   return key;
 }
 
-RimeWithWeaselHandler::ChoiceStats& RimeWithWeaselHandler::_Stats(RimeSessionId session_id) {
-  if (!m_choice_stats_loaded) {
-    m_choice_stats_loaded = true;
-    {
-      std::ifstream in(WeaselUserDataPath() / L"weasel_stats_profiles.txt", std::ios::binary);
-      for (std::string line; std::getline(in, line);) {
-        if (!line.empty() && line.back() == '\r')
-          line.pop_back();
-        const size_t tab = line.find('\t');
-        if (tab != std::string::npos)
-          m_choice_profiles[line.substr(0, tab)] = line;
-      }
-    }
-    std::ifstream in(WeaselUserDataPath() / L"weasel_stats.txt", std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
-      std::istringstream f(line);
-      std::string date, key;
-      if (!(f >> date >> key))
-        continue;
-      // 舊格式沒有組合代碼（第二欄就是數字）：歸到「舊資料」
-      std::istringstream numbers;
-      if (key.find_first_not_of("0123456789") == std::string::npos) {
-        numbers.str(line.substr(line.find(date) + date.size()));
-        key = "legacy";
-      } else {
-        numbers.str(line.substr(line.find(key) + key.size()));
-      }
-      ChoiceStats s;
-      if (numbers >> s.commits >> s.chars >> s.changed >> s.llm_offered >> s.llm_used >>
-          s.corrections_used >> s.backspaces) {
-        // 較新的欄位，舊檔沒有就是 0
-        numbers >> s.deleted_after >> s.focus_uses >> s.recommend_offered >> s.recommend_used;
-        m_choice_stats[date + "\t" + key] = s;
-      }
-    }
-  }
-  return m_choice_stats[TodayString() + "\t" + _ChoiceProfile(session_id)];
+ime::ChoiceStats& RimeWithWeaselHandler::_Stats(RimeSessionId session_id) {
+  return m_choice_store->Today(_ChoiceProfile(session_id));
 }
 
 void RimeWithWeaselHandler::_SaveChoiceStats() {
-  // 只留最近 90 天
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-  FILETIME ft;
-  SystemTimeToFileTime(&st, &ft);
-  ULARGE_INTEGER u;
-  u.LowPart = ft.dwLowDateTime;
-  u.HighPart = ft.dwHighDateTime;
-  u.QuadPart -= 90ULL * 24 * 3600 * 10000000ULL;
-  ft.dwLowDateTime = u.LowPart;
-  ft.dwHighDateTime = u.HighPart;
-  FileTimeToSystemTime(&ft, &st);
-  char cutoff[16];
-  sprintf_s(cutoff, "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
-  while (!m_choice_stats.empty() && m_choice_stats.begin()->first < cutoff)
-    m_choice_stats.erase(m_choice_stats.begin());
-  std::ofstream out(WeaselUserDataPath() / L"weasel_stats.txt",
-                    std::ios::binary | std::ios::trunc);
-  for (const auto& [day_key, s] : m_choice_stats)
-    out << day_key << '\t' << s.commits << '\t' << s.chars << '\t' << s.changed << '\t'
-        << s.llm_offered << '\t' << s.llm_used << '\t' << s.corrections_used << '\t'
-        << s.backspaces << '\t' << s.deleted_after << '\t' << s.focus_uses << '\t'
-        << s.recommend_offered << '\t' << s.recommend_used << '\n';
+  m_choice_store->Save();
 }
 
 void RimeWithWeaselHandler::_CountCommit(SessionStatus& ss, const std::wstring& text, bool mixed) {
-  ChoiceStats& s = _Stats(ss.session_id);
+  ime::ChoiceStats& s = _Stats(ss.session_id);
   ++s.commits;
   s.chars += (int64_t)text.size();
   if (ss.choice_changed)
@@ -648,40 +538,7 @@ LLMProvider* RimeWithWeaselHandler::_RescoreProvider() const {
 
 std::vector<std::wstring> RimeWithWeaselHandler::_Homophones(const std::string& schema,
                                                             const std::string& keys) {
-  const std::string cache_key = schema + "\t" + keys;
-  auto it = m_homophone_cache.find(cache_key);
-  if (it != m_homophone_cache.end())
-    return it->second;
-  // 背景 session：只查候選、不送出，不會學習；被清掉（例如整理選字記憶）就重建
-  if (!m_scratch_session || !rime_api->find_session(m_scratch_session)) {
-    m_scratch_session = rime_api->create_session();
-    m_scratch_schema.clear();
-  }
-  std::vector<std::wstring> result;
-  if (!m_scratch_session)
-    return result;
-  if (m_scratch_schema != schema) {
-    rime_api->select_schema(m_scratch_session, schema.c_str());
-    m_scratch_schema = schema;
-  }
-  rime_api->set_input(m_scratch_session, keys.c_str());
-  RimeCandidateListIterator iter = {0};
-  if (rime_api->candidate_list_begin(m_scratch_session, &iter)) {
-    for (int i = 0; i < 60 && result.size() < 6 && rime_api->candidate_list_next(&iter); ++i) {
-      if (!iter.candidate.text)
-        continue;
-      const std::wstring text = u8tow(iter.candidate.text);
-      if (zhuyin_preview::SplitChars(text).size() == 1 &&
-          std::find(result.begin(), result.end(), text) == result.end())
-        result.push_back(text);
-    }
-    rime_api->candidate_list_end(&iter);
-  }
-  rime_api->clear_composition(m_scratch_session);
-  if (m_homophone_cache.size() > 5000)
-    m_homophone_cache.clear();
-  m_homophone_cache[cache_key] = result;
-  return result;
+  return m_homophones->Find(schema, keys);
 }
 
 bool RimeWithWeaselHandler::_ConfirmText(WeaselSessionId ipc_id, const std::wstring& desired) {
@@ -692,167 +549,30 @@ bool RimeWithWeaselHandler::_ConfirmText(WeaselSessionId ipc_id, const std::wstr
   const std::vector<std::wstring> units = zhuyin_preview::SplitChars(desired);
   if (input.empty() || ss.preview_input != input || ss.preview_lens.size() != units.size())
     return false;
-  rime_api->clear_composition(session_id);
-  rime_api->set_input(session_id, input.c_str());
-  // 從頭逐段選：每段挑符合想要的字、最長的候選
-  size_t pos = 0;
-  while (pos < units.size()) {
-    int best = -1, best_len = 0, idx = 0;
-    RimeCandidateListIterator iter = {0};
-    if (rime_api->candidate_list_begin(session_id, &iter)) {
-      while (idx < 300 && rime_api->candidate_list_next(&iter)) {
-        if (iter.candidate.text) {
-          const std::wstring text = u8tow(iter.candidate.text);
-          const int len = (int)zhuyin_preview::SplitChars(text).size();
-          if (len > best_len && pos + len <= units.size() &&
-              text == zhuyin_preview::Join(units, pos, pos + len)) {
-            best = idx;
-            best_len = len;
-          }
-        }
-        ++idx;
-      }
-      rime_api->candidate_list_end(&iter);
-    }
-    if (best < 0 || !rime_api->select_candidate(session_id, best)) {
-      // 選不到：恢復原本的整句
-      rime_api->clear_composition(session_id);
-      rime_api->set_input(session_id, input.c_str());
-      return false;
-    }
-    pos += best_len;
-  }
+  if (!ime::SelectText(rime_api, session_id, input, units))
+    return false;
   ss.focus = -1;
   return true;
 }
 
-// 找出更通順的同音字整句：先算目前整句每個字的機率，只在最不通順的幾個位置試同音字；
-// 比原句好超過 margin（log 機率）才推薦。units 每個音節一個字，homophones 是各位置的同音字
-static std::wstring RescoreSentence(LLMProvider* scorer, const std::wstring& context,
-                                    const std::vector<std::wstring>& units,
-                                    const std::vector<std::vector<std::wstring>>& homophones,
-                                    DevConsole* console) {
-  const double kMargin = 0.5;       // 推薦門檻
-  const size_t kPositions = 4;      // 最多檢查幾個位置
-  const size_t kAlternatives = 5;   // 每個位置最多試幾個同音字
-  // 只看完整的字：遇到還在拼的注音就停，後面照原樣接回去
-  size_t n = 0;
-  while (n < units.size() && units[n].size() >= 1 && units[n][0] >= 0x3400 &&
-         !zhuyin_preview::IsBopomofo(units[n][0]))
-    ++n;
-  if (n < 2)
-    return L"";
-  std::vector<std::wstring> base(units.begin(), units.begin() + n);
-  const std::wstring rest = zhuyin_preview::Join(units, n);
-  double base_total = 0;
-  std::vector<double> per_char;
-  const std::wstring base_text = zhuyin_preview::Join(base);
-  if (!scorer->ScoreText(context, base_text, &base_total, &per_char))
-    return L"";
-  // 每個字的機率（字與 per_char 對應：一字一個 wchar，擴充字元佔兩個）
-  std::vector<std::pair<double, size_t>> order;
-  for (size_t i = 0, w = 0; i < n; w += base[i].size(), ++i) {
-    if (homophones.size() > i && homophones[i].size() > 1 && w < per_char.size())
-      order.emplace_back(per_char[w], i);
-  }
-  std::sort(order.begin(), order.end());
-  if (order.size() > kPositions)
-    order.resize(kPositions);
-  struct Change {
-    double gain;
-    size_t pos;
-    std::wstring text;
-  };
-  std::vector<Change> changes;
-  for (const auto& [lp, pos] : order) {
-    Change best{kMargin, pos, L""};
-    size_t tried = 0;
-    for (const auto& alt : homophones[pos]) {
-      if (alt == base[pos])
-        continue;
-      if (++tried > kAlternatives || LLMCancelled())
-        break;
-      std::vector<std::wstring> variant = base;
-      variant[pos] = alt;
-      double total = 0;
-      if (scorer->ScoreText(context, zhuyin_preview::Join(variant), &total, nullptr) &&
-          total - base_total > best.gain)
-        best = {total - base_total, pos, alt};
-    }
-    if (!best.text.empty())
-      changes.push_back(best);
-    if (LLMCancelled())
-      return L"";
-  }
-  if (changes.empty())
-    return L"";
-  // 由改善最多的開始逐一套用，每次都要比目前更好才留下
-  std::sort(changes.begin(), changes.end(),
-            [](const Change& a, const Change& b) { return a.gain > b.gain; });
-  std::vector<std::wstring> current = base;
-  double current_total = base_total;
-  for (const auto& change : changes) {
-    std::vector<std::wstring> variant = current;
-    variant[change.pos] = change.text;
-    double total = 0;
-    if (current == base) {
-      current = variant;
-      current_total = base_total + change.gain;
-      continue;
-    }
-    if (scorer->ScoreText(context, zhuyin_preview::Join(variant), &total, nullptr) &&
-        total > current_total) {
-      current = variant;
-      current_total = total;
-    }
-  }
-  if (console && console->IsEnabled())
-    console->WriteLine(L"[LLM] 推薦：" + base_text + L" → " + zhuyin_preview::Join(current) +
-                       L"（改善 " + std::to_wstring(current_total - base_total) + L"）");
-  return zhuyin_preview::Join(current) + rest;
-}
-
-// 選字紀錄（llm/choice/log 開啟時）：每次送出一筆，加密附加到 personal/choice_log.dat。
-// 格式：時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換 \t 送出的文字
+// 選字紀錄（llm/choice/log 開啟時），格式見 core/ime/choice_log.h
 void RimeWithWeaselHandler::_LogChoice(SessionStatus& ss, const std::wstring& text, bool mixed) {
   if (!m_choice_log || text.empty())
     return;
-  auto clean = [](std::wstring s) {
-    for (auto& c : s)
-      if (c == L'\t' || c == L'\r' || c == L'\n')
-        c = L' ';
-    return s;
-  };
-  const char* method = mixed                     ? "mixed"
-                       : ss.correction_committed ? "correction"
-                       : ss.llm_committed        ? "llm"
-                       : ss.focus_used && ss.choice_changed ? "focus"
-                       : ss.choice_changed       ? "changed"
-                                                 : "direct";
-  // 前文：送出之前的最近文字（有些路徑已先把這次送出的文字加進前文，去掉）
-  std::wstring context =
-      m_context_history ? m_context_history->GetRecentContext(40 + text.size()) : L"";
-  if (context.size() >= text.size() &&
-      context.compare(context.size() - text.size(), text.size(), text) == 0)
-    context.resize(context.size() - text.size());
-  if (context.size() > 40)
-    context = context.substr(context.size() - 40);
+  ime::ChoiceRecord record;
+  record.time = (int64_t)time(nullptr);
+  record.method = ime::ChoiceMethod(mixed, ss.correction_committed, ss.llm_committed, ss.focus_used,
+                                    ss.choice_changed);
+  // 前文：送出之前的最近文字（有些路徑已先把這次送出的文字加進前文）
+  record.context = ime::ChoiceContext(
+      m_context_history ? m_context_history->GetRecentContext(40 + text.size()) : L"", text);
   char app[256] = {0};
   rime_api->get_property(ss.session_id, "client_app", app, sizeof(app) - 1);
-  std::ostringstream record;
-  record << (int64_t)time(nullptr) << '\t' << app << '\t' << method << '\t'
-         << wtou8(clean(context)) << '\t' << wtou8(clean(ss.default_zhuyin)) << '\t'
-         << wtou8(clean(ss.default_text)) << '\t' << wtou8(clean(text));
-  std::string cipher;
-  if (!personal_crypto::Protect(record.str(), &cipher))
-    return;
-  const std::filesystem::path dir = WeaselUserDataPath() / L"personal";
-  std::error_code ec;
-  std::filesystem::create_directories(dir, ec);
-  std::ofstream out(dir / L"choice_log.dat", std::ios::binary | std::ios::app);
-  const uint32_t len = (uint32_t)cipher.size();
-  out.write((const char*)&len, sizeof(len));
-  out.write(cipher.data(), cipher.size());
+  record.app = app;
+  record.zhuyin = ss.default_zhuyin;
+  record.default_text = ss.default_text;
+  record.text = text;
+  ime::AppendChoiceRecord(WeaselUserDataPath() / L"personal", record);
 }
 
 void RimeWithWeaselHandler::Finalize() {
@@ -972,7 +692,6 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   m_ui->style() = get_session_status(m_active_session).style;
 }
 
-static ZhuyinSpeller _LoadZhuyinSpeller(RimeApi* api, const char* schema_id);
 
 BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
                                             WeaselSessionId ipc_id,
@@ -1177,7 +896,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
       if (punct_status.is_composing && !punct_status.is_ascii_mode) {
         char schema_id[256] = {0};
         rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id));
-        punct_in_composition = _LoadZhuyinSpeller(rime_api, schema_id)
+        punct_in_composition = ime::LoadZhuyinSpeller(rime_api, schema_id)
                                    .alphabet.find((char)keyEvent.keycode) == std::string::npos;
       }
       rime_api->free_status(&punct_status);
@@ -1210,13 +929,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
         if (bs_ctx.composition.preedit && bs_ctx.composition.cursor_pos > 0) {
           const std::wstring before = u8tow(std::string(bs_ctx.composition.preedit)
                                                 .substr(0, bs_ctx.composition.cursor_pos));
-          size_t start = before.size();
-          while (start > 0 && (zhuyin_preview::IsBopomofo(before[start - 1]) ||
-                               zhuyin_preview::IsTone(before[start - 1])))
-            --start;
-          const size_t len = before.size() - start;
-          if (len > 1 && zhuyin_preview::IsTone(before.back()))
-            backspaces = len;
+          backspaces = zhuyin_preview::BackspaceKeys(before);
         }
         rime_api->free_context(&bs_ctx);
       }
@@ -1291,15 +1004,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
 }
 
 std::wstring RimeWithWeaselHandler::_TakeComposition(RimeSessionId session_id) {
-  std::wstring text;
-  rime_api->commit_composition(session_id);
-  RIME_STRUCT(RimeCommit, commit);
-  if (rime_api->get_commit(session_id, &commit)) {
-    if (commit.text)
-      text = u8tow(commit.text);
-    rime_api->free_commit(&commit);
-  }
-  return text;
+  return ime::TakeComposition(rime_api, session_id);
 }
 
 bool RimeWithWeaselHandler::_HandleMixedInput(const weasel::KeyEvent& keyEvent,
@@ -2216,41 +1921,6 @@ inline std::string _GetLabelText(const std::vector<Text>& labels,
   return wtou8(std::wstring(buffer));
 }
 
-// speller settings of the schema, used to build the preview preedit
-static ZhuyinSpeller _LoadZhuyinSpeller(RimeApi* api, const char* schema_id) {
-  ZhuyinSpeller sp;
-  RimeConfig config = {NULL};
-  if (!schema_id || !api->schema_open(schema_id, &config))
-    return sp;
-  if (const char* finals = api->config_get_cstring(&config, "speller/finals"))
-    sp.finals = finals;
-  if (const char* alphabet = api->config_get_cstring(&config, "speller/alphabet"))
-    sp.alphabet = alphabet;
-  if (const char* delim = api->config_get_cstring(&config, "speller/delimiter"))
-    if (*delim)
-      sp.delimiter = *delim;
-  const size_t n = api->config_list_size(&config, "translator/preedit_format");
-  for (size_t i = 0; i < n; ++i) {
-    const std::string key =
-        "translator/preedit_format/@" + std::to_string(i);
-    const char* rule = api->config_get_cstring(&config, key.c_str());
-    if (!rule || strncmp(rule, "xlit", 4) != 0 || !rule[4])
-      continue;
-    const std::string r(rule + 5);
-    const char sep = rule[4];
-    const size_t mid = r.find(sep);
-    if (mid == std::string::npos)
-      continue;
-    const size_t end = r.find(sep, mid + 1);
-    const std::wstring from = u8tow(r.substr(0, mid));
-    const std::wstring to = u8tow(r.substr(mid + 1, end - mid - 1));
-    for (size_t k = 0; k < from.size() && k < to.size(); ++k)
-      sp.xlit[from[k]] = to[k];
-  }
-  api->config_close(&config);
-  return sp;
-}
-
 bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   std::set<std::string> actions;
   std::list<std::string> messages;
@@ -2316,7 +1986,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         
         // 仅当 commit 包含有意义内容（非纯标点/符号）时才进入 LLM 预测模式，避免退出后输入标点又误入
         if (m_llm_after_commit && _PredictionAvailable() &&
-            !m_llm_prediction_mode && CommitHasMeaningfulContent(commit_text_w)) {
+            !m_llm_prediction_mode && ime::HasMeaningfulContent(commit_text_w)) {
           if (m_dev_console && m_dev_console->IsEnabled()) {
             m_dev_console->WriteLine(L"[LLM] Detected user commit, entering LLM prediction mode");
           }
@@ -2426,7 +2096,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
                 ctx.commit_text_preview,
                 ctx.composition.preedit ? ctx.composition.preedit : "",
                 input ? input : "", caret_pos,
-                cand ? cand : "", hl, _LoadZhuyinSpeller(rime_api, schema_id),
+                cand ? cand : "", hl, ime::LoadZhuyinSpeller(rime_api, schema_id),
                 session_status.preview_input, session_status.preview_units,
                 session_status.preview_lens,
                 session_status.focus >= 0);
@@ -3218,43 +2888,11 @@ void RimeWithWeaselHandler::SetDevConsole(DevConsole* dev_console) {
   }
 }
 
-// 清洗模型输出：只保留第一行，去除控制字符与首尾引号/括号/标点，去重，丢弃空候选
-// （小模型常模仿 prompt 中的 "…" 格式，并在多路采样时给出相同结果）。
-// prefix 非空时为输入中补全：候选 = Rime 当前转换结果 + 续写，选中即整段提交。
-static std::vector<std::wstring> CleanLLMCandidates(const std::vector<std::wstring>& raw_list,
-                                                    const std::wstring& prefix) {
-  static const wchar_t kTrimChars[] =
-      L" \t　\"'`“”‘’「」『』"
-      L"()[]{}<>（）【】《》"
-      L",.;:!?，。、；：！？…";
-  std::vector<std::wstring> cleaned;
-  for (const auto& raw : raw_list) {
-    std::wstring s = raw.substr(0, raw.find_first_of(L"\r\n"));
-    s.erase(std::remove_if(s.begin(), s.end(),
-                           [](wchar_t c) { return c < 0x20 || c == 0x7f; }),
-            s.end());
-    const size_t b = s.find_first_not_of(kTrimChars);
-    s = (b == std::wstring::npos)
-            ? std::wstring()
-            : s.substr(b, s.find_last_not_of(kTrimChars) - b + 1);
-    if (!s.empty())
-      s = prefix + s;
-    if (!s.empty() && std::find(cleaned.begin(), cleaned.end(), s) == cleaned.end())
-      cleaned.push_back(std::move(s));
-  }
-  return cleaned;
-}
-
 void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
   // 1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙 6 套用修改並匯出 7 產生 Rime 詞典
   // 8 重設選字統計；狀態寫在 personal/status.txt
   if (command == 8) {
-    m_choice_stats.clear();
-    m_choice_stats_loaded = true;
-    std::error_code ec;
-    std::filesystem::remove(WeaselUserDataPath() / L"weasel_stats.txt", ec);
-    std::filesystem::remove(WeaselUserDataPath() / L"weasel_stats_profiles.txt", ec);
-    m_choice_profiles.clear();
+    m_choice_store->Reset();
     return;
   }
   if (!m_personal || !m_refiner) {
@@ -3330,7 +2968,7 @@ void RimeWithWeaselHandler::LLMTestRequest() {
         auto raw = m_llm_provider->PredictCandidates(context, L"", 5);
         const ULONGLONG ms = GetTickCount64() - t0;
         out << "status=ok\nms=" << ms << "\n";
-        for (const auto& c : CleanLLMCandidates(raw, L""))
+        for (const auto& c : ime::CleanCandidates(raw, L""))
           out << "cand=" << wtou8(c) << "\n";
       }
     }
@@ -3343,27 +2981,6 @@ void RimeWithWeaselHandler::LLMTestRequest() {
     MoveFileExW(tmp.c_str(), (dir / L"llm_test_response.txt").c_str(),
                 MOVEFILE_REPLACE_EXISTING);
   }).detach();
-}
-
-// 整句校正结果：去掉首尾空白、引号与句末标点；与初稿相同（不必校正）或字数差太多（模型没照做）时丢弃
-static std::wstring CleanCorrection(const std::wstring& raw, const std::wstring& draft) {
-  static const wchar_t kTrimChars[] = L" \t　\"'`“”‘’「」『』。.";
-  std::wstring s = raw.substr(0, raw.find_first_of(L"\r\n"));
-  s.erase(std::remove_if(s.begin(), s.end(), [](wchar_t c) { return c < 0x20 || c == 0x7f; }),
-          s.end());
-  // 模型偶尔会把「校正：」一起输出
-  for (const wchar_t* label : {L"校正：", L"校正:"}) {
-    const size_t pos = s.find(label);
-    if (pos != std::wstring::npos)
-      s = s.substr(pos + wcslen(label));
-  }
-  const size_t b = s.find_first_not_of(kTrimChars);
-  s = b == std::wstring::npos ? std::wstring() : s.substr(b, s.find_last_not_of(kTrimChars) - b + 1);
-  if (s.empty() || s == draft)
-    return L"";
-  if (s.size() > draft.size() + 2 || s.size() + 2 < draft.size())
-    return L"";
-  return s;
 }
 
 void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
@@ -3467,14 +3084,8 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
       return true;
     };
     // 依序合并、去重，最多 5 个（对应 Tab、Shift+2~5）
-    auto merge = [](std::vector<std::wstring> merged, const std::vector<std::wstring>& more) {
-      for (const auto& c : more) {
-        if (merged.size() >= 5)
-          break;
-        if (std::find(merged.begin(), merged.end(), c) == merged.end())
-          merged.push_back(c);
-      }
-      return merged;
+    const auto merge = [](std::vector<std::wstring> merged, const std::vector<std::wstring>& more) {
+      return ime::MergeCandidates(std::move(merged), more);
     };
 
     // 1) 先显示个人词库的候选（几乎零延迟）
@@ -3523,7 +3134,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
           if (LLMProvider* scorer = _RescoreProvider()) {
             const std::wstring tail =
                 history.size() > 30 ? history.substr(history.size() - 30) : history;
-            recommended = RescoreSentence(scorer, tail, units, homophones, m_dev_console);
+            recommended = ime::RescoreSentence(scorer, tail, units, homophones);
           }
         }
         if (!recommended.empty() && recommended != zhuyin_preview::Join(units)) {
@@ -3546,7 +3157,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
         std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
         if (request_seq != m_llm_request_seq.load() || !m_typo_llm)
           return;
-        corrected = CleanCorrection(
+        corrected = ime::CleanCorrection(
             m_typo_llm->CorrectSentence(typo_context, zhuyin, prefix_copy, typo_prompt),
             prefix_copy);
       }
@@ -3574,7 +3185,7 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
         return;
       candidates = m_llm_provider->PredictCandidates(context, current_input_copy, 5);
     }
-    candidates = CleanLLMCandidates(candidates, prefix);
+    candidates = ime::CleanCandidates(candidates, prefix);
 
     // 推荐、校正排最前，接着个人词库，LLM 续写接在后面
     const std::vector<std::wstring> head = merge(recommends, corrections);
@@ -3870,7 +3481,7 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
     return true;
   }
   {
-    ChoiceStats& stats = _Stats(to_session_id(ipc_id));
+    ime::ChoiceStats& stats = _Stats(to_session_id(ipc_id));
     ++stats.llm_used;
     if (correction)
       ++stats.corrections_used;

@@ -278,6 +278,21 @@
     <ClCompile Include="..\core\platform\win\key_store_win.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\ime\choice_log.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\ime\choice_stats.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\ime\rescore.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\ime\rime_helpers.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\ime\text_rules.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\third_party\monocypher\monocypher.c">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsC</CompileAs>
@@ -286,6 +301,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\include\RimeWithWeasel.h" />
+    <ClInclude Include="..\core\ime\ZhuyinPreview.h" />
+    <ClInclude Include="..\core\ime\choice_log.h" />
+    <ClInclude Include="..\core\ime\choice_stats.h" />
+    <ClInclude Include="..\core\ime\rescore.h" />
+    <ClInclude Include="..\core\ime\rime_helpers.h" />
+    <ClInclude Include="..\core\ime\text_rules.h" />
     <ClInclude Include="..\include\WeaselUtility.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />

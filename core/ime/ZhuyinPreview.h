@@ -7,7 +7,8 @@
 #include <map>
 #include <string>
 #include <vector>
-#include <WeaselUtility.h>
+
+#include "../base/utf8.h"
 
 struct ZhuyinSpeller {
   std::string finals = " 6347";  // keys that end a syllable (tones)
@@ -113,8 +114,9 @@ inline std::vector<std::wstring> PendingSyllables(const std::wstring& pre) {
 inline std::vector<std::wstring> SplitChars(const std::wstring& s) {
   std::vector<std::wstring> units;
   for (size_t i = 0; i < s.size(); ++i) {
-    if (IS_HIGH_SURROGATE(s[i]) && i + 1 < s.size() &&
-        IS_LOW_SURROGATE(s[i + 1])) {
+    // UTF-16（Windows）的擴充字元佔兩個 wchar_t；UTF-32 一個字就是一個
+    if (sizeof(wchar_t) == 2 && s[i] >= 0xD800 && s[i] <= 0xDBFF && i + 1 < s.size() &&
+        s[i + 1] >= 0xDC00 && s[i + 1] <= 0xDFFF) {
       units.push_back(s.substr(i, 2));
       ++i;
     } else {
@@ -122,6 +124,16 @@ inline std::vector<std::wstring> SplitChars(const std::wstring& s) {
     }
   }
   return units;
+}
+
+// 注音組字中按 Backspace 要送幾次：游標前的音節已打聲調（成字）就整個字刪掉，
+// 還在拼的一次刪一鍵（像新注音）。before 是游標前的 preedit，每個注音符號或聲調對應一個按鍵
+inline size_t BackspaceKeys(const std::wstring& before) {
+  size_t start = before.size();
+  while (start > 0 && (IsBopomofo(before[start - 1]) || IsTone(before[start - 1])))
+    --start;
+  const size_t len = before.size() - start;
+  return len > 1 && IsTone(before.back()) ? len : 1;
 }
 
 inline std::wstring Join(const std::vector<std::wstring>& units,
@@ -210,9 +222,9 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
   using namespace zhuyin_preview;
   ZhuyinPreview out;
   // 組字顯示在候選窗時 Weasel 開啟 soft_cursor，preedit 裡會插入游標符號 ‸，解析前先拿掉
-  std::wstring pre = u8tow(preedit);
+  std::wstring pre = utf8::ToWide(preedit);
   pre.erase(std::remove(pre.begin(), pre.end(), L'‸'), pre.end());
-  std::wstring head = u8tow(preview);
+  std::wstring head = utf8::ToWide(preview);
   // keys of the active input not covered by the highlighted candidate
   std::string rem;
   while (!head.empty() && head.back() < 0x80) {
@@ -249,7 +261,7 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
     out.sel_start = out.sel_end = out.cursor =
         at_start ? 0 : (int)out.text.size();
     // 框住的是最後一個字（游標仍在句尾）：一樣標示出來
-    const std::wstring cw = u8tow(cand);
+    const std::wstring cw = utf8::ToWide(cand);
     if (focused && !cw.empty() && out.text.size() >= cw.size() &&
         out.text.compare(out.text.size() - cw.size(), cw.size(), cw) == 0)
       out.sel_start = (int)(out.text.size() - cw.size());
@@ -259,7 +271,7 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
   // choosing backwards: keep the converted text after the chosen word,
   // taken from the last full conversion where the keys still match
   const size_t tail_start = caret - rem.size();
-  const std::wstring cw = u8tow(cand);
+  const std::wstring cw = utf8::ToWide(cand);
   const bool choosing = caret < input.size() || highlighted > 0 || focused;
   auto finish = [&](const std::wstring& rem_text, const std::wstring& after_text) {
     out.text = head + rem_text + after_text;

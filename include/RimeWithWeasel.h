@@ -16,6 +16,11 @@ class PersonalLexicon;
 class PersonalRefiner;
 class DevConsole;
 class LLMProvider;
+namespace ime {
+struct ChoiceStats;
+class ChoiceStatsStore;
+class HomophoneFinder;
+}  // namespace ime
 
 class ScopedThread {
  public:
@@ -221,26 +226,10 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在 m_llm_infer_mutex 下读写）
   std::unique_ptr<PersonalLexicon> m_personal;  // 個人詞庫（llm/personal/enabled）
   std::unique_ptr<PersonalRefiner> m_refiner;
-  // 選字統計：每天一行寫在使用者資料夾 weasel_stats.txt，只有次數、不含打字內容
-  struct ChoiceStats {
-    int64_t commits = 0;           // 送出次數
-    int64_t chars = 0;             // 送出字數
-    int64_t changed = 0;           // 其中換過候選（沒直接用第一候選）的次數
-    int64_t llm_offered = 0;       // 其中出現過 LLM 候選的次數
-    int64_t llm_used = 0;          // 採用 LLM 候選（Tab）的次數
-    int64_t corrections_used = 0;  // 其中採用整句校正的次數
-    int64_t backspaces = 0;        // 組字中按 Backspace 的次數
-    int64_t deleted_after = 0;     // 送出後 10 秒內在應用程式裡按 Backspace 的次數（送錯字）
-    int64_t focus_uses = 0;        // 用逐字選字（←/→ 框字）的次數
-    int64_t recommend_offered = 0; // 出現「推薦」的次數（每次組字最多算一次）
-    int64_t recommend_used = 0;    // 按 Tab 套用推薦的次數
-  };
   // 推薦（llm/choice/rescore）：用本機模型比較同音字的整句通順度，推薦更好的一句（按 Tab 套用）
   bool m_rescore_on = false;
   size_t m_llm_recommend_count = 0;  // m_current_llm_candidates 開頭幾個是推薦（m_llm_mutex 保護）
-  RimeSessionId m_scratch_session = 0;  // 查同音字用的背景 session（不送出、不學習）
-  std::string m_scratch_schema;
-  std::map<std::string, std::vector<std::wstring>> m_homophone_cache;  // 方案\t按鍵 → 同音字
+  std::unique_ptr<ime::HomophoneFinder> m_homophones;  // 查同音字（背景 session，不送出、不學習）
   LLMProvider* _RescoreProvider() const;  // 已載入的本機模型（預測優先，其次校正）
   std::vector<std::wstring> _Homophones(const std::string& schema, const std::string& keys);
   // 把組字整句改成 desired（每個音節一個字），用 Rime 逐段選字，送出時 Rime 會照常學習
@@ -248,13 +237,11 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   ULONGLONG m_last_commit_tick = 0;  // 最近一次送出的時間（算送出後刪除）
   bool m_choice_log = false;         // llm/choice/log：記錄選字過程（加密）
   void _LogChoice(SessionStatus& ss, const std::wstring& text, bool mixed);
-  std::map<std::string, ChoiceStats> m_choice_stats;  // 日期＋組合代碼 → 統計
-  bool m_choice_stats_loaded = false;
-  // 統計依「組合」（版本＋當時的設定）分開累計：日期\t組合代碼 → 統計
-  std::map<std::string, std::string> m_choice_profiles;  // 組合代碼 → 描述（weasel_stats_profiles.txt）
+  // 選字統計（core/ime/choice_stats.h），依「組合」（版本＋當時的設定）分開累計
+  std::unique_ptr<ime::ChoiceStatsStore> m_choice_store;
   std::map<std::string, std::string> m_schema_flags;     // 方案 → 方案裡的設定（語言模型等）
   std::string _ChoiceProfile(RimeSessionId session_id);
-  ChoiceStats& _Stats(RimeSessionId session_id);  // 今天、這個 session 目前組合的統計
+  ime::ChoiceStats& _Stats(RimeSessionId session_id);  // 今天、這個 session 目前組合的統計
   void _CountCommit(SessionStatus& ss, const std::wstring& text, bool mixed = false);
   void _SaveChoiceStats();
   // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放，
