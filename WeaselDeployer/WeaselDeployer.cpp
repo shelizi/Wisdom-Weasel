@@ -6,6 +6,7 @@
 #include "WeaselDeployer.h"
 #include "Configurator.h"
 #include "WebSettings.h"
+#include "SettingsDialog.h"
 #include <ShellScalingApi.h>
 
 CAppModule _Module;
@@ -82,6 +83,19 @@ static int Run(LPTSTR lpCmdLine) {
     return 0;
   }
 
+  // 設定視窗預設是網頁版；無法使用 WebView2 時改開原本的設定視窗
+  auto settings = [&configurator](int page) {
+    WebSettingsOptions options;
+    options.start_page = page;
+    const int result = RunWebSettings(&configurator, options);
+    return result == -1 ? configurator.Run(false, page) : result;
+  };
+
+  // 原本的設定視窗（過渡期保留）
+  if (!wcscmp(L"/legacy", lpCmdLine)) {
+    return configurator.Run(false);
+  }
+
   // 網頁版設定：/websettings [--page N] [--screenshot 檔案 --theme 1|2 --size 寬 高]
   if (!wcsncmp(L"/websettings", lpCmdLine, 12)) {
     WebSettingsOptions options;
@@ -118,9 +132,10 @@ static int Run(LPTSTR lpCmdLine) {
     return configurator.LegacyDictManagement();
   }
 
+  // 用戶詞典管理：網頁版設定的「詞庫管理」頁
   bool dict_management = !wcscmp(L"/dict", lpCmdLine);
   if (dict_management) {
-    return configurator.DictManagement();
+    return settings(SettingsDialog::kPageDict);
   }
 
   bool sync_user_dict = !wcscmp(L"/sync", lpCmdLine);
@@ -128,6 +143,9 @@ static int Run(LPTSTR lpCmdLine) {
     return configurator.SyncUserData();
   }
 
+  // 安裝時的第一次設定仍用原本的設定視窗（它依是否第一次執行決定要不要顯示）
   bool installing = !wcscmp(L"/install", lpCmdLine);
-  return configurator.Run(installing);
+  if (installing)
+    return configurator.Run(true);
+  return settings(0);
 }

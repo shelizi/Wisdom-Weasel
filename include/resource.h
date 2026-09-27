@@ -27,7 +27,7 @@
 #define ID_WEASELTRAY_DISABLE_ASCII     40014
 #define ID_WEASELTRAY_RERUN_SERVICE     40015
 #define ID_WEASELTRAY_LOGDIR            40016
-#define ID_WEASELTRAY_WEB_SETTINGS      40017
+#define ID_WEASELTRAY_LEGACY_SETTINGS   40017
 
 // Next default values for new objects
 //

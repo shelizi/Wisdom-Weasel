@@ -94,7 +94,7 @@ class WebSettingsWindow {
     }
     std::error_code ec;
     if (!fs::exists(fs::path(web_dir_) / L"index.html", ec)) {
-      MessageBoxW(nullptr, (L"找不到設定網頁：" + web_dir_).c_str(), L"小狼毫設定",
+      MessageBoxW(nullptr, (L"找不到設定網頁：" + web_dir_ + L"\n\n將改開原本的設定視窗。").c_str(), L"小狼毫設定",
                   MB_OK | MB_ICONERROR);
       return -1;
     }
@@ -220,8 +220,8 @@ class WebSettingsWindow {
   void FailWebView(HRESULT hr) {
     wchar_t text[256];
     swprintf_s(text,
-               L"無法開啟網頁版設定（WebView2 錯誤 0x%08X）。\n\n"
-               L"請安裝 Microsoft Edge WebView2 Runtime，或從托盤選單改用原本的「輸入法設定」。",
+               L"無法開啟網頁版設定（WebView2 錯誤 0x%08X），將改開原本的設定視窗。\n\n"
+               L"要使用網頁版，請安裝 Microsoft Edge WebView2 Runtime。",
                (unsigned)hr);
     MessageBoxW(hwnd_, text, L"小狼毫設定", MB_OK | MB_ICONERROR);
     result_ = -1;

@@ -75,9 +75,10 @@ void WeaselServerApp::SetupMenuHandlers() {
   m_server.AddMenuHandler(
       ID_WEASELTRAY_SETTINGS,
       std::bind(execute, dir / L"WeaselDeployer.exe", std::wstring()));
-  m_server.AddMenuHandler(ID_WEASELTRAY_WEB_SETTINGS,
+  // 原本的設定視窗（過渡期保留；「輸入法設定」已改開網頁版）
+  m_server.AddMenuHandler(ID_WEASELTRAY_LEGACY_SETTINGS,
                           std::bind(execute, dir / L"WeaselDeployer.exe",
-                                    std::wstring(L"/websettings")));
+                                    std::wstring(L"/legacy")));
   m_server.AddMenuHandler(
       ID_WEASELTRAY_DICT_MANAGEMENT,
       std::bind(execute, dir / L"WeaselDeployer.exe", std::wstring(L"/dict")));
