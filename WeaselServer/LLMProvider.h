@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <functional>
 
+namespace net {
+class Session;
+}
+
 // 推論中途取消：呼叫端在工作執行緒上設定檢查函式（例如使用者又打了字，請求已過時），
 // 本機模型每產生一個 token 檢查一次，過時就停止，讓新的請求盡快開始
 inline std::function<bool()>& LLMCancelCheck() {
@@ -261,9 +265,7 @@ class OpenAICompatibleProvider : public LLMProvider {
   std::wstring m_prompt;          // llm/prompt：与 llama.cpp 共用的提示词
   bool m_disable_thinking = false;  // llm/openai/disable_thinking：请求时关闭思考
   int m_think_tokens = 2048;        // llm/openai/think_tokens：开启思考时的思考长度上限（0 = 不限制）
-  void* m_hSession;       // HINTERNET，复用的 WinHTTP 会话
-  void* m_hConnect;       // HINTERNET，复用的连接
-  std::string m_cached_url;  // 当前连接对应的 URL，变化时重建连接
+  std::unique_ptr<net::Session> m_http;  // 复用的 HTTP 连接（主机变化时自动重连）
 };
 
 // llama.cpp 本地推理提供者
@@ -390,7 +392,5 @@ class HFConstraintProvider : public LLMProvider {
 
   bool m_enabled;
   std::string m_api_url;  // 默认 http://localhost:8000/v1/generate/completions
-  void* m_hSession;       // HINTERNET，复用的 WinHTTP 会话
-  void* m_hConnect;       // HINTERNET，复用的连接
-  std::string m_cached_url;  // 当前连接对应的 URL，变化时重建连接
+  std::unique_ptr<net::Session> m_http;  // 复用的 HTTP 连接（主机变化时自动重连）
 };

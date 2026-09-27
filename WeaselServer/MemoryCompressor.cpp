@@ -3,11 +3,9 @@
 #include "DevConsole.h"
 #include <WeaselUtility.h>
 #include <rime_api.h>
-#include <winhttp.h>
+#include "../core/net/http.h"
 #include <sstream>
 #include <future>
-
-#pragma comment(lib, "winhttp.lib")
 
 namespace {
 
@@ -24,25 +22,9 @@ std::wstring WordsToSpaceSeparated(const std::vector<std::wstring>& words) {
 
 MemoryCompressor::MemoryCompressor()
     : m_enabled(false),
-      m_max_tokens(100),
-      m_hSession(nullptr),
-      m_hConnect(nullptr) {}
+      m_max_tokens(100) {}
 
-MemoryCompressor::~MemoryCompressor() {
-  CloseConnection();
-}
-
-void MemoryCompressor::CloseConnection() {
-  if (m_hConnect) {
-    WinHttpCloseHandle((HINTERNET)m_hConnect);
-    m_hConnect = nullptr;
-  }
-  if (m_hSession) {
-    WinHttpCloseHandle((HINTERNET)m_hSession);
-    m_hSession = nullptr;
-  }
-  m_cached_url.clear();
-}
+MemoryCompressor::~MemoryCompressor() = default;
 
 bool MemoryCompressor::LoadConfig(const std::string& config_name) {
   extern DevConsole* g_dev_console;
@@ -99,7 +81,6 @@ bool MemoryCompressor::LoadConfig(const std::string& config_name) {
     m_max_tokens = max_tokens;
   }
 
-  CloseConnection();
   rime_api->config_close(&config);
 
   if (g_dev_console && g_dev_console->IsEnabled() && IsAvailable()) {
@@ -167,94 +148,19 @@ bool MemoryCompressor::ExecuteRequestOneShot(const std::string& url,
                                              const std::string& api_key,
                                              const std::string& request_body,
                                              std::string& response_body) {
-  URL_COMPONENTS url_comp = {0};
-  url_comp.dwStructSize = sizeof(URL_COMPONENTS);
-  url_comp.dwSchemeLength = (DWORD)-1;
-  url_comp.dwHostNameLength = (DWORD)-1;
-  url_comp.dwUrlPathLength = (DWORD)-1;
-  url_comp.dwExtraInfoLength = (DWORD)-1;
-
-  std::wstring url_w = u8tow(url);
-  wchar_t hostname[256] = {0};
-  wchar_t path[1024] = {0};
-  url_comp.lpszHostName = hostname;
-  url_comp.lpszUrlPath = path;
-
-  if (!WinHttpCrackUrl(url_w.c_str(), (DWORD)url_w.length(), 0, &url_comp)) {
-    return false;
-  }
-
-  INTERNET_PORT port = url_comp.nPort;
-  bool use_https = (url_comp.nScheme == INTERNET_SCHEME_HTTPS);
-  if (port == 0) {
-    port = use_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
-  }
-
-  std::wstring hostname_str(hostname, url_comp.dwHostNameLength);
-  std::wstring path_str(path, url_comp.dwUrlPathLength);
-
-  bool is_localhost = (hostname_str == L"localhost" || hostname_str == L"127.0.0.1");
-  DWORD access_type = is_localhost ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
-  HINTERNET hSession = WinHttpOpen(L"Weasel IME Memory/1.0", access_type,
-                                   is_localhost ? (LPCWSTR)WINHTTP_NO_PROXY_NAME : NULL,
-                                   is_localhost ? (LPCWSTR)WINHTTP_NO_PROXY_BYPASS : NULL, 0);
-  if (!hSession) return false;
-  DWORD timeout = 15000;
-  WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
-  HINTERNET hConnect = WinHttpConnect(hSession, hostname_str.c_str(), port, 0);
-  if (!hConnect) {
-    WinHttpCloseHandle(hSession);
-    return false;
-  }
-
-  HINTERNET hRequest = WinHttpOpenRequest(
-      hConnect, L"POST", path_str.c_str(), NULL, WINHTTP_NO_REFERER,
-      WINHTTP_DEFAULT_ACCEPT_TYPES,
-      use_https ? WINHTTP_FLAG_SECURE : 0);
-  if (!hRequest) {
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    return false;
-  }
-
-  std::wstring headers = L"Content-Type: application/json\r\n";
-  if (!api_key.empty()) {
-    headers += L"Authorization: Bearer " + u8tow(api_key) + L"\r\n";
-  }
-
-  if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)-1,
-                          (LPVOID)request_body.c_str(),
-                          (DWORD)request_body.length(),
-                          (DWORD)request_body.length(), 0)) {
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    return false;
-  }
-
-  if (!WinHttpReceiveResponse(hRequest, NULL)) {
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    return false;
-  }
-
-  DWORD bytes_available = 0;
-  response_body.clear();
-  while (WinHttpQueryDataAvailable(hRequest, &bytes_available) && bytes_available > 0) {
-    std::vector<char> buffer(bytes_available);
-    DWORD bytes_read = 0;
-    if (WinHttpReadData(hRequest, buffer.data(), bytes_available, &bytes_read)) {
-      response_body.append(buffer.data(), bytes_read);
-    } else {
-      break;
-    }
-  }
-
-  WinHttpCloseHandle(hRequest);
-  WinHttpCloseHandle(hConnect);
-  WinHttpCloseHandle(hSession);
-  return !response_body.empty();
+  net::Request request;
+  request.method = "POST";
+  request.url = url;
+  request.headers.push_back({"Content-Type", "application/json"});
+  if (!api_key.empty())
+    request.headers.push_back({"Authorization", "Bearer " + api_key});
+  request.body = request_body;
+  request.connect_timeout_ms = request.receive_timeout_ms = 15000;
+  net::Response response;
+  std::string error;
+  const bool ok = net::Fetch(request, &response, &error);
+  response_body = response.body;
+  return ok && !response_body.empty();
 }
 
 std::vector<std::wstring> MemoryCompressor::ParseResponse(const std::string& json_response) {

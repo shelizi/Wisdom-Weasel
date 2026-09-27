@@ -29,8 +29,7 @@ class MemoryCompressor {
                       const std::string& request_body,
                       std::string& response_body);
   std::vector<std::wstring> ParseResponse(const std::string& json_response);
-  void CloseConnection();
-  // 在后台线程中执行请求时使用一次性连接（不读写成员 m_hSession/m_hConnect）
+  // 一次性连接（可在后台线程执行）
   bool ExecuteRequestOneShot(const std::string& url,
                              const std::string& api_key,
                              const std::string& request_body,
@@ -41,7 +40,4 @@ class MemoryCompressor {
   std::string m_api_key;
   std::string m_model;
   int m_max_tokens;
-  void* m_hSession;
-  void* m_hConnect;
-  std::string m_cached_url;
 };

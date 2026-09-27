@@ -81,6 +81,7 @@
     <ClCompile Include="..\WeaselServer\HFConstraintProvider.cpp" />
     <ClCompile Include="..\RimeWithWeasel\WeaselUtility.cpp" />
     <ClCompile Include="..\core\llm_ipc\host.cpp" />
+    <ClCompile Include="..\core\net\win\http_win.cpp" />
     <ClCompile Include="..\core\platform\win\process_win.cpp" />
   </ItemGroup>
   <ItemGroup>

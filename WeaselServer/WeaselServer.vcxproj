@@ -502,6 +502,9 @@
     <ClCompile Include="MemoryCompressor.cpp" />
     <ClCompile Include="LLMProvider.cpp" />
     <ClCompile Include="RemoteLLMProvider.cpp" />
+    <ClCompile Include="..\core\net\win\http_win.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\llm_ipc\client.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

@@ -3,10 +3,8 @@
 #include "DevConsole.h"
 #include <WeaselUtility.h>
 #include <rime_api.h>
-#include <winhttp.h>
+#include "../core/net/http.h"
 #include <sstream>
-
-#pragma comment(lib, "winhttp.lib")
 
 namespace {
 
@@ -34,23 +32,14 @@ std::string EscapeJsonString(const std::string& s) {
 HFConstraintProvider::HFConstraintProvider()
     : m_enabled(false),
       m_api_url("http://localhost:8000/v1/generate/completions"),
-      m_hSession(nullptr),
-      m_hConnect(nullptr) {}
+      m_http(std::make_unique<net::Session>()) {}
 
 HFConstraintProvider::~HFConstraintProvider() {
   CloseConnection();
 }
 
 void HFConstraintProvider::CloseConnection() {
-  if (m_hConnect) {
-    WinHttpCloseHandle((HINTERNET)m_hConnect);
-    m_hConnect = nullptr;
-  }
-  if (m_hSession) {
-    WinHttpCloseHandle((HINTERNET)m_hSession);
-    m_hSession = nullptr;
-  }
-  m_cached_url.clear();
+  m_http->Reset();
 }
 
 bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
@@ -207,100 +196,17 @@ bool HFConstraintProvider::IsAvailable() const {
 bool HFConstraintProvider::ExecuteRequest(const std::string& url,
                                          const std::string& request_body,
                                          std::string& response_body) {
-  URL_COMPONENTS url_comp = {0};
-  url_comp.dwStructSize = sizeof(URL_COMPONENTS);
-  url_comp.dwSchemeLength = (DWORD)-1;
-  url_comp.dwHostNameLength = (DWORD)-1;
-  url_comp.dwUrlPathLength = (DWORD)-1;
-  url_comp.dwExtraInfoLength = (DWORD)-1;
-
-  std::wstring url_w = u8tow(url);
-  wchar_t hostname[256] = {0};
-  wchar_t path[1024] = {0};
-  url_comp.lpszHostName = hostname;
-  url_comp.lpszUrlPath = path;
-
-  if (!WinHttpCrackUrl(url_w.c_str(), (DWORD)url_w.length(), 0, &url_comp)) {
-    return false;
-  }
-
-  INTERNET_PORT port = url_comp.nPort;
-  bool use_https = (url_comp.nScheme == INTERNET_SCHEME_HTTPS);
-  if (port == 0) {
-    port = use_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
-  }
-
-  std::wstring hostname_str(hostname, url_comp.dwHostNameLength);
-  std::wstring path_str(path, url_comp.dwUrlPathLength);
-
-  HINTERNET hSession = (HINTERNET)m_hSession;
-  HINTERNET hConnect = (HINTERNET)m_hConnect;
-
-  if (m_cached_url != url || !hSession || !hConnect) {
-    CloseConnection();
-    bool is_localhost = (hostname_str == L"localhost" || hostname_str == L"127.0.0.1");
-    DWORD access_type = is_localhost ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
-    hSession = WinHttpOpen(
-        L"Weasel IME/1.0", access_type,
-        is_localhost ? (LPCWSTR)WINHTTP_NO_PROXY_NAME : NULL,
-        is_localhost ? (LPCWSTR)WINHTTP_NO_PROXY_BYPASS : NULL, 0);
-    if (!hSession) {
-      return false;
-    }
-    DWORD timeout = 10000;
-    WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
-    hConnect = WinHttpConnect(hSession, hostname_str.c_str(), port, 0);
-    if (!hConnect) {
-      WinHttpCloseHandle(hSession);
-      return false;
-    }
-    m_hSession = hSession;
-    m_hConnect = hConnect;
-    m_cached_url = url;
-  }
-
-  HINTERNET hRequest = WinHttpOpenRequest(
-      hConnect, L"POST", path_str.c_str(), NULL, WINHTTP_NO_REFERER,
-      WINHTTP_DEFAULT_ACCEPT_TYPES,
-      use_https ? WINHTTP_FLAG_SECURE : 0);
-  if (!hRequest) {
-    CloseConnection();
-    return false;
-  }
-
-  std::wstring headers = L"Content-Type: application/json\r\n";
-  if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)-1,
-                          (LPVOID)request_body.c_str(),
-                          (DWORD)request_body.length(),
-                          (DWORD)request_body.length(),
-                          0)) {
-    WinHttpCloseHandle(hRequest);
-    CloseConnection();
-    return false;
-  }
-
-  if (!WinHttpReceiveResponse(hRequest, NULL)) {
-    WinHttpCloseHandle(hRequest);
-    CloseConnection();
-    return false;
-  }
-
-  DWORD bytes_available = 0;
-  response_body.clear();
-  while (WinHttpQueryDataAvailable(hRequest, &bytes_available) &&
-         bytes_available > 0) {
-    std::vector<char> buffer(bytes_available);
-    DWORD bytes_read = 0;
-    if (WinHttpReadData(hRequest, buffer.data(), bytes_available,
-                        &bytes_read)) {
-      response_body.append(buffer.data(), bytes_read);
-    } else {
-      break;
-    }
-  }
-
-  WinHttpCloseHandle(hRequest);
-  return !response_body.empty();
+  net::Request request;
+  request.method = "POST";
+  request.url = url;
+  request.headers.push_back({"Content-Type", "application/json"});
+  request.body = request_body;
+  request.connect_timeout_ms = request.receive_timeout_ms = 10000;
+  net::Response response;
+  std::string error;
+  const bool ok = m_http->Fetch(request, &response, &error);
+  response_body = response.body;
+  return ok && !response_body.empty();
 }
 
 std::vector<std::wstring> HFConstraintProvider::ParseResponse(
