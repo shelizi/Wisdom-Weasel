@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <thread>
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -71,14 +72,15 @@ fs::path KeyFilePath() {
 #endif
 }
 
-enum class ReadResult { kOk, kMissing, kFailed };
+// kBusy：檔案在但暫時打不開（例如另一個執行緒正在改名），稍後再試
+enum class ReadResult { kOk, kMissing, kBusy, kFailed };
 
 ReadResult ReadKeyFile(const fs::path& path, uint8_t key[kKeySize]) {
   std::string data;
   {
     std::ifstream in(path, std::ios::binary);
     if (!in)
-      return fs::exists(path) ? ReadResult::kFailed : ReadResult::kMissing;
+      return fs::exists(path) ? ReadResult::kBusy : ReadResult::kMissing;
     data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
   std::string plain;
@@ -100,7 +102,11 @@ bool CreateKeyFile(const fs::path& path, const uint8_t key[kKeySize]) {
   std::error_code ec;
   fs::create_directories(path.parent_path(), ec);
   fs::path tmp = path;
-  tmp += L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+  // 暫存檔名要每次都不同：同一個行程的多個執行緒也可能同時建立
+  uint32_t nonce = 0;
+  RandomBytes(&nonce, sizeof(nonce));
+  tmp += L"." + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetCurrentThreadId()) + L"-" +
+         std::to_wstring(nonce) + L".tmp";
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     out.write(kKeyMagic, sizeof(kKeyMagic));
@@ -125,9 +131,19 @@ bool LoadOrCreateKey(uint8_t key[kKeySize]) {
   const fs::path path = KeyFilePath();
   if (path.empty())
     return false;
-  switch (ReadKeyFile(path, key)) {
+  // 暫時打不開就重試（最多約一秒）
+  const auto read = [&] {
+    ReadResult r = ReadKeyFile(path, key);
+    for (int i = 0; r == ReadResult::kBusy && i < 100; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      r = ReadKeyFile(path, key);
+    }
+    return r;
+  };
+  switch (read()) {
     case ReadResult::kOk:
       return true;
+    case ReadResult::kBusy:
     case ReadResult::kFailed:
       return false;
     case ReadResult::kMissing:
@@ -139,7 +155,7 @@ bool LoadOrCreateKey(uint8_t key[kKeySize]) {
   // 建立失敗多半是另一個行程搶先建立了；不論哪一種都以檔案裡的為準
   CreateKeyFile(path, fresh);
   SecureZeroMemory(fresh, sizeof(fresh));
-  return ReadKeyFile(path, key) == ReadResult::kOk;
+  return read() == ReadResult::kOk;
 }
 
 bool LegacyUnprotect(const std::string& in, std::string* out) {
