@@ -93,6 +93,23 @@ export function parse(face) {
   return { fonts, weight, style };
 }
 
+// 簡單模式：字串只有一個不限範圍的字型時回傳它的名稱（沒有設定時為 ''）；
+// 用了多個字型或限定範圍時回傳 null（只能在進階設定編輯）
+export function simpleFont(face) {
+  if (!normalize(face)) return '';
+  const { fonts } = parse(face);
+  if (normalize(face).split(',').length !== 1 || fonts.length !== 1) return null;
+  const f = fonts[0];
+  return f.first === 0 && f.last === 0x10ffff ? f.name : null;
+}
+
+// 簡單模式換字型：保留原本的粗細與樣式；name 為 '' 時用預設字型
+export function withFont(face, name) {
+  if (!name) return '';
+  // 都插在名稱後面：先放樣式再放粗細，結果是 名稱:粗細:樣式
+  return setToken(setToken(name, 'style', getToken(face, 'style')), 'weight', getToken(face, 'weight'));
+}
+
 // 預覽的 CSS：每個字型一條 @font-face（local() + unicode-range），family 依序排；
 // 後面再接原本的字型名稱，local() 找不到時也看得到字型
 export function previewCss(face, family) {

@@ -323,3 +323,10 @@ input, textarea, select, button { font: inherit; color: inherit; }
 .fp-first { background: var(--accent); color: var(--accent-text); }
 .fp-comment { opacity: 0.7; }
 .row .field-label { margin-bottom: 0; }
+
+/* 字體：簡單模式的三列與進階設定 */
+.font-simple { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.font-simple-row { display: flex; align-items: center; gap: 10px; }
+.font-simple-label { width: 56px; flex: none; }
+.font-advanced { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--stroke-strong); }
+.font-simple-row .grow { max-width: 420px; }

@@ -66,4 +66,16 @@ test('preview css', () => {
   assert.equal(css.fontStyle, 'normal');
 });
 
+test('simple mode', () => {
+  assert.equal(f.simpleFont(''), '');
+  assert.equal(f.simpleFont('Microsoft JhengHei'), 'Microsoft JhengHei');
+  assert.equal(f.simpleFont('微軟正黑體:bold:italic'), '微軟正黑體');
+  assert.equal(f.simpleFont('A::10ffff'), 'A');
+  assert.equal(f.simpleFont('A, B'), null);
+  assert.equal(f.simpleFont('A:4e00:9fff'), null);
+  assert.equal(f.withFont('A:bold:italic', 'B'), 'B:bold:italic');
+  assert.equal(f.withFont('A, B:0:7f', 'C'), 'C');
+  assert.equal(f.withFont('A:bold', ''), '');
+});
+
 console.log(`all passed (${passed})`);
