@@ -1,7 +1,7 @@
-#include "stdafx.h"
 #include "ContextHistory.h"
+#include "../base/clock.h"
 #include "MemoryCompressor.h"
-#include "DevConsole.h"
+#include "../base/devlog.h"
 #include <algorithm>
 #include <sstream>
 #include <thread>
@@ -17,7 +17,7 @@ ContextHistory::~ContextHistory() {
 
 bool ContextHistory::IsExpiredLocked(const Bucket& b) const {
   return m_idle_ms > 0 && !b.segments.empty() && b.last_used > 0 &&
-         GetTickCount64() - b.last_used > m_idle_ms;
+         base::MonotonicMs() - b.last_used > m_idle_ms;
 }
 
 ContextHistory::Bucket* ContextHistory::ActiveBucketLocked() {
@@ -36,7 +36,7 @@ const ContextHistory::Bucket* ContextHistory::ActiveBucketLocked() const {
   return &it->second;
 }
 
-void ContextHistory::SetActiveKey(const std::wstring& key, DevConsole* dev_console) {
+void ContextHistory::SetActiveKey(const std::wstring& key, DevLog* dev_console) {
   bool switched = false;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -65,7 +65,7 @@ void ContextHistory::SetActiveKey(const std::wstring& key, DevConsole* dev_conso
   }
 }
 
-void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) {
+void ContextHistory::AddText(const std::wstring& text, DevLog* dev_console) {
   if (text.empty()) {
     return;
   }
@@ -79,7 +79,7 @@ void ContextHistory::AddText(const std::wstring& text, DevConsole* dev_console) 
     Bucket* b = ActiveBucketLocked();  // 闲置过期的旧内容会在这里被清掉
     key = m_active_key;
     b->segments.push_back(text);
-    b->last_used = GetTickCount64();
+    b->last_used = base::MonotonicMs();
     if (!m_memory_compressor || !m_memory_compressor->IsAvailable()) {
       size_t batch = GetCompressWordCount();
       if (batch == 0) batch = 1;
@@ -135,7 +135,7 @@ std::vector<std::wstring> ContextHistory::GetAllHistory() const {
   return b ? b->segments : std::vector<std::wstring>();
 }
 
-void ContextHistory::Clear(DevConsole* dev_console) {
+void ContextHistory::Clear(DevLog* dev_console) {
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     Bucket& b = m_buckets[m_active_key];
@@ -157,7 +157,7 @@ size_t ContextHistory::GetMaxSize() const {
   return m_max_size;
 }
 
-void ContextHistory::TryTriggerCompression(const std::wstring& key, DevConsole* dev_console) {
+void ContextHistory::TryTriggerCompression(const std::wstring& key, DevLog* dev_console) {
   size_t compress_count = GetCompressWordCount();
   std::vector<std::wstring> to_compress;
   {
@@ -196,7 +196,7 @@ void ContextHistory::TryTriggerCompression(const std::wstring& key, DevConsole* 
 void ContextHistory::ReplaceOldestWithCompressed(
     const std::wstring& key,
     const std::vector<std::wstring>& compressed,
-    DevConsole* dev_console) {
+    DevLog* dev_console) {
   std::function<void()> on_compression_completed;
   {
     std::lock_guard<std::mutex> lock(m_mutex);

@@ -13,8 +13,8 @@
 
 #include "WeaselTrayIcon.h"
 #include "DevConsole.h"
-#include "ContextHistory.h"
-#include "MemoryCompressor.h"
+#include "../core/llm/ContextHistory.h"
+#include "../core/llm/MemoryCompressor.h"
 
 namespace fs = std::filesystem;
 

@@ -1,9 +1,9 @@
 target("WisdomLLMHost")
   set_kind("binary")
   add_files("./*.cpp")
-  add_files("$(projectdir)/WeaselServer/LLMProvider.cpp",
-            "$(projectdir)/WeaselServer/LlamaCppProvider.cpp",
-            "$(projectdir)/WeaselServer/HFConstraintProvider.cpp",
+  add_files("$(projectdir)/core/llm/LLMProvider.cpp",
+            "$(projectdir)/core/llm/LlamaCppProvider.cpp",
+            "$(projectdir)/core/llm/HFConstraintProvider.cpp",
             "$(projectdir)/RimeWithWeasel/WeaselUtility.cpp",
             "$(projectdir)/core/llm_ipc/host.cpp",
             "$(projectdir)/core/net/win/http_win.cpp",

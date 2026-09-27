@@ -1,9 +1,8 @@
-#include "stdafx.h"
 #include "LLMProvider.h"
-#include "DevConsole.h"
-#include <WeaselUtility.h>
+#include "../base/devlog.h"
+#include "../base/utf8.h"
 #include <rime_api.h>
-#include "../core/net/http.h"
+#include "../net/http.h"
 #include <sstream>
 
 namespace {
@@ -43,7 +42,6 @@ void HFConstraintProvider::CloseConnection() {
 }
 
 bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
-  extern DevConsole* g_dev_console;
 
   RimeApi* rime_api = rime_get_api();
   if (!rime_api) {
@@ -55,14 +53,14 @@ bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 开始从配置文件加载 HF Constraint 配置: " +
-                             u8tow(config_name));
+                             utf8::ToWide(config_name));
   }
 
   RimeConfig config = {NULL};
   if (!rime_api->config_open(config_name.c_str(), &config)) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] LoadConfig失败: 无法打开配置文件 " +
-                              u8tow(config_name));
+                              utf8::ToWide(config_name));
     }
     return false;
   }
@@ -98,13 +96,13 @@ bool HFConstraintProvider::LoadConfig(const std::string& config_name) {
     m_api_url = buffer;
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/hf_constraint/api_url = " +
-                              u8tow(m_api_url));
+                              utf8::ToWide(m_api_url));
     }
   } else {
     m_api_url = "http://localhost:8000/v1/generate/completions";
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/hf_constraint/api_url，使用默认值 = " +
-                              u8tow(m_api_url));
+                              utf8::ToWide(m_api_url));
     }
   }
 
@@ -129,7 +127,7 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
   }
 
   // 允许空上下文（冷启动），仍向后端发送请求，与 RimeWithWeasel 的“支持冷启动”一致
-  std::string prompt_utf8 = wtou8(context);
+  std::string prompt_utf8 = utf8::FromWide(context);
   std::string escaped_prompt = EscapeJsonString(prompt_utf8);
 
   // pinyin_constraints: 当前输入，按空格分割为拼音音节数组
@@ -139,11 +137,11 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
     std::wstring part;
     while (ss >> part) {
       if (!part.empty()) {
-        constraint_parts.push_back(wtou8(part));
+        constraint_parts.push_back(utf8::FromWide(part));
       }
     }
     if (constraint_parts.empty()) {
-      constraint_parts.push_back(wtou8(current_input));
+      constraint_parts.push_back(utf8::FromWide(current_input));
     }
   }
 
@@ -158,13 +156,12 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
 
   std::string request_body = json.str();
 
-  extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] [HF Constraint] 发送预测请求");
     g_dev_console->WriteLine(L"  上下文: " + context);
     g_dev_console->WriteLine(L"  当前输入: " + current_input);
-    g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
-    g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
+    g_dev_console->WriteLine(L"  请求URL: " + utf8::ToWide(m_api_url));
+    g_dev_console->WriteLine(L"  请求体: " + utf8::ToWide(request_body));
   }
 
   std::string response_body;
@@ -177,7 +174,7 @@ std::vector<std::wstring> HFConstraintProvider::PredictCandidates(
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] [HF Constraint] 收到响应");
-    g_dev_console->WriteLine(L"  响应内容: " + u8tow(response_body));
+    g_dev_console->WriteLine(L"  响应内容: " + utf8::ToWide(response_body));
   }
 
   candidates = ParseResponse(response_body);
@@ -255,7 +252,7 @@ std::vector<std::wstring> HFConstraintProvider::ParseResponse(
 
   std::string content = json_response.substr(quote_start + 1,
                                              quote_end - quote_start - 1);
-  std::wstring content_w = u8tow(content);
+  std::wstring content_w = utf8::ToWide(content);
 
   std::wstringstream ss(content_w);
   std::wstring word;

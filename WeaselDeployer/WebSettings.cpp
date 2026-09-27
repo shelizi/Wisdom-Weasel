@@ -2,7 +2,7 @@
 #include "WebSettings.h"
 #include "WinSettingsPlatform.h"
 #include "../core/settings/backend.h"
-#include "../WeaselServer/LLMProvider.h"
+#include "../core/llm/LLMProvider.h"
 #include "resource.h"
 #include <WeaselUtility.h>
 #include <WebView2.h>

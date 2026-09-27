@@ -75,10 +75,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="WisdomLLMHost.cpp" />
-    <ClCompile Include="DevConsoleRelay.cpp" />
-    <ClCompile Include="..\WeaselServer\LLMProvider.cpp" />
-    <ClCompile Include="..\WeaselServer\LlamaCppProvider.cpp" />
-    <ClCompile Include="..\WeaselServer\HFConstraintProvider.cpp" />
+    <ClCompile Include="..\core\llm\LLMProvider.cpp" />
+    <ClCompile Include="..\core\llm\LlamaCppProvider.cpp" />
+    <ClCompile Include="..\core\llm\HFConstraintProvider.cpp" />
     <ClCompile Include="..\RimeWithWeasel\WeaselUtility.cpp" />
     <ClCompile Include="..\core\llm_ipc\host.cpp" />
     <ClCompile Include="..\core\net\win\http_win.cpp" />
@@ -86,8 +85,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h" />
-    <ClInclude Include="..\WeaselServer\LLMProvider.h" />
-    <ClInclude Include="..\WeaselServer\LLMSpecWire.h" />
+    <ClInclude Include="..\core\llm\LLMProvider.h" />
+    <ClInclude Include="..\core\llm\LLMSpecWire.h" />
     <ClInclude Include="..\core\llm_ipc\host.h" />
     <ClInclude Include="..\core\llm_ipc\protocol.h" />
     <ClInclude Include="..\core\platform\process.h" />

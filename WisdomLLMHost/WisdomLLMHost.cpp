@@ -1,9 +1,9 @@
 // LLM 推理行程：輸入法服務（WeaselServer）為每個模型啟動一個，透過管道收發請求。
 // 模型載入、推理都在這裡跑；這個行程當掉或卡住時，輸入法照常打字，只是少了 LLM 候選。
 #include "stdafx.h"
-#include "../WeaselServer/DevConsole.h"
-#include "../WeaselServer/LLMProvider.h"
-#include "../WeaselServer/LLMSpecWire.h"
+#include "../core/base/devlog.h"
+#include "../core/llm/LLMProvider.h"
+#include "../core/llm/LLMSpecWire.h"
 #include "../core/llm_ipc/host.h"
 #include <WeaselConstants.h>
 #include <WeaselUtility.h>
@@ -14,7 +14,6 @@
 #include <memory>
 
 CAppModule _Module;
-extern DevConsole* g_dev_console;
 
 namespace {
 
@@ -152,6 +151,16 @@ struct Host {
   }
 };
 
+// 推理行程裡的開發終端：不開自己的主控台，把文字原樣轉給輸入法的開發終端顯示
+class RelayLog : public DevLog {
+ public:
+  bool IsEnabled() const override { return true; }
+  void Write(const std::string& text) override {
+    if (!text.empty())
+      llm_ipc::Log(text);
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -162,9 +171,9 @@ int main(int argc, char** argv) {
   std::unique_ptr<platform::Pipe> pipe = platform::OpenParentPipe(argc, argv);
   if (!pipe)
     return 2;
-  static DevConsole relay;
+  static RelayLog relay;
   for (int i = 1; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--dev") == 0 && relay.Initialize())
+    if (std::strcmp(argv[i], "--dev") == 0)
       g_dev_console = &relay;
   }
   SetupRimeConfig();

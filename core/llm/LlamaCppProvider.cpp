@@ -1,7 +1,7 @@
-#include "stdafx.h"
 #include "LLMProvider.h"
-#include "DevConsole.h"
-#include <WeaselUtility.h>
+#include "../base/clock.h"
+#include "../base/devlog.h"
+#include "../base/utf8.h"
 #include <rime_api.h>
 #include <algorithm>
 #include <cctype>
@@ -53,7 +53,6 @@ LlamaCppProvider::~LlamaCppProvider() {
 }
 
 bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
-  extern DevConsole* g_dev_console;
 
   RimeApi* rime_api = rime_get_api();
   if (!rime_api) {
@@ -64,13 +63,13 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
   }
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 开始从配置文件加载 llama.cpp 配置: " + u8tow(config_name));
+    g_dev_console->WriteLine(L"[LLM] 开始从配置文件加载 llama.cpp 配置: " + utf8::ToWide(config_name));
   }
 
   RimeConfig config = {NULL};
   if (!rime_api->config_open(config_name.c_str(), &config)) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] LoadConfig失败: 无法打开配置文件 " + u8tow(config_name));
+      g_dev_console->WriteLine(L"[LLM] LoadConfig失败: 无法打开配置文件 " + utf8::ToWide(config_name));
     }
     return false;
   }
@@ -106,12 +105,12 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     if (rime_api->config_get_string(&config, key, num_str, sizeof(num_str) - 1)) {
       out_value = atof(num_str);
       if (g_dev_console && g_dev_console->IsEnabled()) {
-        g_dev_console->WriteLine(L"[LLM] 找到配置项 " + u8tow(key) + L" = " + std::to_wstring(out_value));
+        g_dev_console->WriteLine(L"[LLM] 找到配置项 " + utf8::ToWide(key) + L" = " + std::to_wstring(out_value));
       }
     } else {
       out_value = default_value;
       if (g_dev_console && g_dev_console->IsEnabled()) {
-        g_dev_console->WriteLine(L"[LLM] 未找到配置项 " + u8tow(key) + L"，使用默认值 = " + std::to_wstring(out_value));
+        g_dev_console->WriteLine(L"[LLM] 未找到配置项 " + utf8::ToWide(key) + L"，使用默认值 = " + std::to_wstring(out_value));
       }
     }
   };
@@ -121,7 +120,7 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
   if (found_model_path) {
     m_model_path = buffer;
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/model_path = " + u8tow(m_model_path));
+      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/model_path = " + utf8::ToWide(m_model_path));
     }
   } else {
     m_model_path = "";
@@ -235,7 +234,7 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     std::transform(model_type_str.begin(), model_type_str.end(), model_type_str.begin(), ::tolower);
     m_instruct_model = (model_type_str != "base");
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/model_type = " + u8tow(model_type_buf) +
+      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/llamacpp/model_type = " + utf8::ToWide(model_type_buf) +
           L" -> " + (m_instruct_model ? L"Instruct" : L"Base"));
     }
   } else {
@@ -262,7 +261,7 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
     if (rime_api->config_get_string(&config, "llm/prompt", prefix_buf, sizeof(prefix_buf) - 1) ||
         rime_api->config_get_string(&config, "llm/llamacpp/prompt_prefix", prefix_buf,
                                     sizeof(prefix_buf) - 1)) {
-      m_prompt_prefix = u8tow(prefix_buf);
+      m_prompt_prefix = utf8::ToWide(prefix_buf);
     } else {
       m_prompt_prefix.clear();
     }
@@ -290,7 +289,6 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
 }
 
 bool LlamaCppProvider::InitializeModel() {
-  extern DevConsole* g_dev_console;
 
   // 如果模型已加载，先清理
   if (m_model_loaded) {
@@ -305,15 +303,14 @@ bool LlamaCppProvider::InitializeModel() {
   }
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 开始加载模型: " + u8tow(m_model_path));
+    g_dev_console->WriteLine(L"[LLM] 开始加载模型: " + utf8::ToWide(m_model_path));
   }
 
   // 设置日志回调（所有日志输出到开发终端）
   llama_log_set([](enum ggml_log_level level, const char* text, void* /* user_data */) {
-    extern DevConsole* g_dev_console;
     if (g_dev_console && g_dev_console->IsEnabled()) {
       std::string text_str(text);
-      std::wstring text_w = u8tow(text_str);
+      std::wstring text_w = utf8::ToWide(text_str);
       // 根据日志级别添加前缀
       std::wstring prefix = L"[LLM llama.cpp] ";
       switch (level) {
@@ -341,7 +338,7 @@ bool LlamaCppProvider::InitializeModel() {
   llama_model* model = llama_model_load_from_file(m_model_path.c_str(), model_params);
   if (!model) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 无法加载模型: " + u8tow(m_model_path));
+      g_dev_console->WriteLine(L"[LLM] 无法加载模型: " + utf8::ToWide(m_model_path));
     }
     return false;
   }
@@ -450,7 +447,6 @@ void LlamaCppProvider::Cleanup() {
 }
 
 bool LlamaCppProvider::PrepareSystemPrompt(const std::string& system_prompt_utf8) {
-  extern DevConsole* g_dev_console;
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -541,7 +537,6 @@ bool LlamaCppProvider::PrepareSystemPrompt(const std::string& system_prompt_utf8
 
 std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max_tokens,
                                            bool stop_at_newline) {
-  extern DevConsole* g_dev_console;
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -617,12 +612,12 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
   std::string response;
 
   // 耗时统计
-  ULONGLONG total_start = GetTickCount64();
-  ULONGLONG t_ctx_check_total = 0;
-  ULONGLONG t_decode_total = 0;
-  ULONGLONG t_sample_total = 0;
-  ULONGLONG t_convert_total = 0;
-  ULONGLONG t_batch_prep_total = 0;
+  uint64_t total_start = base::MonotonicMs();
+  uint64_t t_ctx_check_total = 0;
+  uint64_t t_decode_total = 0;
+  uint64_t t_sample_total = 0;
+  uint64_t t_convert_total = 0;
+  uint64_t t_batch_prep_total = 0;
   size_t tokens_generated = 0;
 
   for (size_t i = 0; i < max_tokens; ++i) {
@@ -635,9 +630,9 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
     }
 
     // 检查上下文大小
-    ULONGLONG t0 = GetTickCount64();
+    uint64_t t0 = base::MonotonicMs();
     int n_ctx_used = llama_memory_seq_pos_max(mem, 0) + 1;
-    ULONGLONG t_ctx_check = GetTickCount64() - t0;
+    uint64_t t_ctx_check = base::MonotonicMs() - t0;
     t_ctx_check_total += t_ctx_check;
     
     if (n_ctx_used + batch.n_tokens > m_ctx_size) {
@@ -648,14 +643,14 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
     }
 
     // 解码
-    ULONGLONG t1 = GetTickCount64();
+    uint64_t t1 = base::MonotonicMs();
     if (llama_decode(ctx, batch) != 0) {
       if (g_dev_console && g_dev_console->IsEnabled()) {
         g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": 解码失败");
       }
       break;
     }
-    ULONGLONG t_decode = GetTickCount64() - t1;
+    uint64_t t_decode = base::MonotonicMs() - t1;
     t_decode_total += t_decode;
     
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -663,9 +658,9 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
     }
 
     // 采样下一个token
-    ULONGLONG t2 = GetTickCount64();
+    uint64_t t2 = base::MonotonicMs();
     llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
-    ULONGLONG t_sample = GetTickCount64() - t2;
+    uint64_t t_sample = base::MonotonicMs() - t2;
     t_sample_total += t_sample;
     
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -680,10 +675,10 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
     }
 
     // 转换为文本
-    ULONGLONG t3 = GetTickCount64();
+    uint64_t t3 = base::MonotonicMs();
     char buf[256];
     int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
-    ULONGLONG t_convert = GetTickCount64() - t3;
+    uint64_t t_convert = base::MonotonicMs() - t3;
     t_convert_total += t_convert;
     
     if (n < 0) {
@@ -710,25 +705,25 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
 
     if (g_dev_console && g_dev_console->IsEnabled()) {
       std::string piece(buf, n);
-      g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": convert耗时 " + std::to_wstring(t_convert) + L" ms (text=\"" + u8tow(piece) + L"\")");
+      g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": convert耗时 " + std::to_wstring(t_convert) + L" ms (text=\"" + utf8::ToWide(piece) + L"\")");
     }
 
     // 准备下一个批次
-    ULONGLONG t4 = GetTickCount64();
+    uint64_t t4 = base::MonotonicMs();
     batch = llama_batch_get_one(&new_token_id, 1);
-    ULONGLONG t_batch_prep = GetTickCount64() - t4;
+    uint64_t t_batch_prep = base::MonotonicMs() - t4;
     t_batch_prep_total += t_batch_prep;
     
     tokens_generated++;
     
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": batch_prep耗时 " + std::to_wstring(t_batch_prep) + L" ms");
-      ULONGLONG token_total = t_ctx_check + t_decode + t_sample + t_convert + t_batch_prep;
+      uint64_t token_total = t_ctx_check + t_decode + t_sample + t_convert + t_batch_prep;
       g_dev_console->WriteLine(L"[LLM] Token " + std::to_wstring(i) + L": 总耗时 " + std::to_wstring(token_total) + L" ms");
     }
   }
 
-  ULONGLONG total_time = GetTickCount64() - total_start;
+  uint64_t total_time = base::MonotonicMs() - total_start;
 
   // 输出总体统计
   if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -754,7 +749,6 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
     const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens,
     int think_budget) {
   std::vector<std::string> candidates;
-  extern DevConsole* g_dev_console;
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -863,14 +857,14 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
     if (batch.logits) batch.logits[i] = (i == n_prefill_tokens - 1) ? 1 : 0;
   }
 
-  ULONGLONG total_start = GetTickCount64();
-  ULONGLONG t_prefill = 0;
-  ULONGLONG t_sample_convert_total = 0;
-  ULONGLONG t_decode_total = 0;
+  uint64_t total_start = base::MonotonicMs();
+  uint64_t t_prefill = 0;
+  uint64_t t_sample_convert_total = 0;
+  uint64_t t_decode_total = 0;
   size_t tokens_generated = 0;
   int decode_step = 0;
 
-  ULONGLONG t_prefill_start = GetTickCount64();
+  uint64_t t_prefill_start = base::MonotonicMs();
   if (llama_decode(ctx, batch) != 0) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] GenerateCandidatesBatch: 初始 decode 失败");
@@ -878,7 +872,7 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
     llama_batch_free(batch);
     return candidates;
   }
-  t_prefill = GetTickCount64() - t_prefill_start;
+  t_prefill = base::MonotonicMs() - t_prefill_start;
 
   for (int32_t i = 1; i < n_parallel_i; ++i) {
     llama_memory_seq_cp(mem, 0, (llama_seq_id)i, 0, -1);
@@ -898,7 +892,7 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
   while (n_cur < n_len) {
     batch.n_tokens = 0;
 
-    ULONGLONG t_sample_convert_start = GetTickCount64();
+    uint64_t t_sample_convert_start = base::MonotonicMs();
     for (int32_t i = 0; i < n_parallel_i; ++i) {
       if (i_batch[i] < 0) continue;
 
@@ -954,21 +948,21 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
 
       i_batch[i] = batch_idx;
     }
-    t_sample_convert_total += GetTickCount64() - t_sample_convert_start;
+    t_sample_convert_total += base::MonotonicMs() - t_sample_convert_start;
 
     if (batch.n_tokens == 0) break;
 
     tokens_generated += (size_t)batch.n_tokens;
     n_cur += 1;
 
-    ULONGLONG t_decode_start = GetTickCount64();
+    uint64_t t_decode_start = base::MonotonicMs();
     if (llama_decode(ctx, batch) != 0) {
       if (g_dev_console && g_dev_console->IsEnabled()) {
         g_dev_console->WriteLine(L"[LLM] GenerateCandidatesBatch: 循环 decode 失败");
       }
       break;
     }
-    ULONGLONG t_step_decode = GetTickCount64() - t_decode_start;
+    uint64_t t_step_decode = base::MonotonicMs() - t_decode_start;
     t_decode_total += t_step_decode;
     decode_step++;
 
@@ -979,7 +973,7 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
     }
   }
 
-  ULONGLONG total_time = GetTickCount64() - total_start;
+  uint64_t total_time = base::MonotonicMs() - total_start;
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] GenerateCandidatesBatch 总体统计:");
@@ -1023,8 +1017,8 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
 
   if (m_instruct_model) {
     // Instruct 模型：提示词（与 Base 共用）+ 任务说明作为 system，上下文作为 user
-    system_prompt_utf8 = wtou8(LLMInstructSystem(m_prompt_prefix, max_candidates) + L"\n\n");
-    prompt_utf8 = wtou8(LLMInstructUser(context, current_input));
+    system_prompt_utf8 = utf8::FromWide(LLMInstructSystem(m_prompt_prefix, max_candidates) + L"\n\n");
+    prompt_utf8 = utf8::FromWide(LLMInstructUser(context, current_input));
   } else {
     // Base 模型：直接使用 context + current_input 作为补全前缀，无额外指令
     // 注音方案的 current_input 是注音符号/声调（如 ㄨㄛˇ），接在中文后会干扰续写，去掉
@@ -1039,10 +1033,9 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
                      input_text.end());
     std::wstring context_prefix = LLMBasePrefix(m_prompt_prefix) + context + input_text;
     system_prompt_utf8.clear();
-    prompt_utf8 = wtou8(context_prefix);
+    prompt_utf8 = utf8::FromWide(context_prefix);
   }
 
-  extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 发送预测请求 (llama.cpp)");
     g_dev_console->WriteLine(L"  上下文: " + context);
@@ -1051,17 +1044,17 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
 
   // 当需要多个候选时，使用批量采样（与单次生成一样复用 system KV cache）
   if (max_candidates > 1) {
-    ULONGLONG start_time = GetTickCount64();
+    uint64_t start_time = base::MonotonicMs();
     const int think_budget =
         Thinking() ? (m_think_tokens <= 0 ? -1 : m_think_tokens) : 0;
     std::vector<std::string> raw =
         GenerateCandidatesBatch(system_prompt_utf8, prompt_utf8, max_candidates, 4, think_budget);
-    ULONGLONG elapsed_ms = GetTickCount64() - start_time;
+    uint64_t elapsed_ms = base::MonotonicMs() - start_time;
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] 批量采样完成，耗时: " + std::to_wstring(elapsed_ms) + L" ms");
     }
     for (const auto& s : raw) {
-      std::wstring w = LLMStripThinking(u8tow(s));
+      std::wstring w = LLMStripThinking(utf8::ToWide(s));
       if (!w.empty()) candidates.push_back(w);
     }
     if (!m_instruct_model) {
@@ -1082,20 +1075,20 @@ std::vector<std::wstring> LlamaCppProvider::PredictCandidates(
   }
 
   // 生成文本（单候选或回退）
-  ULONGLONG start_time = GetTickCount64();
+  uint64_t start_time = base::MonotonicMs();
   const int budget = LLMTokenBudget(m_max_tokens, Thinking(), m_think_tokens);
   std::string response = GenerateText(prompt_utf8, budget < 0 ? (size_t)m_ctx_size : (size_t)budget);
-  ULONGLONG end_time = GetTickCount64();
-  ULONGLONG elapsed_ms = end_time - start_time;
+  uint64_t end_time = base::MonotonicMs();
+  uint64_t elapsed_ms = end_time - start_time;
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 收到响应 (llama.cpp)");
-    g_dev_console->WriteLine(L"  响应内容: " + u8tow(response));
+    g_dev_console->WriteLine(L"  响应内容: " + utf8::ToWide(response));
     g_dev_console->WriteLine(L"[LLM] @WeaselServer/LlamaCppProvider.cpp:434 耗时: " + std::to_wstring(elapsed_ms) + L" ms");
   }
 
   // 解析响应（按空格分割）
-  std::wstring response_w = LLMStripThinking(u8tow(response));
+  std::wstring response_w = LLMStripThinking(utf8::ToWide(response));
   std::wstringstream ss(response_w);
   std::wstring word;
   while (ss >> word && candidates.size() < max_candidates) {
@@ -1173,7 +1166,7 @@ bool LlamaCppProvider::ScoreText(const std::wstring& context, const std::wstring
     return false;
   llama_context* ctx = (llama_context*)m_context;
   const llama_vocab* vocab = (const llama_vocab*)m_vocab;
-  const std::string ctx_u8 = wtou8(context), text_u8 = wtou8(text);
+  const std::string ctx_u8 = utf8::FromWide(context), text_u8 = utf8::FromWide(text);
   auto tokenize = [&](const std::string& s) {
     const int n = -llama_tokenize(vocab, s.c_str(), (int32_t)s.size(), NULL, 0, true, true);
     std::vector<llama_token> t(n > 0 ? n : 0);
@@ -1277,7 +1270,7 @@ std::string LlamaCppProvider::Chat(const std::string& system, const std::string&
   if (m_sampler)
     llama_sampler_reset((llama_sampler*)m_sampler);
   const size_t limit = max_tokens < 0 ? (size_t)m_ctx_size : (size_t)max_tokens;
-  return wtou8(LLMStripThinking(u8tow(GenerateText(prompt, limit))));
+  return utf8::FromWide(LLMStripThinking(utf8::ToWide(GenerateText(prompt, limit))));
 }
 
 std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
@@ -1288,13 +1281,13 @@ std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
     return L"";
   std::string prompt;
   if (m_instruct_model) {
-    const std::string system = wtou8(LLMCorrectSystem(m_prompt_prefix, instruction));
-    const std::string user = wtou8(LLMCorrectUser(context, zhuyin, draft));
+    const std::string system = utf8::FromWide(LLMCorrectSystem(m_prompt_prefix, instruction));
+    const std::string user = utf8::FromWide(LLMCorrectUser(context, zhuyin, draft));
     prompt = ApplyChatTemplate(system, user);
     if (prompt.empty())
       prompt = system + "\n\n" + user;
   } else {
-    prompt = wtou8(LLMCorrectBasePrompt(m_prompt_prefix, instruction, context, zhuyin, draft));
+    prompt = utf8::FromWide(LLMCorrectBasePrompt(m_prompt_prefix, instruction, context, zhuyin, draft));
   }
 
   // 校正要穩定的結果：改用 greedy 取樣（不影響預測用的取樣設定）；
@@ -1311,10 +1304,9 @@ std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
   m_sampler = saved;
   llama_sampler_free(greedy);
 
-  extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled())
-    g_dev_console->WriteLine(L"[LLM] 整句校正 (llama.cpp): " + draft + L" → " + u8tow(output));
-  std::wstring result = LLMStripThinking(u8tow(output));
+    g_dev_console->WriteLine(L"[LLM] 整句校正 (llama.cpp): " + draft + L" → " + utf8::ToWide(output));
+  std::wstring result = LLMStripThinking(utf8::ToWide(output));
   result = result.substr(0, result.find_first_of(L"\r\n"));
   while (!result.empty() && result.back() == L'�')
     result.pop_back();
@@ -1332,8 +1324,8 @@ LLMLocalChatSession::~LLMLocalChatSession() = default;
 bool LLMLocalChatSession::Open(const LLMLocalModelSpec& spec, std::wstring* error) {
   impl_.reset();
   std::error_code ec;
-  if (spec.model_path.empty() || !std::filesystem::exists(u8tow(spec.model_path), ec)) {
-    *error = L"找不到模型檔：" + u8tow(spec.model_path);
+  if (spec.model_path.empty() || !std::filesystem::exists(utf8::ToWide(spec.model_path), ec)) {
+    *error = L"找不到模型檔：" + utf8::ToWide(spec.model_path);
     return false;
   }
   impl_ = std::make_unique<Impl>();

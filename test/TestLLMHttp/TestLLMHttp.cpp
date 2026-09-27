@@ -1,14 +1,10 @@
 // LLM 的 HTTP（core/net）測試：搭配 mock_server.py，以 run.bat 編譯執行
-#include "stdafx.h"
-#include "../../WeaselServer/LLMProvider.h"
+#include "../../core/llm/LLMProvider.h"
 #include "../../core/net/http.h"
-#include <WeaselUtility.h>
 
 #include <chrono>
 #include <cstdio>
 #include <string>
-
-CAppModule _Module;
 
 static int failures = 0;
 #define CHECK(cond)                                               \

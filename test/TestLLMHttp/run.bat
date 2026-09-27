@@ -1,21 +1,17 @@
 @echo off
 rem Builds and runs the LLM HTTP tests against mock_server.py (x64, MSVC, Python 3).
+rem The LLM code in core/ builds without ATL or the Weasel utilities.
 setlocal
 cd /d %~dp0
 set "ROOT=%~dp0..\.."
 set "VSDIR=C:\Program Files\Microsoft Visual Studio\18\Community"
 if not defined VCINSTALLDIR call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
-pushd "%ROOT%"
-call .\env.bat
-popd
 set "OUT=%ROOT%\msbuild\TestLLMHttp"
 if not exist "%OUT%" mkdir "%OUT%"
-cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DWIN32 /D_WINDOWS /DSTRICT /DNDEBUG /DUNICODE /D_UNICODE ^
-  /I"%ROOT%\include" /I"%BOOST_ROOT%" /I"%ROOT%\deps\afxres-shim" ^
+cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DNDEBUG /I"%ROOT%\include" ^
   /Fo"%OUT%\\" /Fe"%OUT%\TestLLMHttp.exe" ^
-  TestLLMHttp.cpp "%ROOT%\WeaselServer\LLMProvider.cpp" "%ROOT%\WeaselServer\DevConsole.cpp" ^
-  "%ROOT%\RimeWithWeasel\WeaselUtility.cpp" "%ROOT%\core\net\win\http_win.cpp" ^
-  /link /LIBPATH:"%ROOT%\lib64" /LIBPATH:"%BOOST_ROOT%\stage\lib" rime.lib || exit /b 1
+  TestLLMHttp.cpp "%ROOT%\core\llm\LLMProvider.cpp" "%ROOT%\core\net\win\http_win.cpp" ^
+  /link /LIBPATH:"%ROOT%\lib64" rime.lib || exit /b 1
 copy /y "%ROOT%\output\rime.dll" "%OUT%" >nul
 set PORT=18765
 start "" /b python mock_server.py %PORT%

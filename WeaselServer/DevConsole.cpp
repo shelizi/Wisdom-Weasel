@@ -241,40 +241,6 @@ void DevConsole::Write(const std::string& message) {
   m_queue->cv.notify_one();
 }
 
-void DevConsole::WriteLine(const std::string& message) {
-  Write(message);
-  Write("\r\n");
-}
-
-void DevConsole::Write(const std::wstring& message) {
-  if (!m_enabled || m_hConsoleOutput == INVALID_HANDLE_VALUE) {
-    return;
-  }
-
-  // 将宽字符串转换为UTF-8
-  int size_needed = WideCharToMultiByte(CP_UTF8, 0, message.c_str(),
-                                        -1, NULL, 0, NULL, NULL);
-  if (size_needed <= 0) {
-    return;
-  }
-
-  std::string utf8_message(size_needed, 0);
-  WideCharToMultiByte(CP_UTF8, 0, message.c_str(), -1,
-                      &utf8_message[0], size_needed, NULL, NULL);
-
-  // 移除末尾的null字符
-  if (!utf8_message.empty() && utf8_message.back() == '\0') {
-    utf8_message.pop_back();
-  }
-
-  Write(utf8_message);
-}
-
-void DevConsole::WriteLine(const std::wstring& message) {
-  Write(message);
-  Write("\r\n");
-}
-
 void DevConsole::Close() {
   if (m_enabled) {
     WriteLine("");

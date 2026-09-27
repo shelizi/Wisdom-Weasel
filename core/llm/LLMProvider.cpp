@@ -1,9 +1,8 @@
-#include "stdafx.h"
 #include "LLMProvider.h"
-#include "DevConsole.h"
-#include <WeaselUtility.h>
+#include "../base/devlog.h"
+#include "../base/utf8.h"
 #include <rime_api.h>
-#include "../core/net/http.h"
+#include "../net/http.h"
 #include <chrono>
 #include <sstream>
 #include <algorithm>
@@ -74,7 +73,6 @@ void OpenAICompatibleProvider::ConfigureDirect(const std::string& api_url,
 }
 
 bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
-  extern DevConsole* g_dev_console;
   
   // 硬编码测试配置（用于测试）
   // 注意：如果设置为 true，将不会读取yaml配置文件
@@ -99,8 +97,8 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
     
     if (g_dev_console && g_dev_console->IsEnabled()) {
       g_dev_console->WriteLine(L"[LLM] LoadConfig: llm/enabled = true");
-      g_dev_console->WriteLine(L"[LLM] LoadConfig: api_url = " + u8tow(m_api_url));
-      g_dev_console->WriteLine(L"[LLM] LoadConfig: model = " + u8tow(m_model));
+      g_dev_console->WriteLine(L"[LLM] LoadConfig: api_url = " + utf8::ToWide(m_api_url));
+      g_dev_console->WriteLine(L"[LLM] LoadConfig: model = " + utf8::ToWide(m_model));
       g_dev_console->WriteLine(L"[LLM] LoadConfig: max_tokens = " + std::to_wstring(m_max_tokens));
       g_dev_console->WriteLine(L"[LLM] LoadConfig: temperature = " + std::to_wstring(m_temperature));
       g_dev_console->WriteLine(L"[LLM] LoadConfig: 配置加载成功（硬编码）");
@@ -119,13 +117,13 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
   }
 
   if (g_dev_console && g_dev_console->IsEnabled()) {
-    g_dev_console->WriteLine(L"[LLM] 开始从配置文件加载: " + u8tow(config_name));
+    g_dev_console->WriteLine(L"[LLM] 开始从配置文件加载: " + utf8::ToWide(config_name));
   }
 
   RimeConfig config = {NULL};
   if (!rime_api->config_open(config_name.c_str(), &config)) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      std::wstring config_name_w = u8tow(config_name);
+      std::wstring config_name_w = utf8::ToWide(config_name);
       g_dev_console->WriteLine(L"[LLM] LoadConfig失败: 无法打开配置文件 " + config_name_w);
       g_dev_console->WriteLine(L"[LLM] 可能原因:");
       g_dev_console->WriteLine(L"[LLM]   1. 配置文件不存在: weasel.yaml 或 weasel.custom.yaml");
@@ -186,12 +184,12 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
   if (found_api_url) {
     m_api_url = buffer;
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/openai/api_url = " + u8tow(m_api_url));
+      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/openai/api_url = " + utf8::ToWide(m_api_url));
     }
   } else {
     m_api_url = "https://api.openai.com/v1/chat/completions";
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/openai/api_url，使用默认值 = " + u8tow(m_api_url));
+      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/openai/api_url，使用默认值 = " + utf8::ToWide(m_api_url));
       g_dev_console->WriteLine(L"[LLM] 建议在配置文件中添加: llm/openai/api_url");
     }
   }
@@ -206,8 +204,8 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
       } else {
         // 只显示前8个字符，保护隐私
         std::wstring key_preview = m_api_key.length() > 8 
-          ? (u8tow(m_api_key.substr(0, 8)) + L"...") 
-          : u8tow(m_api_key);
+          ? (utf8::ToWide(m_api_key.substr(0, 8)) + L"...") 
+          : utf8::ToWide(m_api_key);
         g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/openai/api_key = " + key_preview);
       }
     }
@@ -223,12 +221,12 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
   if (found_model) {
     m_model = buffer;
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/openai/model = " + u8tow(m_model));
+      g_dev_console->WriteLine(L"[LLM] 找到配置项 llm/openai/model = " + utf8::ToWide(m_model));
     }
   } else {
     m_model = "gpt-3.5-turbo";
     if (g_dev_console && g_dev_console->IsEnabled()) {
-      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/openai/model，使用默认值 = " + u8tow(m_model));
+      g_dev_console->WriteLine(L"[LLM] 未找到配置项 llm/openai/model，使用默认值 = " + utf8::ToWide(m_model));
     }
   }
 
@@ -323,7 +321,7 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(
         L"[LLM] LoadConfig: extra_body_json = " +
-        std::wstring(m_extra_body_json.empty() ? L"(空)" : u8tow(m_extra_body_json)));
+        std::wstring(m_extra_body_json.empty() ? L"(空)" : utf8::ToWide(m_extra_body_json)));
   }
 
   // 提示词（与 llama.cpp 共用）：llm/prompt；兼容旧的 llm/llamacpp/prompt_prefix
@@ -332,7 +330,7 @@ bool OpenAICompatibleProvider::LoadConfig(const std::string& config_name) {
     if (rime_api->config_get_string(&config, "llm/prompt", prompt_buf, sizeof(prompt_buf) - 1) ||
         rime_api->config_get_string(&config, "llm/llamacpp/prompt_prefix", prompt_buf,
                                     sizeof(prompt_buf) - 1))
-      m_prompt = u8tow(prompt_buf);
+      m_prompt = utf8::ToWide(prompt_buf);
     else
       m_prompt.clear();
   }
@@ -358,7 +356,6 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   }
 
   // 构建 prompt：提示词（与 llama.cpp 共用）+ 任务说明放 system，上下文放 user
-  extern DevConsole* g_dev_console;
   std::string request_body = BuildChatBody(LLMInstructSystem(m_prompt, max_candidates),
                                            LLMInstructUser(context, current_input),
                                            LLMTokenBudget(m_max_tokens, !m_disable_thinking,
@@ -368,8 +365,8 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 发送预测请求");
     g_dev_console->WriteLine(L"  上下文: " + context);
-    g_dev_console->WriteLine(L"  请求URL: " + u8tow(m_api_url));
-    g_dev_console->WriteLine(L"  请求体: " + u8tow(request_body));
+    g_dev_console->WriteLine(L"  请求URL: " + utf8::ToWide(m_api_url));
+    g_dev_console->WriteLine(L"  请求体: " + utf8::ToWide(request_body));
   }
 
   // 执行HTTP请求
@@ -384,7 +381,7 @@ std::vector<std::wstring> OpenAICompatibleProvider::PredictCandidates(
   // 输出响应内容到开发终端
   if (g_dev_console && g_dev_console->IsEnabled()) {
     g_dev_console->WriteLine(L"[LLM] 收到响应");
-    g_dev_console->WriteLine(L"  响应内容: " + u8tow(response_body));
+    g_dev_console->WriteLine(L"  响应内容: " + utf8::ToWide(response_body));
   }
 
   // 解析响应
@@ -408,13 +405,12 @@ std::string OpenAICompatibleProvider::BuildChatBody(const std::wstring& system,
                                                     const std::wstring& user, int max_tokens,
                                                     double temperature) const {
   auto escape_json = LLMJsonEscape;
-  extern DevConsole* g_dev_console;
   std::ostringstream json;
   json << "{"
        << "\"model\":\"" << escape_json(m_model) << "\","
        << "\"messages\":["
-       << "{\"role\":\"system\",\"content\":\"" << escape_json(wtou8(system)) << "\"},"
-       << "{\"role\":\"user\",\"content\":\"" << escape_json(wtou8(user)) << "\"}"
+       << "{\"role\":\"system\",\"content\":\"" << escape_json(utf8::FromWide(system)) << "\"},"
+       << "{\"role\":\"user\",\"content\":\"" << escape_json(utf8::FromWide(user)) << "\"}"
        << "],";
   if (max_tokens >= 0)
     json << "\"max_tokens\":" << max_tokens << ",";
@@ -471,7 +467,6 @@ std::wstring OpenAICompatibleProvider::CorrectSentence(const std::wstring& conte
     return L"";
   bool found = false;
   std::wstring result = LLMExtractChatContent(response_body, &found);
-  extern DevConsole* g_dev_console;
   if (g_dev_console && g_dev_console->IsEnabled())
     g_dev_console->WriteLine(L"[LLM] 整句校正 (OpenAI): " + draft + L" → " + result);
   if (!found)
@@ -629,14 +624,14 @@ std::wstring LLMExtractJsonString(const std::string& json_response, const char* 
           } else {
             w += (wchar_t)cp;
           }
-          raw += wtou8(w);
+          raw += utf8::FromWide(w);
           break;
         }
         default: raw += e;  // \" \\ \/
       }
     }
     if (found)
-      content_w = u8tow(raw);
+      content_w = utf8::ToWide(raw);
   }
   if (found_out)
     *found_out = found;
@@ -746,5 +741,4 @@ bool LLMHttpPostStream(const std::string& url, const std::string& api_key,
 }
 
 // 全局开发终端实例（供LLMProvider使用）
-DevConsole* g_dev_console = nullptr;
 

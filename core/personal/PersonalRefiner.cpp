@@ -1,21 +1,19 @@
-#include "stdafx.h"
 #include "PersonalRefiner.h"
-#include "DevConsole.h"
-#include "LLMProvider.h"
-#include <WeaselUtility.h>
+#include "../base/clock.h"
+#include "../base/devlog.h"
+#include "../llm/LLMProvider.h"
+#include "../base/utf8.h"
 #include <rime_api.h>
 #include <rime_levers_api.h>
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
-#include <shellapi.h>
 #include <unordered_map>
 #include <sstream>
 #include <unordered_set>
 
 namespace fs = std::filesystem;
-extern DevConsole* g_dev_console;
 
 namespace {
 
@@ -116,7 +114,7 @@ PersonalRefiner::PersonalRefiner(PersonalLexicon* lexicon) : lexicon_(lexicon) {
   std::string line;
   while (std::getline(in, line)) {
     if (line.rfind("last_result=", 0) == 0)
-      last_result_ = u8tow(line.substr(12));
+      last_result_ = utf8::ToWide(line.substr(12));
   }
 }
 
@@ -152,11 +150,13 @@ void PersonalRefiner::Start() {
           body = true;
       }
       rime_words_ = words;
-      WIN32_FILE_ATTRIBUTE_DATA attr;
-      if (GetFileAttributesExW(dict.c_str(), GetFileExInfoStandard, &attr)) {
-        const ULONGLONG t = ((ULONGLONG)attr.ftLastWriteTime.dwHighDateTime << 32) |
-                            attr.ftLastWriteTime.dwLowDateTime;
-        rime_updated_ = (int64_t)((t - 116444736000000000ULL) / 10000000ULL);
+      const fs::file_time_type written = fs::last_write_time(dict, ec);
+      if (!ec) {
+        // 檔案時鐘換成 Unix 時間（C++17 沒有 clock_cast）
+        const auto since = written - fs::file_time_type::clock::now();
+        rime_updated_ = std::chrono::duration_cast<std::chrono::seconds>(
+                            (std::chrono::system_clock::now() + since).time_since_epoch())
+                            .count();
       }
     }
   }
@@ -237,7 +237,7 @@ void PersonalRefiner::Run(bool full) {
     std::lock_guard<std::mutex> lock(mutex_);
     config = config_;
   }
-  const ULONGLONG started = GetTickCount64();
+  const uint64_t started = base::MonotonicMs();
   std::wstring result;
   bool ok = true;
   try {
@@ -289,10 +289,10 @@ void PersonalRefiner::Run(bool full) {
       text << records.size() << L" 筆紀錄、" << archived_files << L" 個封存檔，";
     else
       text << L"新紀錄 " << active.size() << L" 筆，";
-    text << (GetTickCount64() - started + 500) / 1000 << L" 秒）：" << detail;
+    text << (base::MonotonicMs() - started + 500) / 1000 << L" 秒）：" << detail;
     result = text.str();
   } catch (const std::exception& e) {
-    result = L"精煉失敗：" + u8tow(e.what());
+    result = L"精煉失敗：" + utf8::ToWide(e.what());
     retry_after_ = Now() + 3600;
   }
   Log(result);
@@ -342,7 +342,7 @@ int PersonalRefiner::ExportRimeDict() {
       const size_t tab = line.find('\t');
       if (tab == std::string::npos)
         continue;
-      const std::wstring w = u8tow(line.substr(0, tab));
+      const std::wstring w = utf8::ToWide(line.substr(0, tab));
       if (wanted.count(w))
         essay[w] = _atoi64(line.c_str() + tab + 1);
     }
@@ -366,7 +366,7 @@ int PersonalRefiner::ExportRimeDict() {
   for (const auto& [w, score] : picked) {
     // 分數取整數再換算，小幅變動不會讓內容改變（避免每天都重新部署）
     const long long bonus = 100000 + (long long)(std::min)(score, 50.0) * 20000;
-    out << wtou8(w) << "\t" << essay[w] + bonus << "\n";
+    out << utf8::FromWide(w) << "\t" << essay[w] + bonus << "\n";
   }
   const std::string content = out.str();
   std::string old;
@@ -388,7 +388,9 @@ int PersonalRefiner::ExportRimeDict() {
       return -1;
     f.write(content.data(), (std::streamsize)content.size());
   }
-  if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+  std::error_code ec;
+  fs::rename(tmp, path, ec);  // 取代舊檔
+  if (ec)
     return -1;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -410,9 +412,9 @@ void PersonalRefiner::ExportRimeDictAndDeploy() {
   }
   WriteStatus();
   // 重新部署讓 Rime 編譯新的詞典（和托盤的「重新部署」相同）
-  if (!config.deployer_path.empty()) {
+  if (config.redeploy) {
     Log(L"個人詞表有變動，重新部署");
-    ShellExecuteW(NULL, NULL, config.deployer_path.c_str(), L"/deploy", NULL, SW_SHOWNORMAL);
+    config.redeploy();
   }
 }
 
@@ -480,7 +482,7 @@ std::wstring PersonalRefiner::RefineWithLLM(
     spec.disable_thinking = config.disable_thinking;
     spec.think_tokens = config.think_tokens;
     std::wstring error;
-    Log(L"載入本機精煉模型：" + u8tow(config.model_path));
+    Log(L"載入本機精煉模型：" + utf8::ToWide(config.model_path));
     if (!session.Open(spec, &error)) {
       *ok = false;
       return error;
@@ -557,8 +559,8 @@ std::wstring PersonalRefiner::RefineWithLLM(
       Log(L"本機精煉 第 " + std::to_wstring(b + 1) + L"／" + std::to_wstring(batches) + L" 批：" +
           std::to_wstring(targets.size()) + L" 個詞、" + std::to_wstring(examples.size()) + L" 句例句");
       std::string output;
-      batch_ok = session.Chat(wtou8(kSystemPrompt), wtou8(user.str()), 1024, &output, &error);
-      content = u8tow(output);
+      batch_ok = session.Chat(utf8::FromWide(kSystemPrompt), utf8::FromWide(user.str()), 1024, &output, &error);
+      content = utf8::ToWide(output);
     } else {
       content = CallRemote(config, user.str(), targets.size(), examples.size(), &batch_ok);
       if (!batch_ok)
@@ -599,7 +601,7 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
   int exported = -1;
   if (!user_dict_access_([&]() {
         exported = levers->export_user_dict(config.rime_user_dict.c_str(),
-                                            wtou8(export_path.wstring()).c_str());
+                                            utf8::FromWide(export_path.wstring()).c_str());
       }) ||
       exported < 0) {
     *ok = false;
@@ -623,7 +625,7 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
       const size_t t2 = t1 == std::string::npos ? t1 : line.find('\t', t1 + 1);
       if (t2 == std::string::npos)
         continue;
-      Entry e{u8tow(line.substr(0, t1)), line.substr(t1 + 1, t2 - t1 - 1)};
+      Entry e{utf8::ToWide(line.substr(0, t1)), line.substr(t1 + 1, t2 - t1 - 1)};
       if (atoi(line.c_str() + t2 + 1) <= 0)
         continue;
       size_t han = 0;
@@ -645,7 +647,7 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
   }
   std::vector<const Entry*> pool;
   for (const auto& e : entries) {
-    if (!reviewed.count(wtou8(e.text) + "\t" + e.code))
+    if (!reviewed.count(utf8::FromWide(e.text) + "\t" + e.code))
       pool.push_back(&e);
   }
   if (pool.empty())
@@ -687,15 +689,15 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
     size_t words = 0;
     for (size_t i = b * batch_size; i < pool.size() && i < (b + 1) * batch_size; ++i) {
       by_text[pool[i]->text].push_back(pool[i]);
-      user << pool[i]->text << L"\t" << u8tow(pool[i]->code) << L"\n";
+      user << pool[i]->text << L"\t" << utf8::ToWide(pool[i]->code) << L"\n";
       ++words;
     }
     std::wstring content, error;
     bool batch_ok = true;
     if (local) {
       std::string output;
-      batch_ok = session.Chat(wtou8(kRimeMemoryPrompt), wtou8(user.str()), 1024, &output, &error);
-      content = u8tow(output);
+      batch_ok = session.Chat(utf8::FromWide(kRimeMemoryPrompt), utf8::FromWide(user.str()), 1024, &output, &error);
+      content = utf8::ToWide(output);
     } else {
       content = CallRemote(config, user.str(), words, 0, &batch_ok, kRimeMemoryPrompt);
       if (!batch_ok)
@@ -728,7 +730,7 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
       to_delete.insert(to_delete.end(), by_text[w].begin(), by_text[w].end());
     for (const auto& kv : by_text)
       for (const Entry* e : kv.second)
-        reviewed_out << wtou8(e->text) << "\t" << e->code << "\n";
+        reviewed_out << utf8::FromWide(e->text) << "\t" << e->code << "\n";
     reviewed_out.flush();
     reviewed_count += words;
   }
@@ -740,12 +742,12 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
     {
       std::ofstream out(import_path, std::ios::binary | std::ios::trunc);
       for (const Entry* e : to_delete)
-        out << wtou8(e->text) << "\t" << e->code << "\t-1\n";
+        out << utf8::FromWide(e->text) << "\t" << e->code << "\t-1\n";
     }
     int imported = -1;
     user_dict_access_([&]() {
       imported = levers->import_user_dict(config.rime_user_dict.c_str(),
-                                          wtou8(import_path.wstring()).c_str());
+                                          utf8::FromWide(import_path.wstring()).c_str());
     });
     fs::remove(import_path, ec);
     if (imported < 0) {
@@ -775,8 +777,8 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
     body << "{\"model\":\"" << LLMJsonEscape(config.model) << "\","
          << "\"messages\":["
          << "{\"role\":\"system\",\"content\":\""
-         << LLMJsonEscape(wtou8(system.empty() ? kSystemPrompt : system)) << "\"},"
-         << "{\"role\":\"user\",\"content\":\"" << LLMJsonEscape(wtou8(user)) << "\"}"
+         << LLMJsonEscape(utf8::FromWide(system.empty() ? kSystemPrompt : system)) << "\"},"
+         << "{\"role\":\"user\",\"content\":\"" << LLMJsonEscape(utf8::FromWide(user)) << "\"}"
          << "],\"temperature\":0.2,\"stream\":true";
     const int max_tokens = LLMTokenBudget(4096, !no_think, config.think_tokens);
     if (max_tokens >= 0)
@@ -807,9 +809,9 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
   for (int attempt = 0;; ++attempt) {
     Log(L"送出精煉請求（串流）：" + std::to_wstring(words) + L" 個詞、" +
         std::to_wstring(examples) + L" 句例句" + (no_think ? L"（關閉思考）" : L"") + L" → " +
-        u8tow(config.api_url));
-    const ULONGLONG started = GetTickCount64();
-    ULONGLONG last_report = 0;
+        utf8::ToWide(config.api_url));
+    const uint64_t started = base::MonotonicMs();
+    uint64_t last_report = 0;
     std::wstring content, reasoning;
     std::string finish, last_events;
     set_progress(L"等待模型回應");
@@ -834,7 +836,7 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
       if (last_events.size() > 16384)
         last_events.erase(0, last_events.size() - 16384);
       // 每秒更新一次進度（狀態檔與除錯主控台）
-      const ULONGLONG now = GetTickCount64();
+      const uint64_t now = base::MonotonicMs();
       if (now - last_report >= 1000) {
         last_report = now;
         const std::wstring secs = std::to_wstring((now - started) / 1000) + L" 秒";
@@ -850,10 +852,10 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
     std::string error_body;
     const bool sent = LLMHttpPostStream(config.api_url, config.api_key, build(no_think), on_event,
                                         kTimeoutMs, &status, &timed_out, &error_body);
-    const std::wstring elapsed = std::to_wstring((GetTickCount64() - started + 500) / 1000);
+    const std::wstring elapsed = std::to_wstring((base::MonotonicMs() - started + 500) / 1000);
     Log(L"精煉回應結束（" + elapsed + L" 秒）：思考 " + std::to_wstring(reasoning.size()) +
         L" 字、回答 " + std::to_wstring(content.size()) + L" 字" +
-        (finish.empty() ? L"" : L"，finish_reason=" + u8tow(finish)));
+        (finish.empty() ? L"" : L"，finish_reason=" + utf8::ToWide(finish)));
     if (stop_) {
       *ok = false;
       return L"已中止";
@@ -862,7 +864,7 @@ std::wstring PersonalRefiner::CallRemote(const Config& config, const std::wstrin
       *ok = false;
       if (status && !(status >= 200 && status < 300))
         return L"API 回應 HTTP " + std::to_wstring(status) + L" " +
-               u8tow(error_body.substr(0, 200));
+               utf8::ToWide(error_body.substr(0, 200));
       return L"無法連線到 API";
     }
     const std::wstring answer = LLMStripThinking(content);
@@ -928,10 +930,10 @@ std::string PersonalRefiner::Method() const {
     return "";
   const std::string name = config_.name.empty() ? std::string() : config_.name + " - ";
   if (config_.type == "llamacpp") {
-    const std::wstring file = fs::path(u8tow(config_.model_path)).filename().wstring();
-    return name + wtou8(L"本機模型 " + file);
+    const std::wstring file = fs::path(utf8::ToWide(config_.model_path)).filename().wstring();
+    return name + utf8::FromWide(L"本機模型 " + file);
   }
-  return name + wtou8(L"OpenAI 相容 API ") + config_.model;
+  return name + utf8::FromWide(L"OpenAI 相容 API ") + config_.model;
 }
 
 void PersonalRefiner::WriteStatusAs(bool running) {
@@ -953,12 +955,12 @@ void PersonalRefiner::WriteStatusAs(bool running) {
         << "last_refine=" << lexicon_->LastRefine() << "\n"
         << "interval_days=" << config_.interval_days << "\n"
         << "method=" << Method() << "\n"
-        << "progress=" << wtou8(progress_) << "\n"
+        << "progress=" << utf8::FromWide(progress_) << "\n"
         << "rime_boost=" << (config_.rime_boost ? 1 : 0) << "\n"
         << "rime_words=" << rime_words_ << "\n"
         << "rime_updated=" << rime_updated_ << "\n"
         << "updated=" << Now() << "\n"
-        << "last_result=" << wtou8(last_result_) << "\n";
+        << "last_result=" << utf8::FromWide(last_result_) << "\n";
   }
   const fs::path path = lexicon_->Dir() / L"status.txt";
   const fs::path tmp = path.wstring() + L".tmp";
@@ -969,5 +971,6 @@ void PersonalRefiner::WriteStatusAs(bool running) {
     const std::string s = out.str();
     f.write(s.data(), (std::streamsize)s.size());
   }
-  MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+  std::error_code ec;
+  fs::rename(tmp, path, ec);
 }

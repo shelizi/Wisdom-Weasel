@@ -1,7 +1,7 @@
-#include "stdafx.h"
 #include "PersonalLexicon.h"
 #include <PersonalCrypto.h>
-#include <WeaselUtility.h>
+#include "../base/clock.h"
+#include "../base/utf8.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -76,7 +76,7 @@ PersonalLexicon::~PersonalLexicon() {
       if (!saving_)
         break;
     }
-    Sleep(10);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   Save();
 }
@@ -255,9 +255,9 @@ bool PersonalLexicon::SaveLocked(std::string* blob) const {
   out << kMagic << "\n";
   out.precision(6);
   for (const auto& [v, word] : words)
-    out << "W\t" << wtou8(*word) << "\t" << v << "\t" << now << "\n";
+    out << "W\t" << utf8::FromWide(*word) << "\t" << v << "\t" << now << "\n";
   for (const auto& p : pairs)
-    out << "N\t" << wtou8(*p.prev) << "\t" << wtou8(*p.next) << "\t" << p.v << "\t" << now << "\n";
+    out << "N\t" << utf8::FromWide(*p.prev) << "\t" << utf8::FromWide(*p.next) << "\t" << p.v << "\t" << now << "\n";
   *blob = out.str();
   return true;
 }
@@ -330,9 +330,9 @@ bool PersonalLexicon::Load() {
     }
     f.push_back(line.substr(start));
     if (f.size() == 4 && f[0] == "W") {
-      words_[u8tow(f[1])] = Score{atof(f[2].c_str()), _atoi64(f[3].c_str())};
+      words_[utf8::ToWide(f[1])] = Score{atof(f[2].c_str()), _atoi64(f[3].c_str())};
     } else if (f.size() == 5 && f[0] == "N") {
-      next_[u8tow(f[1])][u8tow(f[2])] = Score{atof(f[3].c_str()), _atoi64(f[4].c_str())};
+      next_[utf8::ToWide(f[1])][utf8::ToWide(f[2])] = Score{atof(f[3].c_str()), _atoi64(f[4].c_str())};
     }
   }
   last_save_ = Now();
@@ -346,15 +346,15 @@ bool PersonalLexicon::SaveRefinementLocked(std::string* blob) const {
   std::ostringstream out;
   out << "WWPR1\nT\t" << last_refine_ << "\n";
   for (const auto& word : removed_)
-    out << "R\t" << wtou8(word) << "\n";
+    out << "R\t" << utf8::FromWide(word) << "\n";
   for (const auto& [from, to] : merged_)
-    out << "M\t" << wtou8(from) << "\t" << wtou8(to) << "\n";
+    out << "M\t" << utf8::FromWide(from) << "\t" << utf8::FromWide(to) << "\n";
   for (const auto& [word, time] : added_)
-    out << "A\t" << wtou8(word) << "\t" << time << "\n";
+    out << "A\t" << utf8::FromWide(word) << "\t" << time << "\n";
   // 已審查的詞：只存還在詞庫裡的，避免無限增長
   for (const auto& word : reviewed_) {
     if (words_.count(word))
-      out << "V\t" << wtou8(word) << "\n";
+      out << "V\t" << utf8::FromWide(word) << "\n";
   }
   *blob = out.str();
   return true;
@@ -392,17 +392,17 @@ void PersonalLexicon::LoadRefinement() {
     if (kind == "T") {
       last_refine_ = _atoi64(rest.c_str());
     } else if (kind == "R") {
-      removed_.insert(u8tow(rest));
+      removed_.insert(utf8::ToWide(rest));
     } else if (kind == "V") {
-      reviewed_.insert(u8tow(rest));
+      reviewed_.insert(utf8::ToWide(rest));
     } else if (kind == "A") {
       const size_t t2 = rest.find('\t');
-      added_[u8tow(rest.substr(0, t2))] =
+      added_[utf8::ToWide(rest.substr(0, t2))] =
           t2 == std::string::npos ? 0 : _atoi64(rest.substr(t2 + 1).c_str());
     } else if (kind == "M") {
       const size_t t2 = rest.find('\t');
       if (t2 != std::string::npos)
-        merged_[u8tow(rest.substr(0, t2))] = u8tow(rest.substr(t2 + 1));
+        merged_[utf8::ToWide(rest.substr(0, t2))] = utf8::ToWide(rest.substr(t2 + 1));
     }
   }
 }
@@ -560,16 +560,20 @@ bool PersonalLexicon::ArchiveActiveLog(fs::path* archived) {
   if (!fs::exists(active, ec) || fs::file_size(active, ec) == 0)
     return false;
   fs::create_directories(ArchiveDir(), ec);
-  SYSTEMTIME t;
-  GetLocalTime(&t);
+  const std::tm t = base::LocalTime();
   wchar_t name[64];
-  swprintf_s(name, L"input_log-%04d%02d%02d-%02d%02d%02d.dat", t.wYear, t.wMonth, t.wDay,
-             t.wHour, t.wMinute, t.wSecond);
+  std::swprintf(name, 64, L"input_log-%04d%02d%02d-%02d%02d%02d.dat", t.tm_year + 1900, t.tm_mon + 1,
+                t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
   fs::path target = ArchiveDir() / name;
   for (int i = 2; fs::exists(target, ec); ++i)
     target = ArchiveDir() / (std::wstring(name, wcslen(name) - 4) + L"-" + std::to_wstring(i) + L".dat");
-  if (!MoveFileExW(active.c_str(), target.c_str(), MOVEFILE_COPY_ALLOWED))
-    return false;
+  fs::rename(active, target, ec);
+  if (ec) {
+    // 不同磁碟區不能直接改名：複製後刪除
+    ec.clear();
+    if (!fs::copy_file(active, target, ec) || !fs::remove(active, ec))
+      return false;
+  }
   if (archived)
     *archived = target;
   return true;
@@ -606,8 +610,8 @@ std::vector<PersonalLexicon::RawRecord> PersonalLexicon::ReadRawLog(const fs::pa
       continue;
     RawRecord r;
     r.time = _atoi64(plain.substr(0, t1).c_str());
-    r.window = u8tow(plain.substr(t1 + 1, t2 - t1 - 1));
-    r.text = u8tow(plain.substr(t2 + 1));
+    r.window = utf8::ToWide(plain.substr(t1 + 1, t2 - t1 - 1));
+    r.text = utf8::ToWide(plain.substr(t2 + 1));
     records.push_back(std::move(r));
   }
   return records;
@@ -660,7 +664,7 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
 void PersonalLexicon::AppendRawLog(const std::wstring& window, const std::wstring& text,
                                    int64_t now) {
   std::ostringstream record;
-  record << now << "\t" << wtou8(window) << "\t" << wtou8(text);
+  record << now << "\t" << utf8::FromWide(window) << "\t" << utf8::FromWide(text);
   std::string cipher;
   if (!Protect(record.str(), &cipher))
     return;
@@ -777,17 +781,17 @@ bool PersonalLexicon::ExportTo(const fs::path& path, size_t max_words) const {
   out << "WWPX1\n";
   out.precision(4);
   for (const auto& [word, score] : TopWords(max_words))
-    out << "W\t" << wtou8(word) << "\t" << score << "\n";
+    out << "W\t" << utf8::FromWide(word) << "\t" << score << "\n";
   std::vector<std::wstring> removed;
   std::vector<std::pair<std::wstring, std::wstring>> merged;
   std::vector<std::wstring> added;
   Rules(&removed, &merged, &added);
   for (const auto& w : added)
-    out << "A\t" << wtou8(w) << "\n";
+    out << "A\t" << utf8::FromWide(w) << "\n";
   for (const auto& w : removed)
-    out << "R\t" << wtou8(w) << "\n";
+    out << "R\t" << utf8::FromWide(w) << "\n";
   for (const auto& [from, to] : merged)
-    out << "M\t" << wtou8(from) << "\t" << wtou8(to) << "\n";
+    out << "M\t" << utf8::FromWide(from) << "\t" << utf8::FromWide(to) << "\n";
   return personal_crypto::WriteProtected(path, out.str());
 }
 
@@ -809,10 +813,10 @@ int PersonalLexicon::ApplyEdits(const fs::path& path) {
     std::vector<std::wstring> f;
     size_t start = 0, tab;
     while ((tab = line.find('\t', start)) != std::string::npos) {
-      f.push_back(u8tow(line.substr(start, tab - start)));
+      f.push_back(utf8::ToWide(line.substr(start, tab - start)));
       start = tab + 1;
     }
-    f.push_back(u8tow(line.substr(start)));
+    f.push_back(utf8::ToWide(line.substr(start)));
     if (f.size() < 2 || f[1].empty())
       continue;
     ++count;

@@ -2,7 +2,7 @@
 
 // LLMLocalModelSpec 與 IPC 訊息欄位互轉（輸入法與推理行程共用）
 #include "LLMProvider.h"
-#include "../core/llm_ipc/protocol.h"
+#include "../llm_ipc/protocol.h"
 
 inline llm_ipc::ModelSpecFields ToWire(const LLMLocalModelSpec& spec) {
   llm_ipc::ModelSpecFields f;

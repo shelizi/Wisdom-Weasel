@@ -4,7 +4,7 @@
 #include "WeaselDeployer.h"
 #include "SettingsOps.h"
 #include <PersonalCrypto.h>
-#include "../WeaselServer/LLMProvider.h"
+#include "../core/llm/LLMProvider.h"
 #include <WeaselIPC.h>
 #include <WeaselUtility.h>
 #include <algorithm>

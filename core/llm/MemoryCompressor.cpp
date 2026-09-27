@@ -1,9 +1,8 @@
-#include "stdafx.h"
 #include "MemoryCompressor.h"
-#include "DevConsole.h"
-#include <WeaselUtility.h>
+#include "../base/devlog.h"
+#include "../base/utf8.h"
 #include <rime_api.h>
-#include "../core/net/http.h"
+#include "../net/http.h"
 #include <sstream>
 #include <future>
 
@@ -27,7 +26,6 @@ MemoryCompressor::MemoryCompressor()
 MemoryCompressor::~MemoryCompressor() = default;
 
 bool MemoryCompressor::LoadConfig(const std::string& config_name) {
-  extern DevConsole* g_dev_console;
 
   RimeApi* rime_api = rime_get_api();
   if (!rime_api) {
@@ -84,7 +82,7 @@ bool MemoryCompressor::LoadConfig(const std::string& config_name) {
   rime_api->config_close(&config);
 
   if (g_dev_console && g_dev_console->IsEnabled() && IsAvailable()) {
-    g_dev_console->WriteLine(L"[记忆压缩] 已启用，api_url = " + u8tow(m_api_url));
+    g_dev_console->WriteLine(L"[记忆压缩] 已启用，api_url = " + utf8::ToWide(m_api_url));
   }
   return true;
 }
@@ -98,7 +96,7 @@ void MemoryCompressor::CompressAsync(
   }
 
   std::wstring words_str = WordsToSpaceSeparated(words);
-  std::string prompt_utf8 = wtou8(
+  std::string prompt_utf8 = utf8::FromWide(
       L"请将以下用户输入历史的词序列压缩为更短的摘要，保留关键信息。"
       L"只输出压缩后的词，词语间用单个空格分隔，不要任何解释或标点，不超过10个词。\n\n词序列：\"" +
       words_str + L"\"");
@@ -174,7 +172,7 @@ std::vector<std::wstring> MemoryCompressor::ParseResponse(const std::string& jso
   size_t quote_end = json_response.find('"', quote_start + 1);
   if (quote_end == std::string::npos) return words;
   std::string content = json_response.substr(quote_start + 1, quote_end - quote_start - 1);
-  std::wstring content_w = u8tow(content);
+  std::wstring content_w = utf8::ToWide(content);
   std::wstringstream ss(content_w);
   std::wstring word;
   while (ss >> word) {

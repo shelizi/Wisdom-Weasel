@@ -5,6 +5,7 @@
 #include <WeaselConstants.h>
 #include <WeaselUtility.h>
 #include <FixedWMemStreamBuf.h>
+#include <shellapi.h>
 #include "ZhuyinPreview.h"
 #include <PersonalCrypto.h>
 
@@ -51,12 +52,12 @@ static bool CommitHasMeaningfulContent(const std::wstring& text) {
 }
 
 // 包含 ContextHistory 的完整定义（需要调用其方法）
-#include "../WeaselServer/ContextHistory.h"
-#include "../WeaselServer/PersonalLexicon.h"
-#include "../WeaselServer/PersonalRefiner.h"
+#include "../core/llm/ContextHistory.h"
+#include "../core/personal/PersonalLexicon.h"
+#include "../core/personal/PersonalRefiner.h"
 // 包含 LLMProvider 的完整定义
-#include "../WeaselServer/LLMProvider.h"
-#include "../WeaselServer/RemoteLLMProvider.h"
+#include "../core/llm/LLMProvider.h"
+#include "../core/llm/RemoteLLMProvider.h"
 // 包含 DevConsole 的完整定义（需要调用其方法）
 #include "../WeaselServer/DevConsole.h"
 
@@ -322,8 +323,11 @@ void RimeWithWeaselHandler::Initialize() {
         {
           wchar_t exe[MAX_PATH] = {0};
           GetModuleFileNameW(NULL, exe, _countof(exe));
-          refine.deployer_path =
+          const std::wstring deployer =
               (std::filesystem::path(exe).parent_path() / L"WeaselDeployer.exe").wstring();
+          refine.redeploy = [deployer] {
+            ShellExecuteW(NULL, NULL, deployer.c_str(), L"/deploy", NULL, SW_SHOWNORMAL);
+          };
         }
         // 本機精煉沿用預測的 GPU / 執行緒設定
         int llama_int = 0;
@@ -3193,7 +3197,6 @@ void RimeWithWeaselHandler::SetContextHistory(ContextHistory* context_history) {
 void RimeWithWeaselHandler::SetDevConsole(DevConsole* dev_console) {
   m_dev_console = dev_console;
   // 设置全局开发终端实例供LLMProvider使用
-  extern DevConsole* g_dev_console;
   g_dev_console = dev_console;
   
   // 输出LLM提供者状态

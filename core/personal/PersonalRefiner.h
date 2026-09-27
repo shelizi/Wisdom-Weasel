@@ -38,7 +38,7 @@ class PersonalRefiner {
     bool rime_boost = false;
     std::wstring rime_dict_path;   // 使用者資料夾\terra_pinyin.personal.dict.yaml
     std::wstring essay_path;       // 共用資料夾\essay.txt（原本的詞頻）
-    std::wstring deployer_path;    // WeaselDeployer.exe
+    std::function<void()> redeploy;  // 請輸入法重新部署（各平台提供）
     // 順便整理 Rime 的選字記憶（使用者詞典）：請 LLM 挑出學到的錯字錯詞並刪除
     bool clean_rime_memory = true;
     std::string rime_user_dict = "terra_pinyin";

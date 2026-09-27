@@ -1,12 +1,10 @@
-#include "stdafx.h"
 #include "RemoteLLMProvider.h"
-#include "DevConsole.h"
+#include "../base/devlog.h"
 #include "LLMSpecWire.h"
-#include "../core/llm_ipc/client.h"
-#include <WeaselUtility.h>
+#include "../llm_ipc/client.h"
+#include "../base/utf8.h"
 #include <logging.h>
 
-extern DevConsole* g_dev_console;
 
 namespace {
 
@@ -25,7 +23,11 @@ bool Cancelled() {
 
 std::unique_ptr<llm_ipc::Client> CreateLLMHostClient(const std::string& label) {
   llm_ipc::Client::Options options;
+#ifdef _WIN32
   options.exe = platform::ExecutableDir() / L"WisdomLLMHost.exe";
+#else
+  options.exe = platform::ExecutableDir() / "WisdomLLMHost";
+#endif
   if (g_dev_console && g_dev_console->IsEnabled())
     options.args.push_back("--dev");
   options.on_log = [](const std::string& text) {
@@ -35,7 +37,7 @@ std::unique_ptr<llm_ipc::Client> CreateLLMHostClient(const std::string& label) {
   options.on_event = [label](const std::string& text) {
     LOG(WARNING) << "LLM host (" << label << "): " << text;
     if (g_dev_console && g_dev_console->IsEnabled())
-      g_dev_console->WriteLine(u8tow("[LLM] " + label + "：" + text));
+      g_dev_console->WriteLine(utf8::ToWide("[LLM] " + label + "：" + text));
   };
   return std::make_unique<llm_ipc::Client>(std::move(options));
 }
@@ -75,7 +77,7 @@ bool RemoteLLMProvider::LoadModelDirect(const LLMLocalModelSpec& spec, double te
 
 void RemoteLLMProvider::SetPromptPrefix(const std::wstring& prompt) {
   Writer request(Op::kSetPromptPrefix, 0);
-  request.Str(wtou8(prompt));
+  request.Str(utf8::FromWide(prompt));
   client_->Setup(std::move(request));
 }
 
@@ -86,7 +88,7 @@ void RemoteLLMProvider::ConfigureDirect(const std::string& api_url, const std::s
   request.Str(api_url);
   request.Str(api_key);
   request.Str(model);
-  request.Str(wtou8(prompt));
+  request.Str(utf8::FromWide(prompt));
   request.Flag(disable_thinking);
   request.I32(think_tokens);
   client_->Setup(std::move(request));
@@ -100,14 +102,14 @@ std::vector<std::wstring> RemoteLLMProvider::PredictCandidates(const std::wstrin
   if (!IsAvailable())
     return result;
   Writer request(Op::kPredict, 0);
-  request.Str(wtou8(context));
-  request.Str(wtou8(current_input));
+  request.Str(utf8::FromWide(context));
+  request.Str(utf8::FromWide(current_input));
   request.U32((uint32_t)max_candidates);
   auto reply = client_->Call(std::move(request), Cancelled, kInferenceTimeout);
   if (!reply)
     return result;
   for (const auto& c : reply->StrList())
-    result.push_back(u8tow(c));
+    result.push_back(utf8::ToWide(c));
   if (!reply->Ok())
     result.clear();
   return result;
@@ -120,15 +122,15 @@ std::wstring RemoteLLMProvider::CorrectSentence(const std::wstring& context,
   if (!IsAvailable())
     return std::wstring();
   Writer request(Op::kCorrect, 0);
-  request.Str(wtou8(context));
-  request.Str(wtou8(zhuyin));
-  request.Str(wtou8(draft));
-  request.Str(wtou8(instruction));
+  request.Str(utf8::FromWide(context));
+  request.Str(utf8::FromWide(zhuyin));
+  request.Str(utf8::FromWide(draft));
+  request.Str(utf8::FromWide(instruction));
   auto reply = client_->Call(std::move(request), Cancelled, kInferenceTimeout);
   if (!reply)
     return std::wstring();
   const std::string text = reply->Str();
-  return reply->Ok() ? u8tow(text) : std::wstring();
+  return reply->Ok() ? utf8::ToWide(text) : std::wstring();
 }
 
 bool RemoteLLMProvider::ScoreText(const std::wstring& context, const std::wstring& text,
@@ -137,8 +139,8 @@ bool RemoteLLMProvider::ScoreText(const std::wstring& context, const std::wstrin
   if (kind_ != "llamacpp" || !IsAvailable())
     return false;
   Writer request(Op::kScore, 0);
-  request.Str(wtou8(context));
-  request.Str(wtou8(text));
+  request.Str(utf8::FromWide(context));
+  request.Str(utf8::FromWide(text));
   request.Flag(per_char != nullptr);
   auto reply = client_->Call(std::move(request), Cancelled, kInferenceTimeout);
   if (!reply)
@@ -185,7 +187,7 @@ bool LLMLocalChatSession::Open(const LLMLocalModelSpec& spec, std::wstring* erro
   Writer open(Op::kSessionOpen, 0);
   ToWire(spec).Write(open);
   if (!impl_->client->Setup(std::move(create), Cancelled)) {
-    *error = L"無法啟動推理行程（WisdomLLMHost.exe）";
+    *error = L"無法啟動推理行程（WisdomLLMHost）";
     impl_.reset();
     return false;
   }
@@ -198,7 +200,7 @@ bool LLMLocalChatSession::Open(const LLMLocalModelSpec& spec, std::wstring* erro
   const bool ok = reply->Flag();
   const std::string message = reply->Str();
   if (!ok || !reply->Ok()) {
-    *error = u8tow(message);
+    *error = utf8::ToWide(message);
     impl_.reset();
     return false;
   }
@@ -224,7 +226,7 @@ bool LLMLocalChatSession::Chat(const std::string& system_utf8, const std::string
   }
   const bool ok = reply->Flag();
   *output = reply->Str();
-  *error = u8tow(reply->Str());
+  *error = utf8::ToWide(reply->Str());
   if (!reply->Ok()) {
     output->clear();
     *error = L"推理行程的回覆格式不對";
