@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "WebSettings.h"
-#include "SettingsBackend.h"
+#include "WinSettingsPlatform.h"
+#include "../core/settings/backend.h"
+#include "../WeaselServer/LLMProvider.h"
 #include "resource.h"
 #include <WeaselUtility.h>
 #include <WebView2.h>
@@ -21,6 +23,15 @@ using json = nlohmann::json;
 namespace fs = std::filesystem;
 
 namespace {
+
+using settings::Backend;
+
+// 後端與它用的平台功能一起保存：背景工作可能比視窗晚結束，兩者要一起活著
+struct BackendHolder {
+  WinSettingsPlatform platform;
+  std::unique_ptr<Backend> backend;
+  explicit BackendHolder(Configurator* configurator) : platform(configurator) {}
+};
 
 const wchar_t kHost[] = L"settings.wisdom-weasel";
 const wchar_t kClassName[] = L"WisdomWebSettings";
@@ -101,8 +112,11 @@ class WebSettingsWindow {
     try {
       // 背景工作可能比視窗晚結束：事件經由共用的視窗代碼送出，視窗關閉後就不送
       std::shared_ptr<std::atomic<HWND>> target = target_;
-      backend_ = std::make_shared<SettingsBackend>(
-          configurator_, [target](const std::string& event, const json& data) {
+      backend_ = std::make_shared<BackendHolder>(configurator_);
+      Backend::Options backend_options;
+      backend_options.correct_instruction = wtou8(kLLMCorrectInstruction);
+      backend_->backend = std::make_unique<Backend>(
+          backend_->platform, backend_options, [target](const std::string& event, const json& data) {
             PostToPage(target->load(), {{"event", event}, {"data", data}});
           });
     } catch (const std::exception& e) {
@@ -372,24 +386,24 @@ class WebSettingsWindow {
     }
 
     HWND hwnd = hwnd_;
-    std::shared_ptr<SettingsBackend> backend = backend_;
+    std::shared_ptr<BackendHolder> backend = backend_;
     auto run = [hwnd, backend, id, method, params]() {
       json reply = {{"id", id}};
       try {
-        reply["result"] = backend->Call(method, params, hwnd);
+        reply["result"] = backend->backend->Call(method, params, hwnd);
       } catch (const std::exception& e) {
         reply["error"] = e.what();
       }
       PostToPage(hwnd, reply);
     };
-    switch (SettingsBackend::ThreadOf(method)) {
-      case SettingsBackend::Thread::kUi:
+    switch (Backend::ThreadOf(method)) {
+      case Backend::Thread::kUi:
         RunOnUi(run);  // 不在 WebView2 的事件裡開對話框
         break;
-      case SettingsBackend::Thread::kRime:
+      case Backend::Thread::kRime:
         worker_.Post(run);
         break;
-      case SettingsBackend::Thread::kTask:
+      case Backend::Thread::kTask:
         std::thread(run).detach();
         break;
     }
@@ -493,7 +507,7 @@ class WebSettingsWindow {
   int theme_ = 0;
   int result_ = 0;
   bool allow_close_ = false;
-  std::shared_ptr<SettingsBackend> backend_;
+  std::shared_ptr<BackendHolder> backend_;
   RimeWorker worker_;
   ComPtr<ICoreWebView2Environment> env_;
   ComPtr<ICoreWebView2Controller> controller_;

@@ -8,6 +8,8 @@ target("WeaselDeployer")
   add_includedirs("$(projectdir)/deps/webview2/include")
   add_linkdirs("$(projectdir)/deps/webview2/$(arch)")
   add_links("WebView2LoaderStatic", "version")
+  -- 設定後端（各平台共用）與 Windows 的 HTTP
+  add_files("$(projectdir)/core/settings/*.cpp", "$(projectdir)/core/net/win/*.cpp")
   add_files("$(projectdir)/PerMonitorHighDPIAware.manifest")
   add_ldflags("/DEBUG /OPT:ICF /LARGEADDRESSAWARE /ERRORREPORT:QUEUE")
   before_build(function(target)

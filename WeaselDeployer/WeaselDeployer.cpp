@@ -65,6 +65,14 @@ static int Run(LPTSTR lpCmdLine) {
   Configurator configurator;
   configurator.Initialize();
 
+  // 去掉命令列頭尾的空白（有些啟動方式會在參數後面多加空白，例如 Windows PowerShell 5.1）
+  std::wstring command_line = lpCmdLine ? lpCmdLine : L"";
+  const size_t first = command_line.find_first_not_of(L" \t");
+  command_line = first == std::wstring::npos
+                     ? std::wstring()
+                     : command_line.substr(first, command_line.find_last_not_of(L" \t") - first + 1);
+  lpCmdLine = &command_line[0];
+
   if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
     WCHAR msg[1024] = {0};
     if (LoadString(GetModuleHandle(NULL), IDS_STR_HELP, msg,

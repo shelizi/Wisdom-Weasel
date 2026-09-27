@@ -216,7 +216,16 @@
     <ClCompile Include="FontSettingDialog.cpp" />
     <ClCompile Include="SettingsDialog.cpp" />
     <ClCompile Include="SettingsOps.cpp" />
-    <ClCompile Include="SettingsBackend.cpp" />
+    <ClCompile Include="WinSettingsPlatform.cpp" />
+    <ClCompile Include="..\core\settings\ops.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\settings\backend.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\net\win\http_win.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="WebSettings.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
