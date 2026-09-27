@@ -9,6 +9,7 @@
 #include "../core/ime/ZhuyinPreview.h"
 #include "../core/ime/choice_log.h"
 #include "../core/ime/choice_stats.h"
+#include "../core/ime/prediction_engine.h"
 #include "../core/ime/rescore.h"
 #include "../core/ime/rime_helpers.h"
 #include "../core/ime/text_rules.h"
@@ -81,6 +82,22 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
   assert(rime_api);
   m_homophones = std::make_unique<ime::HomophoneFinder>(rime_api);
   m_choice_store = std::make_unique<ime::ChoiceStatsStore>(WeaselUserDataPath());
+  ime::PredictionEngine::Hooks hooks;
+  hooks.models = [this] {
+    ime::PredictionModels models;
+    models.predict = m_llm_provider && m_llm_provider->IsAvailable() ? m_llm_provider.get() : nullptr;
+    models.typo = m_typo_llm;
+    models.rescore = _RescoreProvider();
+    return models;
+  };
+  hooks.rescore_input = [this](uint64_t tag, uint64_t seq, std::vector<std::wstring>* units,
+                               std::vector<std::vector<std::wstring>>* homophones) {
+    return _RescoreInput((WeaselSessionId)tag, seq, units, homophones);
+  };
+  hooks.on_update = [this](uint64_t tag, uint64_t seq, const ime::PredictionSet& set) {
+    _OnPredictionUpdate((WeaselSessionId)tag, seq, set);
+  };
+  m_prediction = std::make_unique<ime::PredictionEngine>(std::move(hooks));
   m_pid = GetCurrentProcessId();
   uint16_t msbit = 0;
   for (auto i = 31; i >= 0; i--) {
@@ -189,8 +206,8 @@ void RimeWithWeaselHandler::Initialize() {
     // 初始化LLM Provider (注意：此时m_dev_console可能还未初始化)
     // 先释放旧 provider（重新部署时），避免新旧模型同时占用内存，或关闭 LLM 后旧模型仍驻留。
     // 作废排队中的预测，并等进行中的推理结束，避免后台线程用到已释放的模型
-    ++m_llm_request_seq;
-    std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
+    m_prediction->Cancel();
+    std::lock_guard<std::mutex> infer_lock(m_prediction->InferMutex());
     m_typo_llm = nullptr;  // 可能指向 m_llm_provider，先放掉
     m_typo_owned.reset();
     m_llm_provider.reset();
@@ -976,9 +993,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
     } else if (composing && m_llm_prediction_mode) {
       // 未开启输入中补全：开始打字后，提交后留下的下一词预测已不适用，直接清掉
       m_llm_prediction_mode = false;
-      std::lock_guard<std::mutex> lock(m_llm_mutex);
-      ++m_llm_request_seq;
-      m_current_llm_candidates.clear();
+      m_prediction->Cancel();
     } else if (!composing) {
       _CancelLLMCompletion();
     }
@@ -1111,7 +1126,7 @@ bool RimeWithWeaselHandler::_HandleMixedInput(const weasel::KeyEvent& keyEvent,
         key == ibus::Keycode::Down || key == ibus::Keycode::Home || key == ibus::Keycode::End ||
         key == ibus::Keycode::Page_Up || key == ibus::Keycode::Page_Down ||
         key == ibus::Keycode::Delete ||
-        (key == ibus::Keycode::Tab && m_current_llm_candidates.empty());
+        (key == ibus::Keycode::Tab && !m_prediction->HasCandidates());
     if (leaving_key || (other_mods && key < 0xff00)) {
       commit_all();  // 由之後一般流程的 _Respond 送出
       return false;
@@ -1300,7 +1315,7 @@ void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
   _UpdateContextKey(ipc_id);
 
   // 如果处于LLM预测模式，检查是否选择的是LLM候选词
-  if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
+  if (m_llm_prediction_mode && m_prediction->HasCandidates()) {
     RIME_STRUCT(RimeContext, ctx);
     size_t rime_candidate_count = 0;
     
@@ -1310,7 +1325,7 @@ void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
     }
     
     LOG(INFO) << "[DEBUG] In LLM mode: rime_count=" << rime_candidate_count 
-              << ", llm_count=" << m_current_llm_candidates.size();
+              << ", llm_count=" << m_prediction->Snapshot().candidates.size();
     
     // 如果索引超出或等于Rime候选词范围，说明选择的是LLM候选词
     if (index >= rime_candidate_count) {
@@ -1470,15 +1485,10 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
                                               RimeContext& ctx) {
   // 先保存LLM预测模式状态，因为后面可能会被修改
   bool llm_mode = m_llm_prediction_mode;
-  // 后台预测线程会替换 m_current_llm_candidates，这里在锁内取快照再使用
-  std::vector<std::wstring> llm_candidates;
-  size_t correction_count = 0, recommend_count = 0;
-  {
-    std::lock_guard<std::mutex> lock(m_llm_mutex);
-    llm_candidates = m_current_llm_candidates;
-    correction_count = m_llm_correction_count;
-    recommend_count = m_llm_recommend_count;
-  }
+  // 後台預測執行緒會替換候選，這裡取快照再使用
+  const ime::PredictionSet llm_set = m_prediction->Snapshot();
+  const std::vector<std::wstring>& llm_candidates = llm_set.candidates;
+  const size_t correction_count = llm_set.corrections, recommend_count = llm_set.recommends;
   size_t llm_candidate_count = llm_candidates.size();
 
   // 先清空候选词信息，避免重复添加
@@ -1630,10 +1640,7 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   bool has_llm_candidates = false;
 
 
-  {
-    std::lock_guard<std::mutex> lock(m_llm_mutex);
-    has_llm_candidates = m_llm_prediction_mode && !m_current_llm_candidates.empty();
-  }
+  has_llm_candidates = m_llm_prediction_mode && m_prediction->HasCandidates();
 
   bool need_context = !is_tsf || has_llm_candidates;
   
@@ -2060,7 +2067,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
       const int base_hl = session_status.focus >= 0 ? session_status.focus_hl : 0;
       if (ctx.menu.num_candidates > 0 && ctx.menu.highlighted_candidate_index != base_hl)
         session_status.choice_changed = true;
-      if (m_llm_prediction_mode && !m_current_llm_candidates.empty())
+      if (m_llm_prediction_mode && m_prediction->HasCandidates())
         session_status.llm_offered = true;
       // 選字紀錄：還沒換字、游標在最後時，記下 Rime 的預設轉換與注音
       if (m_choice_log && !session_status.choice_changed && ctx.commit_text_preview) {
@@ -2176,7 +2183,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     }
     // 如果有Rime候选词，或者处于LLM预测模式且有LLM候选词，序列化候选词信息
     if (ctx.menu.num_candidates || 
-        (m_llm_prediction_mode && !m_current_llm_candidates.empty())) {
+        (m_llm_prediction_mode && m_prediction->HasCandidates())) {
       CandidateInfo cinfo;
       std::wstringstream ss;
       boost::archive::text_woarchive oa(ss);
@@ -2187,7 +2194,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
       messages.push_back(std::string("ctx.cand=") + wtou8(ss.str()) + '\n');
     }
     rime_api->free_context(&ctx);
-  } else if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
+  } else if (m_llm_prediction_mode && m_prediction->HasCandidates()) {
     // 如果没有Rime上下文但处于LLM预测模式，也需要序列化LLM候选词
     CandidateInfo cinfo;
     std::wstringstream ss;
@@ -2746,7 +2753,7 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
     stat.composing = !!status.is_composing || session_status.mixed_active();
     
     // 如果处于LLM预测模式，强制设置composing为true以显示候选栏
-    if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
+    if (m_llm_prediction_mode && m_prediction->HasCandidates()) {
       stat.composing = true;
       if (m_dev_console && m_dev_console->IsEnabled()) {
         m_dev_console->WriteLine(L"[_GetStatus] LLM预测模式激活，强制设置 composing=true");
@@ -2809,7 +2816,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
            << L"个)，添加后总候选词数=" << cinfo.candies.size();
         m_dev_console->WriteLine(ss.str());
       }
-    } else if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
+    } else if (m_llm_prediction_mode && m_prediction->HasCandidates()) {
       // 如果处于LLM预测模式但没有Rime候选词，只显示LLM候选词
       cinfo.clear();
       _GetCandidateInfo(cinfo, ctx);  // 这会添加LLM候选词
@@ -2825,7 +2832,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
     }
     
     rime_api->free_context(&ctx);
-  } else if (m_llm_prediction_mode && !m_current_llm_candidates.empty()) {
+  } else if (m_llm_prediction_mode && m_prediction->HasCandidates()) {
     // 如果没有Rime上下文但处于LLM预测模式，创建空的候选词信息并添加LLM候选词
     CandidateInfo& cinfo(weasel_context.cinfo);
     cinfo.clear();
@@ -2957,7 +2964,7 @@ void RimeWithWeaselHandler::LLMTestRequest() {
     std::ostringstream out;
     out << "id=" << id << "\n";
     {
-      std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
+      std::lock_guard<std::mutex> infer_lock(m_prediction->InferMutex());
       out << "model=" << wtou8(m_llm_loaded_model) << "\n";
       if (!m_llm_provider || !m_llm_provider->IsAvailable()) {
         out << "status=disabled\n";
@@ -2998,213 +3005,94 @@ void RimeWithWeaselHandler::_TriggerLLMPrediction(WeaselSessionId ipc_id,
     return;
   }
 
-  // 个人词库（查内存，不到 1ms）：输入中补全 → 以 Rime 转换结果开头的常用词；
-  // 提交后 → 当前窗口最后一个词之后最常接的词
-  std::vector<std::wstring> personal;
+  ime::PredictionRequest request;
+  request.tag = ipc_id;
+  // 個人詞庫（查記憶體，不到 1ms）：打字中補全 → 以 Rime 轉換結果開頭的常用詞；
+  // 送出後 → 目前視窗最後一個詞之後最常接的詞
   if (m_personal && complete) {
-    personal = completion_prefix.empty()
-                   ? m_personal->NextAfter(m_context_history ? m_context_history->GetActiveKey()
-                                                             : std::wstring(),
-                                           m_personal_max)
-                   : m_personal->CompleteFrom(completion_prefix, m_personal_max);
-    // 补全候选若和目前的字完全相同，没有意义
-    personal.erase(std::remove(personal.begin(), personal.end(), completion_prefix),
-                   personal.end());
+    request.personal =
+        completion_prefix.empty()
+            ? m_personal->NextAfter(
+                  m_context_history ? m_context_history->GetActiveKey() : std::wstring(),
+                  m_personal_max)
+            : m_personal->CompleteFrom(completion_prefix, m_personal_max);
+    // 補全候選若和目前的字完全相同，沒有意義
+    request.personal.erase(
+        std::remove(request.personal.begin(), request.personal.end(), completion_prefix),
+        request.personal.end());
   }
-  if (!llm_available && personal.empty() && !correct && !rescore)
+  if (!llm_available && request.personal.empty() && !correct && !rescore)
     return;
 
-  // LLM 上下文：当前窗口最近的前文 + 输入中补全时 Rime 当前的转换结果
-  std::wstring history;
+  // 前文：目前視窗最近的前文；中英混打中尚未送出的部分也是前文
   if (m_context_history)
-    history = m_context_history->GetRecentContext(m_llm_context_max_chars);
-  history += get_session_status(ipc_id).mixed_text;  // 中英混打中尚未送出的部分也是前文
-  const std::wstring context = history + completion_prefix;
-
-  if (m_dev_console && m_dev_console->IsEnabled()) {
-    m_dev_console->WriteLine(L"[LLM] ========== 开始预测 ==========");
-    m_dev_console->WriteLine(L"[LLM] 上下文: " + context);
-    std::wstring joined;
-    for (const auto& p : personal)
-      joined += (joined.empty() ? L"" : L" / ") + p;
-    m_dev_console->WriteLine(L"[LLM] 个人词库候选: " + (joined.empty() ? L"(无)" : joined));
-  }
-
-  // 生成新的请求序号，用于标记“最新一次”预测请求
-  const uint64_t request_seq = ++m_llm_request_seq;
-
-  std::wstring context_copy = context;
-  std::wstring current_input_copy = current_input;
-  std::wstring prefix_copy = completion_prefix;
-  std::wstring typo_prompt;
+    request.history = m_context_history->GetRecentContext(m_llm_context_max_chars);
+  request.history += get_session_status(ipc_id).mixed_text;
+  request.prefix = completion_prefix;
+  request.current_input = current_input;
+  request.predict = llm_available && complete;
+  request.correct = correct;
+  request.rescore = rescore;
+  request.zhuyin = zhuyin;
+  // 校正只看組字區的內容：組字區裡已確定的部分（混打、標點）當前文，不帶之前送出的文字
+  request.typo_context = get_session_status(ipc_id).mixed_text;
   {
     std::lock_guard<std::mutex> lock(m_llm_mutex);
-    typo_prompt = m_typo_prompt;
+    request.typo_prompt = m_typo_prompt;
   }
-  // 校正只看组字区的内容：组字区里已确定的部分（混打、标点）当前文，不带之前送出的文字
-  const std::wstring typo_context = get_session_status(ipc_id).mixed_text;
+  request.delay_ms = delay_ms;
+  m_prediction->Request(std::move(request));
+}
 
-  std::thread([this, ipc_id, request_seq, context_copy, current_input_copy, delay_ms,
-               prefix_copy, personal, llm_available, history, zhuyin, correct, complete,
-               typo_prompt, typo_context, rescore]() {
-    // 生成途中又有新请求（继续打字）：本机模型立即停止，让新的请求接着开始
-    LLMCancelScope cancel_scope(
-        [this, request_seq] { return request_seq != m_llm_request_seq.load(); });
-    // 防抖：等待期间若又有新请求（例如继续打字），直接放弃，不占用 GPU
-    if (delay_ms > 0) {
-      Sleep(delay_ms);
-      if (request_seq != m_llm_request_seq.load())
-        return;
-    }
+bool RimeWithWeaselHandler::_RescoreInput(WeaselSessionId ipc_id,
+                                          uint64_t seq,
+                                          std::vector<std::wstring>* units,
+                                          std::vector<std::vector<std::wstring>>* homophones) {
+  // 同音字要用 Rime：在服務端的鎖下查（引擎這時還沒拿推理鎖，不會和等推理的請求互相卡住）
+  std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
+  if (!m_prediction->IsCurrent(seq))
+    return false;
+  auto it = m_session_status_map.find(ipc_id);
+  if (it == m_session_status_map.end())
+    return false;
+  const SessionStatus& ss = it->second;
+  const char* raw = rime_api->get_input(ss.session_id);
+  const std::string input = raw ? raw : "";
+  char schema_id[256] = {0};
+  rime_api->get_current_schema(ss.session_id, schema_id, sizeof(schema_id));
+  if (input.empty() || ss.preview_input != input || ss.focus >= 0 ||
+      ss.preview_lens.size() != ss.preview_units.size() || strncmp(schema_id, "bopomofo", 8) != 0)
+    return false;
+  *units = ss.preview_units;
+  size_t offset = 0;
+  for (size_t len : ss.preview_lens) {
+    homophones->push_back(_Homophones(schema_id, input.substr(offset, len)));
+    offset += len;
+  }
+  return true;
+}
 
-    // 写入候选并刷新候选窗。在锁内检查是否已有更新的请求（或已被取消），是则丢弃。
-    // 刷新 UI 必须在服务端的 IPC 锁下进行：按键处理线程同时在用 librime 与候选窗（Direct2D）。
-    // recommends、corrections：开头几个候选是推荐、整句校正（候选窗标示「推薦」「校正」）
-    auto publish = [&](std::vector<std::wstring> candidates, size_t recommends,
-                       size_t corrections) {
-      {
-        std::lock_guard<std::mutex> lock(m_llm_mutex);
-        if (request_seq != m_llm_request_seq.load())
-          return false;
-        m_current_llm_candidates = std::move(candidates);
-        m_llm_recommend_count = recommends;
-        m_llm_correction_count = corrections;
-      }
-      std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
-      if (request_seq == m_llm_request_seq.load()) {
-        // 選字統計：這次組字第一次出現推薦（統計只在服務端的鎖下讀寫）
-        auto it = m_session_status_map.find(ipc_id);
-        if (recommends > 0 && it != m_session_status_map.end() && !it->second.recommend_offered) {
-          it->second.recommend_offered = true;
-          ++_Stats(it->second.session_id).recommend_offered;
-          _SaveChoiceStats();
-        }
-        _UpdateUI(ipc_id);
-      }
-      return true;
-    };
-    // 依序合并、去重，最多 5 个（对应 Tab、Shift+2~5）
-    const auto merge = [](std::vector<std::wstring> merged, const std::vector<std::wstring>& more) {
-      return ime::MergeCandidates(std::move(merged), more);
-    };
-
-    // 1) 先显示个人词库的候选（几乎零延迟）
-    if (!personal.empty() && !publish(personal, 0, 0))
-      return;
-    if (!llm_available && !correct && !rescore)
-      return;
-    std::wstring context = context_copy;
-    std::wstring prefix = prefix_copy;
-
-    // 2) 推荐：本机模型在同音字里挑更通顺的整句。同音字要用 Rime（在服务端的锁下查，
-    //    这时还没拿推理锁，避免与持服务端锁等推理的请求互相卡住）
-    std::vector<std::wstring> recommends;
-    if (rescore) {
-      std::vector<std::wstring> units;
-      std::vector<std::vector<std::wstring>> homophones;
-      {
-        std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
-        if (request_seq != m_llm_request_seq.load())
-          return;
-        auto it = m_session_status_map.find(ipc_id);
-        if (it != m_session_status_map.end()) {
-          const SessionStatus& ss = it->second;
-          const char* raw = rime_api->get_input(ss.session_id);
-          const std::string input = raw ? raw : "";
-          char schema_id[256] = {0};
-          rime_api->get_current_schema(ss.session_id, schema_id, sizeof(schema_id));
-          if (!input.empty() && ss.preview_input == input && ss.focus < 0 &&
-              ss.preview_lens.size() == ss.preview_units.size() &&
-              strncmp(schema_id, "bopomofo", 8) == 0) {
-            units = ss.preview_units;
-            size_t offset = 0;
-            for (size_t len : ss.preview_lens) {
-              homophones.push_back(_Homophones(schema_id, input.substr(offset, len)));
-              offset += len;
-            }
-          }
-        }
-      }
-      if (!units.empty()) {
-        std::wstring recommended;
-        {
-          std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
-          if (request_seq != m_llm_request_seq.load())
-            return;
-          if (LLMProvider* scorer = _RescoreProvider()) {
-            const std::wstring tail =
-                history.size() > 30 ? history.substr(history.size() - 30) : history;
-            recommended = ime::RescoreSentence(scorer, tail, units, homophones);
-          }
-        }
-        if (!recommended.empty() && recommended != zhuyin_preview::Join(units)) {
-          recommends.push_back(recommended);
-          if (!publish(merge(recommends, personal), recommends.size(), 0))
-            return;
-          context = history + recommended;
-          prefix = recommended;
-        }
-      }
-    }
-    if (!llm_available && !correct)
-      return;
-
-    // 3) 注音整句校正：LLM 依前文与注音推测真正要打的句子；之后的续写接在校正结果后面
-    std::vector<std::wstring> corrections;
-    if (correct) {
-      std::wstring corrected;
-      {
-        std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
-        if (request_seq != m_llm_request_seq.load() || !m_typo_llm)
-          return;
-        corrected = ime::CleanCorrection(
-            m_typo_llm->CorrectSentence(typo_context, zhuyin, prefix_copy, typo_prompt),
-            prefix_copy);
-      }
-      if (m_dev_console && m_dev_console->IsEnabled())
-        m_dev_console->WriteLine(L"[LLM] 整句校正: " + prefix_copy + L" → " +
-                                 (corrected.empty() ? L"(不需校正)" : corrected));
-      if (!corrected.empty()) {
-        corrections.push_back(corrected);
-        const std::vector<std::wstring> head = merge(recommends, corrections);
-        if (!publish(merge(head, personal), recommends.size(), head.size() - recommends.size()))
-          return;
-        context = history + corrected;
-        prefix = corrected;
-      }
-    }
-    if (!complete || !llm_available)
-      return;
-
-    // 4) 再用 LLM 补足：同一时间只能有一个推理（llama.cpp context 非线程安全），
-    //    排到时若已有更新的请求就放弃
-    std::vector<std::wstring> candidates;
-    {
-      std::lock_guard<std::mutex> infer_lock(m_llm_infer_mutex);
-      if (request_seq != m_llm_request_seq.load() || !m_llm_provider)
-        return;
-      candidates = m_llm_provider->PredictCandidates(context, current_input_copy, 5);
-    }
-    candidates = ime::CleanCandidates(candidates, prefix);
-
-    // 推荐、校正排最前，接着个人词库，LLM 续写接在后面
-    const std::vector<std::wstring> head = merge(recommends, corrections);
-    std::vector<std::wstring> merged = merge(merge(head, personal), candidates);
-    if (m_dev_console && m_dev_console->IsEnabled())
-      m_dev_console->WriteLine(L"[LLM] 预测完成，共 " + std::to_wstring(merged.size()) +
-                               L" 个候选（个人词库 " + std::to_wstring(personal.size()) + L"）");
-    publish(std::move(merged), recommends.size(), head.size() - recommends.size());
-  }).detach();
+void RimeWithWeaselHandler::_OnPredictionUpdate(WeaselSessionId ipc_id,
+                                                uint64_t seq,
+                                                const ime::PredictionSet& set) {
+  // 刷新 UI 必須在服務端的 IPC 鎖下進行：按鍵處理執行緒同時在用 librime 與候選窗（Direct2D）
+  std::lock_guard<std::mutex> api_lock(weasel::ServerApiMutex());
+  if (!m_prediction->IsCurrent(seq))
+    return;
+  // 選字統計：這次組字第一次出現推薦（統計只在服務端的鎖下讀寫）
+  auto it = m_session_status_map.find(ipc_id);
+  if (set.recommends > 0 && it != m_session_status_map.end() && !it->second.recommend_offered) {
+    it->second.recommend_offered = true;
+    ++_Stats(it->second.session_id).recommend_offered;
+    _SaveChoiceStats();
+  }
+  _UpdateUI(ipc_id);
 }
 
 void RimeWithWeaselHandler::_ExitLLMPredictionMode(WeaselSessionId ipc_id) {
   m_llm_prediction_mode = false;
   m_llm_completion_active = false;
-  {
-    std::lock_guard<std::mutex> lock(m_llm_mutex);
-    ++m_llm_request_seq;  // 丢弃仍在进行中的预测
-    m_current_llm_candidates.clear();
-  }
+  m_prediction->Cancel();  // 丟棄仍在進行中的預測
   
   // 强制隐藏候选栏
   if (m_ui) {
@@ -3388,11 +3276,8 @@ void RimeWithWeaselHandler::_ScheduleLLMCompletion(WeaselSessionId ipc_id, DWORD
     return;
   }
 
-  // 旧候选（上一个键的补全或提交后的下一词预测）已不适用，先清掉
-  {
-    std::lock_guard<std::mutex> lock(m_llm_mutex);
-    m_current_llm_candidates.clear();
-  }
+  // 舊候選（上一個鍵的補全或送出後的下一詞預測）已不適用，先清掉
+  m_prediction->Cancel();
   m_llm_prediction_mode = true;
   m_llm_completion_active = true;
   if (m_dev_console && m_dev_console->IsEnabled()) {
@@ -3448,9 +3333,7 @@ void RimeWithWeaselHandler::_CancelLLMCompletion() {
     return;
   m_llm_completion_active = false;
   m_llm_prediction_mode = false;
-  std::lock_guard<std::mutex> lock(m_llm_mutex);
-  ++m_llm_request_seq;  // 让尚未完成的补全请求作废
-  m_current_llm_candidates.clear();
+  m_prediction->Cancel();  // 讓尚未完成的補全請求作廢
 }
 
 bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
@@ -3458,15 +3341,8 @@ bool RimeWithWeaselHandler::_CommitLLMCandidate(WeaselSessionId ipc_id,
                                                 EatLine eat) {
   std::wstring selected;
   bool correction = false, recommend = false;
-  {
-    std::lock_guard<std::mutex> lock(m_llm_mutex);
-    if (llm_index >= m_current_llm_candidates.size())
-      return false;
-    selected = m_current_llm_candidates[llm_index];
-    recommend = llm_index < m_llm_recommend_count;
-    correction = !recommend && llm_index < m_llm_recommend_count + m_llm_correction_count;
-    m_current_llm_candidates.clear();
-  }
+  if (!m_prediction->Take(llm_index, &selected, &recommend, &correction))
+    return false;
   // 推薦：用 Rime 逐段選字把整句改成推薦的樣子，留在組字區（送出時 Rime 照常學習）
   if (recommend && _ConfirmText(ipc_id, selected)) {
     ++_Stats(to_session_id(ipc_id)).recommend_used;

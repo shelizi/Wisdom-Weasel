@@ -284,6 +284,9 @@
     <ClCompile Include="..\core\ime\choice_stats.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\ime\prediction_engine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\ime\rescore.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -304,6 +307,7 @@
     <ClInclude Include="..\core\ime\ZhuyinPreview.h" />
     <ClInclude Include="..\core\ime\choice_log.h" />
     <ClInclude Include="..\core\ime\choice_stats.h" />
+    <ClInclude Include="..\core\ime\prediction_engine.h" />
     <ClInclude Include="..\core\ime\rescore.h" />
     <ClInclude Include="..\core\ime\rime_helpers.h" />
     <ClInclude Include="..\core\ime\text_rules.h" />

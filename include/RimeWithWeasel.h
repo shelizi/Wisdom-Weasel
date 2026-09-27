@@ -20,6 +20,8 @@ namespace ime {
 struct ChoiceStats;
 class ChoiceStatsStore;
 class HomophoneFinder;
+class PredictionEngine;
+struct PredictionSet;
 }  // namespace ime
 
 class ScopedThread {
@@ -202,7 +204,6 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   // LLM相关（上下文统一从 m_context_history 获取，不再单独维护 buffer）
   std::unique_ptr<LLMProvider> m_llm_provider;
   bool m_llm_prediction_mode;
-  std::vector<std::wstring> m_current_llm_candidates;
   std::wstring m_pending_llm_commit;  // 待提交的LLM候选词
   bool m_mixed_shift_tap = false;     // Shift 按下後還沒按其他鍵（放開時算一次切換）
   bool m_llm_completion_active = false;  // 当前 LLM 候选是输入中补全（Rime 首选 + 续写）
@@ -210,7 +211,6 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_llm_after_commit = true;   // llm/predict_after_commit：送出後預測下一個詞
   bool m_llm_while_typing = true;   // llm/predict_while_typing：打字停頓時自動補完
   bool m_typo_llm_on = false;       // llm/typo/llm：LLM 整句校正（Rime 容錯由注音方案處理）
-  size_t m_llm_correction_count = 0;  // m_current_llm_candidates 開頭幾個是整句校正（m_llm_mutex 保護）
   // 注音整句校正用的模型（llm/typo/*），與智慧預測分開；同一個模型時直接共用 m_llm_provider
   std::unique_ptr<LLMProvider> m_typo_owned;
   std::wstring m_typo_prompt;        // llm/typo/prompt：自訂校正指令（m_llm_mutex 保護）
@@ -220,15 +220,17 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   size_t m_llm_context_max_chars = 100;       // llm/context/max_chars：给模型的前文最多几个字
   unsigned m_llm_context_idle_minutes = 10;   // llm/context/idle_minutes：窗口闲置多久后旧前文失效
   void _UpdateContextKey(WeaselSessionId ipc_id);  // 依前景窗口切换上下文
-  std::atomic<uint64_t> m_llm_request_seq{0};  // LLM异步预测请求序号（用于丢弃旧结果）
-  std::mutex m_llm_mutex;                      // 保护 m_current_llm_candidates
-  std::mutex m_llm_infer_mutex;  // 串行化 LLM 推理：llama.cpp 的 context 不能被多个线程同时使用
-  std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在 m_llm_infer_mutex 下读写）
+  // 預測引擎（core/ime/prediction_engine.h）：候選、請求序號與推理鎖
+  std::unique_ptr<ime::PredictionEngine> m_prediction;
+  bool _RescoreInput(WeaselSessionId ipc_id, uint64_t seq, std::vector<std::wstring>* units,
+                     std::vector<std::vector<std::wstring>>* homophones);
+  void _OnPredictionUpdate(WeaselSessionId ipc_id, uint64_t seq, const ime::PredictionSet& set);
+  std::mutex m_llm_mutex;                      // 保護 m_typo_prompt
+  std::wstring m_llm_loaded_model;  // 目前载入的模型（设定画面显示用；在推理鎖 m_prediction->InferMutex() 下读写）
   std::unique_ptr<PersonalLexicon> m_personal;  // 個人詞庫（llm/personal/enabled）
   std::unique_ptr<PersonalRefiner> m_refiner;
   // 推薦（llm/choice/rescore）：用本機模型比較同音字的整句通順度，推薦更好的一句（按 Tab 套用）
   bool m_rescore_on = false;
-  size_t m_llm_recommend_count = 0;  // m_current_llm_candidates 開頭幾個是推薦（m_llm_mutex 保護）
   std::unique_ptr<ime::HomophoneFinder> m_homophones;  // 查同音字（背景 session，不送出、不學習）
   LLMProvider* _RescoreProvider() const;  // 已載入的本機模型（預測優先，其次校正）
   std::vector<std::wstring> _Homophones(const std::string& schema, const std::string& keys);

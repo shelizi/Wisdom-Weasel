@@ -2,11 +2,16 @@
 #include "../../core/ime/ZhuyinPreview.h"
 #include "../../core/ime/choice_log.h"
 #include "../../core/ime/choice_stats.h"
+#include "../../core/ime/prediction_engine.h"
 #include "../../core/ime/rescore.h"
 #include "../../core/ime/text_rules.h"
 #include "../../core/llm/LLMProvider.h"
 
 #include <PersonalCrypto.h>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include <cstdio>
 #include <cstring>
@@ -35,9 +40,30 @@ class FakeScorer : public LLMProvider {
  public:
   std::map<wchar_t, double> score;
   int calls = 0;
+  // 預測與校正
+  std::vector<std::wstring> predictions;
+  std::wstring correction;
+  std::atomic<int> predict_calls{0};
+  std::atomic<int> sleep_ms{0};    // 模擬推理時間（期間會檢查取消）
+  std::atomic<bool> cancelled_seen{false};
+  std::wstring last_context;
   bool LoadConfig(const std::string&) override { return true; }
-  std::vector<std::wstring> PredictCandidates(const std::wstring&, const std::wstring&, size_t) override {
-    return {};
+  std::vector<std::wstring> PredictCandidates(const std::wstring& context, const std::wstring&,
+                                              size_t) override {
+    ++predict_calls;
+    last_context = context;
+    for (int i = 0; i < sleep_ms / 10; ++i) {
+      if (LLMCancelled()) {
+        cancelled_seen = true;
+        return {};
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return predictions;
+  }
+  std::wstring CorrectSentence(const std::wstring&, const std::wstring&, const std::wstring&,
+                               const std::wstring&) override {
+    return correction;
   }
   bool ScoreText(const std::wstring&, const std::wstring& text, double* total,
                  std::vector<double>* per_char) override {
@@ -198,6 +224,148 @@ static void TestChoiceLog(const fs::path& dir) {
   CHECK(count == 2 && pos == data.size());
 }
 
+// 等到條件成立（最多 3 秒）
+template <typename F>
+static bool WaitFor(F cond) {
+  for (int i = 0; i < 300; ++i) {
+    if (cond())
+      return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return cond();
+}
+
+static void TestPredictionEngine() {
+  FakeScorer model;
+  model.predictions = {L"「天氣很好」", L"很好", L"天氣很好"};
+  model.correction = L"今天天氣";
+  model.score = {{L'今', -1}, {L'天', -1}, {L'汽', -8}, {L'氣', -2}};
+  std::mutex updates_mutex;
+  std::vector<std::pair<uint64_t, ime::PredictionSet>> updates;
+  bool offer_rescore = true;
+  ime::PredictionEngine::Hooks hooks;
+  hooks.models = [&] {
+    ime::PredictionModels m;
+    m.predict = m.typo = m.rescore = &model;
+    return m;
+  };
+  hooks.rescore_input = [&](uint64_t, uint64_t, std::vector<std::wstring>* units,
+                            std::vector<std::vector<std::wstring>>* homophones) {
+    if (!offer_rescore)
+      return false;
+    *units = {L"今", L"天", L"汽"};
+    *homophones = {{L"今"}, {L"天"}, {L"汽", L"氣"}};
+    return true;
+  };
+  hooks.on_update = [&](uint64_t tag, uint64_t, const ime::PredictionSet& set) {
+    std::lock_guard<std::mutex> lock(updates_mutex);
+    updates.emplace_back(tag, set);
+  };
+  ime::PredictionEngine engine(hooks);
+  const auto clear_updates = [&] {
+    std::lock_guard<std::mutex> lock(updates_mutex);
+    updates.clear();
+  };
+  const auto update_count = [&] {
+    std::lock_guard<std::mutex> lock(updates_mutex);
+    return updates.size();
+  };
+
+  // 送出後預測下一個詞：個人詞庫先出現，LLM 續寫接在後面
+  ime::PredictionRequest next;
+  next.tag = 7;
+  next.history = L"前文";
+  next.personal = {L"很好", L"不錯"};
+  next.predict = true;
+  engine.Request(next);
+  CHECK(WaitFor([&] { return update_count() == 2; }));
+  {
+    std::lock_guard<std::mutex> lock(updates_mutex);
+    CHECK(updates[0].first == 7);
+    CHECK(updates[0].second.candidates == (Strings{L"很好", L"不錯"}));
+    CHECK(updates[1].second.candidates == (Strings{L"很好", L"不錯", L"天氣很好"}));
+    CHECK(updates[1].second.recommends == 0 && updates[1].second.corrections == 0);
+  }
+  CHECK(model.last_context == L"前文");
+
+  // 打字中：推薦（天汽 → 天氣）、整句校正排最前，續寫接在校正結果後面
+  clear_updates();
+  ime::PredictionRequest typing;
+  typing.history = L"前文";
+  typing.prefix = L"今天汽";
+  typing.personal = {L"今天汽車"};
+  typing.predict = typing.correct = typing.rescore = true;
+  typing.zhuyin = L"ㄐㄧㄣ ㄊㄧㄢ ㄑㄧˋ";
+  engine.Request(typing);
+  CHECK(WaitFor([&] { return update_count() == 4; }));
+  const ime::PredictionSet final_set = engine.Snapshot();
+  CHECK(final_set.candidates ==
+        (Strings{L"今天氣", L"今天天氣", L"今天汽車", L"今天天氣天氣很好", L"今天天氣很好"}));
+  CHECK(final_set.recommends == 1 && final_set.corrections == 1);
+  CHECK(final_set.IsRecommend(0) && final_set.IsCorrection(1) && !final_set.IsCorrection(2));
+  CHECK(model.last_context == L"前文今天天氣");  // 續寫接在校正結果後面
+
+  // 取出候選：知道是推薦還是校正，取出後候選清空
+  std::wstring text;
+  bool recommend = false, correction = false;
+  CHECK(engine.Take(1, &text, &recommend, &correction));
+  CHECK(text == L"今天天氣" && !recommend && correction);
+  CHECK(!engine.HasCandidates());
+  CHECK(!engine.Take(0, &text, &recommend, &correction));
+
+  // 只校正、不續寫、不推薦
+  clear_updates();
+  offer_rescore = false;
+  model.predict_calls = 0;
+  ime::PredictionRequest correct_only = typing;
+  correct_only.personal.clear();
+  correct_only.predict = false;
+  engine.Request(correct_only);
+  CHECK(WaitFor([&] { return update_count() == 1; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(engine.Snapshot().candidates == Strings{L"今天天氣"});
+  CHECK(model.predict_calls == 0);
+
+  // 新請求取代舊的：舊的在防抖期間就放棄；推理中的舊請求被取消，結果不會出現
+  clear_updates();
+  model.predict_calls = 0;
+  ime::PredictionRequest slow = next;
+  slow.personal.clear();
+  slow.delay_ms = 200;
+  engine.Request(slow);
+  ime::PredictionRequest newer = next;
+  newer.personal = {L"新的"};
+  engine.Request(newer);
+  CHECK(WaitFor([&] { return update_count() == 2; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  CHECK(update_count() == 2);
+  CHECK(model.predict_calls == 1);  // 防抖中的舊請求沒有推理
+  CHECK(engine.Snapshot().candidates == (Strings{L"新的", L"天氣很好", L"很好"}));
+
+  clear_updates();
+  model.sleep_ms = 1000;
+  model.cancelled_seen = false;
+  ime::PredictionRequest long_one = next;
+  long_one.personal.clear();
+  engine.Request(long_one);
+  CHECK(WaitFor([&] { return model.predict_calls >= 2; }));
+  engine.Cancel();
+  CHECK(WaitFor([&] { return model.cancelled_seen.load(); }));  // 本機模型立即停止
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(update_count() == 0 && !engine.HasCandidates());
+  model.sleep_ms = 0;
+
+  // 推理鎖：持鎖時背景推理會等（例如重新部署換模型）
+  clear_updates();
+  {
+    std::lock_guard<std::mutex> lock(engine.InferMutex());
+    engine.Request(long_one);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(update_count() == 0);
+  }
+  CHECK(WaitFor([&] { return update_count() == 1; }));
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / L"TestIme-注音";
   std::error_code ec;
@@ -205,6 +373,7 @@ int main() {
   TestTextRules();
   TestZhuyin();
   TestRescore();
+  TestPredictionEngine();
   TestChoiceStats(dir / "stats");
   TestChoiceLog(dir / "log");
   fs::remove_all(dir, ec);
