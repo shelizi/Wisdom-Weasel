@@ -76,6 +76,7 @@
   <ItemGroup>
     <ClCompile Include="WisdomLLMHost.cpp" />
     <ClCompile Include="..\core\llm\LLMProvider.cpp" />
+    <ClCompile Include="..\core\llm\host_service.cpp" />
     <ClCompile Include="..\core\llm\LlamaCppProvider.cpp" />
     <ClCompile Include="..\core\llm\HFConstraintProvider.cpp" />
     <ClCompile Include="..\RimeWithWeasel\WeaselUtility.cpp" />
