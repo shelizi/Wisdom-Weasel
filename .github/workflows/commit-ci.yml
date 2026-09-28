@@ -125,6 +125,21 @@ jobs:
           $env:SDKVER="10.0.19041.0"
           .\build.bat arm64 installer
 
+      # 單元測試（x64）：用剛建好的 output\ 與 output\llama（CPU 版）；注音方案資料來自 Build data
+      - name: Unit tests
+        shell: pwsh
+        env:
+          RIME_SHARED: ${{ github.workspace }}\output\data
+          WEASEL_INSTALL: ${{ github.workspace }}\output\llama
+        run: |
+          $failed = @()
+          foreach ($t in 'TestCoreBase', 'TestIme', 'TestPersonalCrypto', 'TestLLMHost', 'TestLLMHttp', 'TestController') {
+            Write-Host "==== $t"
+            cmd /c "test\$t\run.bat"
+            if ($LASTEXITCODE -ne 0) { $failed += $t }
+          }
+          if ($failed) { throw "Unit tests failed: $($failed -join ', ')" }
+
       # 第二個安裝程式：llama.cpp 換成 CUDA 版（NVIDIA GPU 加速），版本號沿用第一個安裝程式的檔名
       - name: Build CUDA installer
         shell: pwsh
