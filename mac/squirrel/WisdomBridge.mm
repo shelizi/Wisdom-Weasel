@@ -1,4 +1,3 @@
-// 注意：尚未在 macOS 上編譯驗證。
 #import "WisdomBridge.h"
 
 #import <AppKit/AppKit.h>

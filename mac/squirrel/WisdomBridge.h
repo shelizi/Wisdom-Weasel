@@ -4,7 +4,6 @@
 // 純 Objective-C 介面：Swift 版的鼠鬚管以 bridging header 匯入即可使用。
 // 所有方法都在主執行緒呼叫；背景預測完成時，以 addSession 時給的 refresh 在主執行緒通知。
 // 接到鼠鬚管的方式見 mac/README.md。
-// 注意：尚未在 macOS 上編譯驗證。
 #import <Foundation/Foundation.h>
 
 #include <rime_api.h>

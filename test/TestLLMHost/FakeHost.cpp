@@ -9,15 +9,19 @@
 //   exit    回覆後不久自行結束（模擬兩次請求之間當掉）
 #include "../../core/llm_ipc/host.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <chrono>
 #include <cstdlib>
 #include <thread>
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
   auto pipe = platform::OpenParentPipe(argc, argv);
   if (!pipe)
     return 2;

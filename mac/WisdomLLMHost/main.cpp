@@ -1,6 +1,5 @@
 // macOS 的 LLM 推理行程：鼠鬚管（輸入法）為每個模型啟動一個，透過管道收發請求。
 // 放在 Squirrel.app/Contents/MacOS/WisdomLLMHost；服務本身在 core/llm/host_service。
-// 注意：尚未在 macOS 上編譯驗證。
 #include "../../core/llm/host_service.h"
 
 #include <signal.h>

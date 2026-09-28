@@ -1,7 +1,6 @@
 // macOS／Linux：libcurl（macOS 內建）。錯誤訊息與 Windows 版相同。
 // 代理伺服器依 libcurl 的慣例讀環境變數（http_proxy 等），不讀 macOS 系統偏好設定的代理；
 // 連到 localhost 時一律不經代理。
-// 注意：尚未在 macOS 上編譯驗證。
 #include "../http.h"
 
 #include <curl/curl.h>

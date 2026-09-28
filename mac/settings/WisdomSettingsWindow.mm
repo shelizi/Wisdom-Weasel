@@ -1,4 +1,3 @@
-// 注意：尚未在 macOS 上編譯驗證。
 //
 // 網頁從自訂網址 wisdom-settings://app/ 載入（WKURLSchemeHandler 讀 web/settings 的檔案），
 // 對應 Windows 的 WebView2 虛擬主機；用 file:// 載入時 WebKit 不允許 ES module。

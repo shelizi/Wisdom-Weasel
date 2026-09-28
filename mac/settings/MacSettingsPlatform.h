@@ -2,7 +2,6 @@
 
 // 設定後端的 macOS 平台功能。設定頁和鼠鬚管在同一個行程裡執行：
 // 部署、個人詞庫指令、模型測試直接交給鼠鬚管（Hooks），不需要程式間通訊。
-// 注意：尚未在 macOS 上編譯驗證。
 #include <functional>
 
 #include "../../core/settings/platform.h"

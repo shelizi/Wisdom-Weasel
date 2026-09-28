@@ -1,5 +1,4 @@
 # macOS 建置：共用核心（core/）、鼠鬚管的橋接層、LLM 推理程式與測試。
-# 注意：尚未在 macOS 上實際建置過。
 #
 #   cmake -S mac -B build -DRIME_ROOT=<librime 的安裝前綴> [-DLLAMA_ROOT=<llama.cpp 的安裝前綴>]
 #   cmake --build build && ctest --test-dir build --output-on-failure
@@ -117,6 +116,16 @@ target_include_directories(TestIme PRIVATE ${COMMON_INCLUDES})
 target_compile_definitions(TestIme PRIVATE PERSONAL_CRYPTO_TEST_KEY_FILE="${TEST_KEY}")
 target_link_libraries(TestIme PRIVATE ${SECURITY} ${COREFOUNDATION})
 add_test(NAME TestIme COMMAND TestIme)
+
+# 推理行程的管道與子行程（posix_spawn）：對測試用的 FakeHost
+add_executable(FakeHost ${ROOT}/test/TestLLMHost/FakeHost.cpp ${CORE}/llm_ipc/host.cpp
+                        ${CORE}/platform/posix/process_posix.cpp)
+target_include_directories(FakeHost PRIVATE ${COMMON_INCLUDES})
+add_executable(TestLLMHost ${ROOT}/test/TestLLMHost/TestLLMHost.cpp ${CORE}/llm_ipc/client.cpp
+                           ${CORE}/platform/posix/process_posix.cpp)
+target_include_directories(TestLLMHost PRIVATE ${COMMON_INCLUDES})
+add_dependencies(TestLLMHost FakeHost)
+add_test(NAME TestLLMHost COMMAND TestLLMHost)
 
 if(RIME_LIB)
   # LLM 的 HTTP（libcurl）對 mock_server.py

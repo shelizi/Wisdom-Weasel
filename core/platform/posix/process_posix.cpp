@@ -1,6 +1,5 @@
 // macOS／Linux：子行程以 --ipc 3 4 取得管道（posix_spawn 把兩端接到 fd 3、4）。
 // 父行程結束（包括當掉）時管道關閉，子行程讀到結尾就自行結束。
-// 注意：尚未在 macOS 上編譯驗證。
 #include "../process.h"
 
 #include <errno.h>

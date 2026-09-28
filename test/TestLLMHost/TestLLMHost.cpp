@@ -1,6 +1,6 @@
 // 輸入法端 llm_ipc::Client 的測試：推理行程正常回覆、取消、當掉後重新啟動、
-// 連續當掉後停用、取消後不回應時強制結束、逾時、請求進行中解構。以 run.bat
-// 編譯執行。
+// 連續當掉後停用、取消後不回應時強制結束、逾時、請求進行中解構。Windows 以 run.bat
+// 編譯執行，macOS 由 mac/CMakeLists.txt 建置。
 #include "../../core/llm_ipc/client.h"
 
 #include <atomic>
@@ -62,7 +62,11 @@ static std::string First(Client& client,
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
   g_host = std::filesystem::path(argv[0]).parent_path() / "FakeHost.exe";
+#else
+  g_host = std::filesystem::path(argv[0]).parent_path() / "FakeHost";
+#endif
 
   // 正常回覆，含 UTF-8 與較大的內容
   {

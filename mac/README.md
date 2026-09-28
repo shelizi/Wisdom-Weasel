@@ -3,8 +3,8 @@
 小狼毫之外的輸入法功能（LLM 預測、整句校正、推薦、中英混打、注音逐字選字、個人詞庫、選字統計、
 網頁版設定）都在 `core/`，Windows 與 macOS 共用。這個資料夾是 macOS 專用的部分，要接到鼠鬚管（Squirrel）使用。
 
-> **狀態：程式碼已寫好，但還沒在 macOS 上編譯或執行過**（開發時沒有 Mac）。
-> 第一次建置多半會有小錯要修；`.github/workflows/macos-core.yml` 會在 macOS 上編譯並跑測試。
+> **狀態：核心、橋接層、設定視窗與推理程式都已在 macOS 上編譯，測試通過；還沒接進鼠鬚管實際使用。**
+> `.github/workflows/macos-core.yml` 會在 macOS 上編譯並跑測試。
 
 ## 內容
 
@@ -21,14 +21,15 @@
 ## 建置
 
 ```sh
-brew install librime            # 或自己建的 librime：-DRIME_ROOT=<前綴>
+brew install cmake librime llama.cpp   # 或自己建的 librime：-DRIME_ROOT=<前綴>
 cmake -S mac -B build -DCMAKE_BUILD_TYPE=Release \
-      -DLLAMA_ROOT=<llama.cpp 安裝前綴>        # 可省略：省略時不建推理程式
+      -DLLAMA_ROOT=$(brew --prefix llama.cpp)   # 可省略：省略時不建推理程式
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-測試：`TestIme`（規則、預測引擎、推薦、統計、加密紀錄）、`TestLLMHttp`（libcurl 對 `mock_server.py`）。
+測試：`TestIme`（規則、預測引擎、推薦、統計、加密紀錄）、`TestLLMHost`（推理行程的管道與重新啟動，對 `FakeHost`）、
+`TestLLMHttp`（libcurl 對 `mock_server.py`）。
 `TestController` 需要注音方案資料：加上 `-DRIME_SHARED=<含 bopomofo.schema.yaml、terra_pinyin.dict.yaml 的資料夾>`。
 
 ## 接到鼠鬚管
