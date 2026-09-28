@@ -64,3 +64,4 @@ bench/results/
 bench/__pycache__/
 /include/WeaselBuildInfo.h
 /output/web/
+/output/llama/

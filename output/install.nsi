@@ -25,7 +25,13 @@ Unicode true
 Name "小狼毫 ${WEASEL_VERSION}"
 
 ; The file to write
+; LLAMA_FLAVOR：output\llama 裡放的 llama.cpp 版本（get-llama-runtime.ps1）；預設是 CPU 版，
+; 其他版本（例如 cuda）在檔名加上版本名稱
+!ifdef LLAMA_FLAVOR
+OutFile "archives\weasel-${PRODUCT_VERSION}-${LLAMA_FLAVOR}-installer.exe"
+!else
 OutFile "archives\weasel-${PRODUCT_VERSION}-installer.exe"
+!endif
 
 VIProductVersion "${WEASEL_VERSION}.${WEASEL_BUILD}"
 VIAddVersionKey /LANG=2052 "ProductName" "小狼毫"
@@ -260,12 +266,14 @@ program_files:
       File "WeaselDeployer.exe"
       File "WeaselServer.exe"
       File "WisdomLLMHost.exe"
+      File "llama\*.dll"
       File "rime.dll"
       File "WinSparkle.dll"
     ${ElseIf} ${IsNativeAMD64}
       File "WeaselDeployer.exe"
       File "WeaselServer.exe"
       File "WisdomLLMHost.exe"
+      File "llama\*.dll"
       File "rime.dll"
       File "WinSparkle.dll"
     ${Else}
@@ -280,6 +288,7 @@ program_files:
       File "WeaselDeployer.exe"
       File "WeaselServer.exe"
       File "WisdomLLMHost.exe"
+      File "llama\*.dll"
       File "rime.dll"
       File "WinSparkle.dll"
     ${Else}
