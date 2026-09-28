@@ -96,10 +96,20 @@ static NSString* MimeType(NSString* ext) {
 
 static WisdomSettingsWindowController* g_current = nil;
 
+// 鼠鬚管是背景 app（沒有 Dock 圖示），自己不在前景：showWindow 不會把視窗放到畫面上，
+// macOS 14 起 activateIgnoringOtherApps 也不再搶前景。orderFrontRegardless 一定會顯示
+static void BringToFront(NSWindow* window) {
+  [window makeKeyAndOrderFront:nil];
+  [window orderFrontRegardless];
+  if (@available(macOS 14.0, *))
+    [NSApp activate];
+  else
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
 + (void)showWithWebDirectory:(NSString*)webDir hooks:(MacSettingsPlatform::Hooks)hooks {
   if (g_current) {
-    [g_current.window makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
+    BringToFront(g_current.window);
     return;
   }
   WisdomSettingsWindowController* controller = [[WisdomSettingsWindowController alloc] initWithWebDirectory:webDir
@@ -108,7 +118,7 @@ static WisdomSettingsWindowController* g_current = nil;
     return;
   g_current = controller;
   [controller showWindow:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+  BringToFront(controller.window);
 }
 
 - (instancetype)initWithWebDirectory:(NSString*)webDir hooks:(MacSettingsPlatform::Hooks)hooks {
