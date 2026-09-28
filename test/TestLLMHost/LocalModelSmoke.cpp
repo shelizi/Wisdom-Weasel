@@ -2,19 +2,22 @@
 // 在推理行程裡用 llama.cpp 載入 GGUF 模型，預測下一個詞並比較句子的分數。
 // 預測的原始輸出經過與預測引擎相同的整理（ime::CleanCandidates），才是使用者看到的候選。
 // 需要模型檔，不在 ctest 裡自動執行：
-//   LocalModelSmoke <model.gguf> [n_gpu_layers]
+//   LocalModelSmoke <model.gguf> [n_gpu_layers] [repeats] [prompt]
+// repeats > 1 時用不同的前文再預測幾次，印出之後（快取已建立）的延遲中位數與最大值
 #include "../../core/base/utf8.h"
 #include "../../core/ime/text_rules.h"
 #include "../../core/llm/RemoteLLMProvider.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::printf("usage: %s <model.gguf> [n_gpu_layers]\n", argv[0]);
+    std::printf("usage: %s <model.gguf> [n_gpu_layers] [repeats] [prompt]\n", argv[0]);
     return 2;
   }
   int failures = 0;
@@ -35,6 +38,10 @@ int main(int argc, char** argv) {
     std::printf("FAIL model not loaded: %s\n", spec.model_path.c_str());
     return 1;
   }
+  const int repeats = argc > 3 ? std::max(1, std::atoi(argv[3])) : 1;
+  // 提示詞（設定的 llm/prompt）：接在任務說明前面
+  if (argc > 4)
+    provider.SetPromptPrefix(utf8::ToWide(argv[4]));
   std::printf("loaded %s (n_gpu_layers=%d) in %lld ms\n", provider.GetProviderName().c_str(),
               spec.n_gpu_layers, ms(start));
 
@@ -49,6 +56,23 @@ int main(int argc, char** argv) {
   if (candidates.empty()) {
     std::printf("FAIL no candidates\n");
     ++failures;
+  }
+
+  if (repeats > 1) {
+    static const wchar_t* kContexts[] = {L"我明天早上要去", L"這個問題我們可以", L"謝謝你的", L"請問你現在有空",
+                                         L"我覺得這部電影很"};
+    std::vector<long long> times;
+    for (int i = 0; i < repeats; ++i) {
+      start = clock::now();
+      const auto more = ime::CleanCandidates(provider.PredictCandidates(kContexts[i % 5], L"", 5), L"");
+      times.push_back(ms(start));
+      std::printf("  predict %d: %lld ms", i + 1, times.back());
+      for (const auto& c : more)
+        std::printf(" [%s]", utf8::FromWide(c).c_str());
+      std::printf("\n");
+    }
+    std::sort(times.begin(), times.end());
+    std::printf("predict x%d: median %lld ms, max %lld ms\n", repeats, times[times.size() / 2], times.back());
   }
 
   // 自然的句子分數（log 機率總和）要比同樣的字打亂後高
