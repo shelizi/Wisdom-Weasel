@@ -184,7 +184,8 @@ int main(int argc, char** argv) {
   // 標點測試用的鍵：各版注音方案的標點設定不同（3.1 版起 Shift+數字是選字鍵），
   // 固定讓 ~ 直接送出「～」
   {
-    std::ofstream out(fs::path(user) / "bopomofo.custom.yaml", std::ios::binary);
+    std::ofstream out(fs::path(user) / "bopomofo.custom.yaml",
+                      std::ios::binary);
     out << "patch:\n"
            "  \"punctuator/full_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n"
            "  \"punctuator/half_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n";
