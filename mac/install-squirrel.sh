@@ -91,8 +91,11 @@ fi
 
 # ---- 3. 安裝
 step "安裝到 ${install_dir}（需要管理者密碼）"
-install_cmd="$(printf 'rm -rf %q && cp -R %q %q && DSTROOT=%q /bin/bash %q' \
-  "$install_dir/Squirrel.app" "$app" "$install_dir/" "$install_dir" "$squirrel/scripts/postinstall")"
+# postinstall 會把預先部署的方案寫進 app 的 SharedSupport，本機建置的 ad-hoc 簽章因此失效，
+# 系統（imklaunchagent）就啟動不了輸入法：部署完重新簽一次
+install_cmd="$(printf 'rm -rf %q && cp -R %q %q && DSTROOT=%q /bin/bash %q && /usr/bin/codesign --force --deep --sign - %q' \
+  "$install_dir/Squirrel.app" "$app" "$install_dir/" "$install_dir" "$squirrel/scripts/postinstall" \
+  "$install_dir/Squirrel.app")"
 if [ -t 0 ] || sudo -n true 2> /dev/null; then
   sudo /bin/bash -c "$install_cmd"
 else
@@ -102,6 +105,14 @@ else
   applescript="${applescript//\"/\\\"}"
   osascript -e "do shell script \"$applescript\" with administrator privileges" > /dev/null
 fi
+codesign --verify --deep --strict "$install_dir/Squirrel.app" ||
+  { echo "安裝後的簽章無效，系統會啟動不了輸入法" >&2; exit 1; }
+# 建置資料夾裡的 Squirrel.app 也登記了同一個 bundle id：拿掉，系統才會啟動安裝的這一份。
+# imklaunchagent 會記住上次啟動失敗的結果，重新啟動它（launchd 會自動再開）
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$lsregister" -u "$app" 2> /dev/null || true
+"$lsregister" -f -R "$install_dir/Squirrel.app" 2> /dev/null || true
+killall imklaunchagent 2> /dev/null || true
 
 # ---- 4. 設定
 if [ "$with_model" = 1 ]; then
