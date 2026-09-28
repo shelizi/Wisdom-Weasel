@@ -3,7 +3,7 @@ name: Release CI
 on:
   push:
     branches:
-      - master
+      - main
     tags:
       - '[0-9]+.*'
   workflow_dispatch:
@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch all tags
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/main'
         run: git fetch --tags
 
       - name: Configure build environment
@@ -101,7 +101,7 @@ jobs:
       # 手動執行（workflow_dispatch）也建出安裝程式並上傳成 Artifacts，不打標籤就能試跑
       - name: Build Weasel Nightly
         id: build_weasel_nightly
-        if: github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/'))
+        if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/'))
         shell: cmd
         run: |
           set SDKVER=10.0.19041.0
@@ -144,7 +144,7 @@ jobs:
 
       # create nightly release
       - name: Create Nightly release
-        if: ${{ github.repository == 'rime/weasel' && github.ref == 'refs/heads/master' }}
+        if: ${{ github.repository == 'rime/weasel' && github.ref == 'refs/heads/main' }}
         uses: 'marvinpinto/action-automatic-releases@latest'
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
