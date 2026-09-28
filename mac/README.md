@@ -33,6 +33,9 @@ ctest --test-dir build --output-on-failure
 `TestLLMHttp`（libcurl 對 `mock_server.py`）。
 `TestController` 需要注音方案資料：加上 `-DRIME_SHARED=<含 bopomofo.schema.yaml、terra_pinyin.dict.yaml 的資料夾>`。
 
+本機模型的端到端測試（需要 `LLAMA_ROOT`；啟動真的推理程式載入 GGUF 模型、預測並比較句子分數）：
+`build/LocalModelSmoke <model.gguf> [n_gpu_layers]`。放進 `Squirrel.app/Contents/MacOS` 執行，就是測打包後的推理程式。
+
 `LLAMA_ROOT` 也可以用 Homebrew 的 llama.cpp（`$(brew --prefix llama.cpp)`），但它只能在本機執行，不能打包。
 
 ## 建置鼠鬚管（含以上功能）

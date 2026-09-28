@@ -98,6 +98,12 @@ if(LLAMA_ROOT AND RIME_LIB)
   # 建置資料夾裡的仍指向 LLAMA_ROOT；cmake --install 換成這個，鼠鬚管打包的是安裝後的版本
   set_target_properties(WisdomLLMHost PROPERTIES INSTALL_RPATH "@executable_path/../Frameworks")
   install(TARGETS WisdomLLMHost RUNTIME DESTINATION .)
+
+  # 本機模型的端到端測試（啟動同一資料夾的 WisdomLLMHost）：需要模型檔，不加進 ctest
+  #   build/LocalModelSmoke <model.gguf> [n_gpu_layers]
+  add_executable(LocalModelSmoke ${ROOT}/test/TestLLMHost/LocalModelSmoke.cpp)
+  target_link_libraries(LocalModelSmoke PRIVATE wisdom_core)
+  add_dependencies(LocalModelSmoke WisdomLLMHost)
 endif()
 
 # ---- 測試
