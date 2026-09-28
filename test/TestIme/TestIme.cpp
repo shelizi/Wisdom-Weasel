@@ -478,6 +478,50 @@ static void TestLearnFilter(const fs::path& dir) {
   CHECK(lexicon.NextAfter(L"b", 3).empty());
 }
 
+static void TestSplits(const fs::path& dir) {
+  {
+    PersonalLexicon lexicon(dir);
+    lexicon.Record(L"w", L"好啊，我明天下午要去台北開會，再說");
+    lexicon.Record(L"w", L"我明天下午要去台北開會");
+    CHECK(lexicon.WordScore(L"我明天下午要去台北開會") > 1.5);
+    // 接不回原片段（改了字）、只有一段：不收
+    lexicon.ApplySplits({{L"好啊", {L"好", L"阿"}}, {L"再說", {L"再說"}},
+                         {L"我明天下午要去台北開會", {L"我", L"明天下午", L"要去", L"台北", L"開會"}}});
+    CHECK(lexicon.Splits().size() == 1);
+    // 分數與接續移到拆出來的部分
+    CHECK(lexicon.WordScore(L"我明天下午要去台北開會") == 0);
+    CHECK(lexicon.WordScore(L"台北") > 1.5);
+    CHECK(lexicon.WordScore(L"好啊") > 0);
+    lexicon.NoteCommit(L"x", L"台北");
+    CHECK(lexicon.NextAfter(L"x", 3) == Strings{L"開會"});
+    lexicon.NoteCommit(L"x", L"好啊");
+    CHECK(lexicon.NextAfter(L"x", 3) == Strings{L"我"});
+    lexicon.NoteCommit(L"x", L"開會");
+    CHECK(lexicon.NextAfter(L"x", 3) == Strings{L"再說"});
+    // 之後再打到：學拆出來的部分；最後的詞是最後一個部分
+    lexicon.Record(L"y", L"我明天下午要去台北開會");
+    CHECK(lexicon.WordScore(L"我明天下午要去台北開會") == 0);
+    CHECK(lexicon.WordScore(L"要去") > 2.5);
+    CHECK(lexicon.NextAfter(L"y", 3) == Strings{L"再說"});
+    lexicon.Save();
+  }
+  {
+    // 規則存在 refine.dat：重新載入後仍然生效；重建時也套用
+    PersonalLexicon lexicon(dir);
+    CHECK(lexicon.Load());
+    CHECK(lexicon.Splits().size() == 1);
+    auto records = PersonalLexicon::ReadRawLog(lexicon.ActiveLogPath());
+    lexicon.Rebuild(records);
+    CHECK(lexicon.WordScore(L"我明天下午要去台北開會") == 0);
+    CHECK(lexicon.WordScore(L"明天下午") > 2.5);
+    // 親自加入整個片段：取消拆解
+    lexicon.AddWord(L"我明天下午要去台北開會");
+    CHECK(lexicon.Splits().empty());
+    lexicon.Record(L"w", L"我明天下午要去台北開會");
+    CHECK(lexicon.WordScore(L"我明天下午要去台北開會") > 5);
+  }
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / L"TestIme-注音";
   std::error_code ec;
@@ -489,6 +533,7 @@ int main() {
   TestChoiceStats(dir / "stats");
   TestChoiceLog(dir / "log");
   TestLearnFilter(dir / "personal");
+  TestSplits(dir / "splits");
   fs::remove_all(dir, ec);
   std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
   return failures ? 1 : 0;

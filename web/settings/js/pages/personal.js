@@ -125,7 +125,7 @@ export default {
         }),
         card({
           title: '精煉使用的模型',
-          desc: 'LLM 會刪除錯字與無意義片段、合併不一致的寫法。選「不使用 LLM」時只做統計整理、不送出資料；選雲端 API 時，常用詞與部分例句會送到該服務。',
+          desc: 'LLM 會刪除錯字與無意義片段、合併不一致的寫法，並把整句拆成詞或片語分別學習（拆的時候不能改字；想整句保留時到「管理詞彙」加入該句）。選「不使用 LLM」時只做統計整理、不送出資料；選雲端 API 時，常用詞與部分例句會送到該服務。',
           disabled: off,
           control: [profileSelect(ctx, 'refine', { disabled: off }),
             button('管理模型…', () => ctx.go('models', { profile: ctx.state.use.refine >= 0 ? ctx.state.use.refine : undefined }))],

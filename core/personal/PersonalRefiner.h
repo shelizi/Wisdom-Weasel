@@ -74,6 +74,11 @@ class PersonalRefiner {
   // 重新寫 status.txt
   void WriteStatus() { WriteStatusAs(running_); }
 
+  // 解析 LLM 的拆解結果「拆解\t原片段\t部分 部分…」：只收 known 裡的片段，
+  // 且部分依序接起來要等於原片段
+  static std::vector<PersonalLexicon::Split> ParseSplits(
+      const std::wstring& content, const std::unordered_set<std::wstring>& known);
+
  private:
   void SchedulerLoop();
   void Run(bool full);
@@ -83,6 +88,10 @@ class PersonalRefiner {
   std::wstring RefineWithLLM(const Config& config, bool full,
                              const std::vector<PersonalLexicon::RawRecord>& records,
                              bool* ok);
+
+  // 拆解：請 LLM 把太長的片段（整句）拆成詞或片語，之後分別學習。一般精煉看一批還沒看過的，
+  // 重新精煉全部時全部重看。沒有要看的回傳空字串，失敗時 ok = false
+  std::wstring SplitWithLLM(const Config& config, bool full, bool* ok);
 
   // 整理 Rime 選字記憶：匯出使用者詞典，請 LLM 挑出錯字錯詞（兩字以上、還沒審查過的），
   // 以匯入負次數的方式刪除。回傳結果說明文字，失敗時 ok = false

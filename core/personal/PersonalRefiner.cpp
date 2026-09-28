@@ -97,6 +97,23 @@ const wchar_t kSystemPrompt[] =
     L"合併\t原寫法\t正確寫法\n"
     L"沒有需要整理的就只輸出「無」。不要輸出任何其他說明。";
 
+// 拆解：這麼長以上的片段才請 LLM 看要不要拆；每批送的片段數（輸出比刪除清單長，送少一點）
+const size_t kSplitMinLength = 5;
+const size_t kSplitBatchRemote = 150, kSplitBatchLocal = 40;
+
+const wchar_t kSplitPrompt[] =
+    L"你是中文輸入法「個人詞庫」的整理助手。輸入法把使用者送出的文字依標點切成片段來學習，"
+    L"有些片段其實是一整句或好幾個詞連在一起，太長了不好推薦。\n"
+    L"請把這樣的片段拆成詞或常用片語（以二到七個字為主），讓輸入法分別學習、之後推薦下一個詞。\n"
+    L"規則：拆出來的部分依序接起來必須和原片段一模一樣，不能增加、刪除或更改任何字；"
+    L"本身已經是一個詞、固定片語、成語、人名或專有名詞的就不要拆；不確定時不要拆。\n"
+    L"每行輸出一個要拆的片段，格式如下（原片段與拆解以 Tab 分隔，拆出的部分之間用空格）：\n"
+    L"拆解\t原片段\t部分1 部分2 部分3\n"
+    L"不用拆的片段不必輸出；全部都不用拆就只輸出「無」。不要輸出任何其他說明。\n"
+    L"例如片段是「我明天下午要去台北開會」「一石二鳥」「謝謝你的幫忙」，就輸出：\n"
+    L"拆解\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n"
+    L"拆解\t謝謝你的幫忙\t謝謝 你的 幫忙";
+
 // Rime 選字記憶（使用者詞典）的審查：每批送的詞數
 const size_t kMemoryBatchRemote = 300, kMemoryBatchLocal = 120;
 
@@ -265,6 +282,13 @@ void PersonalRefiner::Run(bool full) {
       detail = L"未選擇精煉模型，只做統計整理";
     else
       detail = RefineWithLLM(config, full, records, &ok);
+    // 把太長的片段拆成詞或片語；失敗不影響精煉，下次接著看
+    if (ok && config.UsesLLM() && !stop_) {
+      bool split_ok = true;
+      const std::wstring split = SplitWithLLM(config, full, &split_ok);
+      if (!split.empty())
+        detail += L"；" + split;
+    }
     // 順便整理 Rime 的選字記憶；失敗不影響個人詞庫的精煉，下次精煉會接著審查
     if (ok && config.UsesLLM() && config.clean_rime_memory && !stop_) {
       bool memory_ok = true;
@@ -584,6 +608,131 @@ std::wstring PersonalRefiner::RefineWithLLM(
     reviewed += targets.size();
   }
   return summary();
+}
+
+std::wstring PersonalRefiner::SplitWithLLM(const Config& config, bool full, bool* ok) {
+  *ok = true;
+  // 夠長、還沒看過的片段；常用的優先（拆了最有用）
+  std::vector<std::wstring> pool;
+  for (const auto& info : lexicon_->WordInfos()) {
+    if (info.word.size() >= kSplitMinLength && (full || !info.split_checked))
+      pool.push_back(info.word);
+  }
+  const bool local = config.type == "llamacpp";
+  const size_t batch_size = local ? kSplitBatchLocal : kSplitBatchRemote;
+  if (!full && pool.size() > batch_size)
+    pool.resize(batch_size);
+  if (pool.empty())
+    return L"";
+  const size_t batches = (pool.size() + batch_size - 1) / batch_size;
+
+  LLMLocalChatSession session;
+  if (local) {
+    LLMLocalModelSpec spec;
+    spec.model_path = config.model_path;
+    spec.instruct = config.instruct;
+    spec.n_gpu_layers = config.n_gpu_layers;
+    spec.n_threads = config.n_threads;
+    spec.disable_thinking = config.disable_thinking;
+    spec.think_tokens = config.think_tokens;
+    std::wstring error;
+    if (!session.Open(spec, &error)) {
+      *ok = false;
+      return L"拆解：" + error;
+    }
+  }
+
+  size_t checked = 0;
+  std::vector<PersonalLexicon::Split> splits;
+  for (size_t b = 0; b < batches && !stop_; ++b) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      progress_ = L"拆解 第 " + std::to_wstring(b + 1) + L"／" + std::to_wstring(batches) + L" 批";
+    }
+    WriteStatus();
+    std::vector<std::wstring> targets;
+    std::unordered_set<std::wstring> known;
+    std::wostringstream user;
+    user << L"片段（每行一個）：\n";
+    for (size_t i = b * batch_size; i < pool.size() && i < (b + 1) * batch_size; ++i) {
+      targets.push_back(pool[i]);
+      known.insert(pool[i]);
+      user << pool[i] << L"\n";
+    }
+    std::wstring content, error;
+    bool batch_ok = true;
+    if (local) {
+      std::string output;
+      batch_ok = session.Chat(utf8::FromWide(kSplitPrompt), utf8::FromWide(user.str()), 2048,
+                              &output, &error);
+      content = utf8::ToWide(output);
+    } else {
+      content = CallRemote(config, user.str(), targets.size(), 0, &batch_ok, kSplitPrompt);
+      if (!batch_ok)
+        error = content;
+    }
+    if (!batch_ok) {
+      *ok = false;
+      Log(L"拆解失敗：" + error);
+      break;
+    }
+    content = LLMStripThinking(content);
+    Log(L"拆解 LLM 回覆：\n" + content);
+    const auto batch_splits = ParseSplits(content, known);
+    lexicon_->ApplySplits(batch_splits);  // 拆出來接不回原片段的會被略過
+    splits.insert(splits.end(), batch_splits.begin(), batch_splits.end());
+    lexicon_->MarkSplitChecked(targets);
+    checked += targets.size();
+  }
+  std::wstring sample;
+  for (size_t i = 0; i < splits.size() && i < 3; ++i) {
+    std::wstring parts;
+    for (const auto& p : splits[i].second)
+      parts += (parts.empty() ? L"" : L"／") + p;
+    sample += (sample.empty() ? L"" : L"、") + parts;
+  }
+  std::wstring result = L"拆解：看了 " + std::to_wstring(checked) + L" 個長片段，拆了 " +
+                        std::to_wstring(splits.size()) + L" 個";
+  if (!sample.empty())
+    result += L"（" + sample + (splits.size() > 3 ? L"…" : L"") + L"）";
+  if (!*ok)
+    result += L"；中途失敗，下次繼續";
+  return result;
+}
+
+std::vector<PersonalLexicon::Split> PersonalRefiner::ParseSplits(
+    const std::wstring& content, const std::unordered_set<std::wstring>& known) {
+  std::vector<PersonalLexicon::Split> out;
+  std::unordered_set<std::wstring> seen;
+  std::wistringstream lines(content);
+  for (std::wstring line; std::getline(lines, line);) {
+    line = Trim(line);
+    while (!line.empty() && (line[0] == L'-' || line[0] == L'*' || line[0] == L'•'))
+      line = Trim(line.substr(1));
+    if (line.rfind(L"拆解", 0) != 0)
+      continue;
+    // 部分之間也可能用斜線或直線分隔
+    std::wstring rest = line.substr(2);
+    std::replace_if(rest.begin(), rest.end(),
+                    [](wchar_t c) { return c == L'/' || c == L'／' || c == L'|' || c == L'｜'; },
+                    L' ');
+    auto t = Tokens(rest);
+    if (t.size() < 3 || !known.count(t[0]) || !seen.insert(t[0]).second)
+      continue;
+    // 單獨一個字（的、是、了）當候選沒什麼用：接到前一個部分（開頭的保留）
+    std::vector<std::wstring> parts;
+    std::wstring joined;
+    for (size_t i = 1; i < t.size(); ++i) {
+      joined += t[i];
+      if (t[i].size() == 1 && !parts.empty())
+        parts.back() += t[i];
+      else
+        parts.push_back(t[i]);
+    }
+    if (joined == t[0] && parts.size() >= 2)  // 模型不能改字
+      out.emplace_back(t[0], std::move(parts));
+  }
+  return out;
 }
 
 std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, bool* ok) {

@@ -78,17 +78,26 @@ class PersonalLexicon {
   // 精煉結果：刪除的詞之後不再學習；合併的寫法之後都算到正確寫法
   void ApplyRefinement(const std::vector<std::wstring>& removals,
                        const std::vector<std::pair<std::wstring, std::wstring>>& merges);
+  // 拆解：LLM 把太長的片段（多半是整句）拆成詞或片語，之後打到這個片段時改學拆出來的部分，
+  // 部分之間照順序接續。原片段的分數與接續移到拆出來的部分。
+  // parts 依序接起來要和原片段相同、至少兩段，否則略過
+  using Split = std::pair<std::wstring, std::vector<std::wstring>>;
+  void ApplySplits(const std::vector<Split>& splits);
+  std::vector<Split> Splits() const;
   std::vector<std::pair<std::wstring, double>> TopWords(size_t max_count) const;
-  // 全部的詞（依分數排序），含最後使用時間與是否已被 LLM 審查過
+  // 全部的詞（依分數排序），含最後使用時間、是否已被 LLM 審查過、是否已看過要不要拆
   struct WordInfo {
     std::wstring word;
     double score = 0;
     int64_t last = 0;
     bool reviewed = false;
+    bool split_checked = false;
   };
   std::vector<WordInfo> WordInfos() const;
   // 記住這些詞已審查過（分批審查：下次只送還沒審查的詞）
   void MarkReviewed(const std::vector<std::wstring>& words);
+  // 記住這些片段已請 LLM 看過要不要拆（不用拆的也記，下次不再送）
+  void MarkSplitChecked(const std::vector<std::wstring>& words);
   int64_t LastRefine() const;
   void SetLastRefine(int64_t time);
 
@@ -123,6 +132,8 @@ class PersonalLexicon {
   void RecordLocked(const std::wstring& window, const std::wstring& text, int64_t now,
                     const std::vector<std::wstring>& rejected = {});
   void NoteLocked(const std::wstring& window, const std::wstring& text);
+  // 一個片段實際要學的詞：套用合併與拆解；刪除的詞換成空字串（中斷接續）
+  std::vector<std::wstring> ExpandLocked(const std::wstring& unit) const;
   bool SaveRefinementLocked(std::string* blob) const;
   void LoadRefinement();
 
@@ -145,6 +156,8 @@ class PersonalLexicon {
   std::unordered_set<std::wstring> removed_;                // 精煉刪除的詞
   std::unordered_map<std::wstring, std::wstring> merged_;   // 精煉合併：原寫法 → 正確寫法
   std::unordered_set<std::wstring> reviewed_;               // 已被 LLM 審查過的詞
+  std::unordered_map<std::wstring, std::vector<std::wstring>> splits_;  // 拆解：片段 → 拆出來的部分
+  std::unordered_set<std::wstring> split_checked_;          // 已看過要不要拆的片段
   std::unordered_map<std::wstring, int64_t> added_;         // 手動加入的詞 → 加入時間（重建後補回）
   int64_t last_refine_ = 0;
   bool rebuilding_ = false;

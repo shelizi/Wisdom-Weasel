@@ -123,19 +123,23 @@ void PersonalLexicon::RecordLocked(const std::wstring& window, const std::wstrin
   const std::vector<std::wstring> units = SplitUnits(text, &sentence_end);
   std::wstring prev = chain_word_[window];
   for (const auto& raw : units) {
-    // 精煉結果：合併的寫法算到正確寫法；刪除的詞不學，也不拿來接續。過濾擋下的片段一樣
-    auto m = merged_.find(raw);
-    const std::wstring& unit = m != merged_.end() ? m->second : raw;
-    if (removed_.count(unit) || std::find(rejected.begin(), rejected.end(), raw) != rejected.end()) {
+    // 過濾擋下的片段不學，也不拿來接續
+    if (std::find(rejected.begin(), rejected.end(), raw) != rejected.end()) {
       prev.clear();
       continue;
     }
-    Bump(words_[unit], now);
-    if (!prev.empty()) {
-      Bump(next_[prev][unit], now);
-      Bump(next_[BackoffKey(prev)][unit], now);
+    for (const auto& word : ExpandLocked(raw)) {
+      if (word.empty()) {
+        prev.clear();
+        continue;
+      }
+      Bump(words_[word], now);
+      if (!prev.empty()) {
+        Bump(next_[prev][word], now);
+        Bump(next_[BackoffKey(prev)][word], now);
+      }
+      prev = word;
     }
-    prev = unit;
   }
   // 句尾標點之後重新開始，不把上一句的最後一個詞接到下一句
   chain_word_[window] = sentence_end ? std::wstring() : prev;
@@ -143,17 +147,32 @@ void PersonalLexicon::RecordLocked(const std::wstring& window, const std::wstrin
     ++dirty_;
 }
 
+std::vector<std::wstring> PersonalLexicon::ExpandLocked(const std::wstring& unit) const {
+  // 精煉結果：合併的寫法換成正確寫法；拆解過的片段換成拆出來的部分（部分也套用合併）；
+  // 刪除的詞換成空字串
+  auto resolve = [this](const std::wstring& w) {
+    auto m = merged_.find(w);
+    const std::wstring& word = m != merged_.end() ? m->second : w;
+    return removed_.count(word) ? std::wstring() : word;
+  };
+  auto m = merged_.find(unit);
+  const std::wstring& word = m != merged_.end() ? m->second : unit;
+  auto s = splits_.find(word);
+  if (s == splits_.end() || removed_.count(word))
+    return {resolve(word)};
+  std::vector<std::wstring> out;
+  for (const auto& part : s->second)
+    out.push_back(resolve(part));
+  return out;
+}
+
 void PersonalLexicon::NoteLocked(const std::wstring& window, const std::wstring& text) {
   bool sentence_end = false;
   const std::vector<std::wstring> units = SplitUnits(text, &sentence_end);
   std::wstring& last = last_word_[window];
   // 只有標點（例如單獨送出的逗號）時保留原本的詞；句尾標點之後重新開始
-  if (!units.empty()) {
-    auto m = merged_.find(units.back());
-    last = m != merged_.end() ? m->second : units.back();
-    if (removed_.count(last))
-      last.clear();
-  }
+  if (!units.empty())
+    last = ExpandLocked(units.back()).back();
   if (sentence_end)
     last.clear();
 }
@@ -398,6 +417,17 @@ bool PersonalLexicon::SaveRefinementLocked(std::string* blob) const {
     if (words_.count(word))
       out << "V\t" << utf8::FromWide(word) << "\n";
   }
+  // 拆解：S 片段 部分\x1f部分…；已看過不用拆的片段（只存還在詞庫裡的）
+  for (const auto& [unit, parts] : splits_) {
+    out << "S\t" << utf8::FromWide(unit) << "\t";
+    for (size_t i = 0; i < parts.size(); ++i)
+      out << (i ? "\x1f" : "") << utf8::FromWide(parts[i]);
+    out << "\n";
+  }
+  for (const auto& word : split_checked_) {
+    if (words_.count(word))
+      out << "P\t" << utf8::FromWide(word) << "\n";
+  }
   *blob = out.str();
   return true;
 }
@@ -426,6 +456,8 @@ void PersonalLexicon::LoadRefinement() {
   merged_.clear();
   reviewed_.clear();
   added_.clear();
+  splits_.clear();
+  split_checked_.clear();
   while (std::getline(lines, line)) {
     const size_t t1 = line.find('\t');
     if (t1 == std::string::npos)
@@ -437,6 +469,24 @@ void PersonalLexicon::LoadRefinement() {
       removed_.insert(utf8::ToWide(rest));
     } else if (kind == "V") {
       reviewed_.insert(utf8::ToWide(rest));
+    } else if (kind == "P") {
+      split_checked_.insert(utf8::ToWide(rest));
+    } else if (kind == "S") {
+      const size_t t2 = rest.find('\t');
+      if (t2 == std::string::npos)
+        continue;
+      std::vector<std::wstring> parts;
+      const std::wstring list = utf8::ToWide(rest.substr(t2 + 1));
+      for (size_t start = 0; start <= list.size();) {
+        size_t end = list.find(L'\x1f', start);
+        if (end == std::wstring::npos)
+          end = list.size();
+        if (end > start)
+          parts.push_back(list.substr(start, end - start));
+        start = end + 1;
+      }
+      if (parts.size() >= 2)
+        splits_[utf8::ToWide(rest.substr(0, t2))] = std::move(parts);
     } else if (kind == "A") {
       const size_t t2 = rest.find('\t');
       added_[utf8::ToWide(rest.substr(0, t2))] =
@@ -531,6 +581,87 @@ void PersonalLexicon::ApplyRefinement(
   WriteRefinementFile(dir_ / L"refine.dat", plain);
 }
 
+void PersonalLexicon::ApplySplits(const std::vector<Split>& splits) {
+  const int64_t now = Now();
+  std::string plain;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [unit, parts] : splits) {
+      // 拆出來的部分依序接起來要和原片段相同（模型不能改字）
+      std::wstring joined;
+      bool valid = parts.size() >= 2;
+      for (const auto& p : parts) {
+        valid = valid && !p.empty();
+        joined += p;
+      }
+      if (!valid || joined != unit || removed_.count(unit))
+        continue;
+      splits_[unit] = parts;
+      split_checked_.erase(unit);
+      auto w = words_.find(unit);
+      if (w == words_.end())
+        continue;  // 只記規則，之後打到時生效
+      // 分數以現在的衰減值相加：每個部分都拿到原片段的分數，部分之間照順序接續
+      const Score moved = w->second;
+      words_.erase(w);
+      auto add_score = [&](Score& dst, const Score& src) {
+        dst.value = Decayed(dst, now) + Decayed(src, now);
+        dst.last = now;
+      };
+      for (size_t i = 0; i < parts.size(); ++i) {
+        add_score(words_[parts[i]], moved);
+        if (i > 0) {
+          add_score(next_[parts[i - 1]][parts[i]], moved);
+          add_score(next_[BackoffKey(parts[i - 1])][parts[i]], moved);
+        }
+      }
+      // 原片段後面接的詞 → 改接在最後一個部分後面；接在原片段前面的 → 改接第一個部分
+      auto n = next_.find(unit);
+      if (n != next_.end()) {
+        auto nexts = std::move(n->second);
+        next_.erase(n);
+        for (auto& [next, s] : nexts)
+          add_score(next_[parts.back()][next], s);
+      }
+      for (auto& [prev, nexts] : next_) {
+        auto it = nexts.find(unit);
+        if (it != nexts.end()) {
+          const Score s = it->second;
+          nexts.erase(it);
+          add_score(nexts[parts.front()], s);
+        }
+      }
+      for (auto* last_words : {&last_word_, &chain_word_}) {
+        for (auto& [window, last] : *last_words) {
+          if (last == unit)
+            last = parts.back();
+        }
+      }
+    }
+    ++dirty_;
+    SaveRefinementLocked(&plain);
+  }
+  WriteRefinementFile(dir_ / L"refine.dat", plain);
+}
+
+std::vector<PersonalLexicon::Split> PersonalLexicon::Splits() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<Split> out(splits_.begin(), splits_.end());
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+void PersonalLexicon::MarkSplitChecked(const std::vector<std::wstring>& words) {
+  std::string plain;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& w : words)
+      split_checked_.insert(w);
+    SaveRefinementLocked(&plain);
+  }
+  personal_crypto::WriteProtected(dir_ / L"refine.dat", plain);
+}
+
 std::vector<std::pair<std::wstring, double>> PersonalLexicon::TopWords(size_t max_count) const {
   const int64_t now = Now();
   std::vector<std::pair<std::wstring, double>> out;
@@ -553,7 +684,8 @@ std::vector<PersonalLexicon::WordInfo> PersonalLexicon::WordInfos() const {
     std::lock_guard<std::mutex> lock(mutex_);
     out.reserve(words_.size());
     for (const auto& [word, s] : words_)
-      out.push_back({word, Decayed(s, now), s.last, reviewed_.count(word) > 0});
+      out.push_back({word, Decayed(s, now), s.last, reviewed_.count(word) > 0,
+                     split_checked_.count(word) > 0});
   }
   std::sort(out.begin(), out.end(), [](const WordInfo& a, const WordInfo& b) { return a.score > b.score; });
   return out;
@@ -688,6 +820,7 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
     std::lock_guard<std::mutex> lock(mutex_);
     scratch.removed_ = removed_;
     scratch.merged_ = merged_;
+    scratch.splits_ = splits_;
     scratch.half_life_days_ = half_life_days_;
   }
   for (const auto& r : records)
@@ -744,6 +877,8 @@ void PersonalLexicon::Clear() {
   merged_.clear();
   reviewed_.clear();
   added_.clear();
+  splits_.clear();
+  split_checked_.clear();
   pending_.clear();
   last_refine_ = 0;
   dirty_ = 0;
@@ -769,6 +904,8 @@ void PersonalLexicon::AddWord(const std::wstring& word) {
     std::lock_guard<std::mutex> lock(mutex_);
     removed_.erase(word);
     merged_.erase(word);
+    splits_.erase(word);          // 親自加入的詞就是要整個學，不拆
+    split_checked_.insert(word);
     reviewed_.insert(word);  // 使用者親自加入的詞不必再給 LLM 審查
     added_[word] = now;      // 記住，「重新精煉全部」重建後補回
     // 手動加入的詞給較高的起始分數，一樣會隨時間衰減

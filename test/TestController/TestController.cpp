@@ -7,6 +7,7 @@
 #include "../../core/base/utf8.h"
 #include "../../core/llm/ContextHistory.h"
 #include "../../core/llm/LLMProvider.h"
+#include "../../core/personal/PersonalRefiner.h"
 
 #include <rime_api.h>
 
@@ -413,6 +414,29 @@ int main(int argc, char** argv) {
 
   // 選字統計寫在使用者資料夾
   CHECK(fs::exists(fs::path(user) / "weasel_stats.txt"));
+
+  // 精煉的拆解結果：只收請它看的片段，部分接起來要等於原片段（改了字的不收）
+  {
+    const auto splits = PersonalRefiner::ParseSplits(
+        L"好的，結果如下：\n"
+        L"拆解\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n"
+        L"- 拆解\t謝謝大家的幫忙\t謝謝／大家的／幫忙\n"
+        L"拆解\t今天天氣很好\t今天 天汽 很好\n"
+        L"拆解\t沒請它看的片段\t沒請 它看的 片段\n"
+        L"拆解\t我明天下午要去台北開會\t我明天 下午\n"
+        L"拆解\t應該是設定檔的路徑\t應該 是 設定檔 的 路徑\n"  // 單獨的字接到前一個部分
+        L"拆解\t一石二鳥\t一石二鳥\n",                          // 沒拆
+        {L"我明天下午要去台北開會", L"謝謝大家的幫忙", L"今天天氣很好", L"應該是設定檔的路徑",
+         L"一石二鳥"});
+    CHECK(splits.size() == 3);
+    if (splits.size() == 3) {
+      CHECK(splits[0].first == L"我明天下午要去台北開會");
+      CHECK(splits[0].second ==
+            (std::vector<std::wstring>{L"我", L"明天下午", L"要去", L"台北", L"開會"}));
+      CHECK(splits[1].second == (std::vector<std::wstring>{L"謝謝", L"大家的", L"幫忙"}));
+      CHECK(splits[2].second == (std::vector<std::wstring>{L"應該是", L"設定檔的", L"路徑"}));
+    }
+  }
 
   {
     std::lock_guard<std::mutex> lock(frontend.mutex);
