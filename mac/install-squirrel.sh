@@ -91,9 +91,17 @@ fi
 
 # ---- 3. 安裝
 step "安裝到 ${install_dir}（需要管理者密碼）"
-sudo rm -rf "$install_dir/Squirrel.app"
-sudo cp -R "$app" "$install_dir/"
-sudo DSTROOT="$install_dir" bash "$squirrel/scripts/postinstall"
+install_cmd="$(printf 'rm -rf %q && cp -R %q %q && DSTROOT=%q /bin/bash %q' \
+  "$install_dir/Squirrel.app" "$app" "$install_dir/" "$install_dir" "$squirrel/scripts/postinstall")"
+if [ -t 0 ] || sudo -n true 2> /dev/null; then
+  sudo /bin/bash -c "$install_cmd"
+else
+  # 沒有終端機可以輸入密碼（例如由其他程式執行）：用系統的密碼視窗
+  echo "沒有終端機可以輸入密碼，改用系統的密碼視窗"
+  applescript="${install_cmd//\\/\\\\}"
+  applescript="${applescript//\"/\\\"}"
+  osascript -e "do shell script \"$applescript\" with administrator privileges" > /dev/null
+fi
 
 # ---- 4. 設定
 if [ "$with_model" = 1 ]; then
