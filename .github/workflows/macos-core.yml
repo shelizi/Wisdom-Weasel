@@ -1,6 +1,7 @@
 name: macOS core
 
-# 在 macOS 上編譯共用核心（core/）、鼠鬚管的橋接層與網頁設定視窗，並執行不需要輸入方案資料的測試
+# 在 macOS 上編譯共用核心（core/）、鼠鬚管的橋接層與網頁設定視窗，並執行不需要輸入方案資料的測試；
+# 再建置接好這些功能的鼠鬚管（squirrel/ 子模組），檢查 app 的內容並上傳
 on:
   workflow_dispatch:
   push:
@@ -9,6 +10,8 @@ on:
       - 'mac/**'
       - 'include/**'
       - 'test/**'
+      - 'web/**'
+      - 'squirrel'
       - '.github/workflows/macos-core.yml'
   pull_request:
     paths:
@@ -16,6 +19,8 @@ on:
       - 'mac/**'
       - 'include/**'
       - 'test/**'
+      - 'web/**'
+      - 'squirrel'
 
 jobs:
   build:
@@ -39,3 +44,49 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  squirrel:
+    # 與鼠鬚管上游的 CI 相同的環境
+    runs-on: macos-26
+    steps:
+      - name: Set Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.5'
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Get librime, Sparkle and llama.cpp
+        working-directory: squirrel
+        run: |
+          # librime 的原始碼（標頭）要在 action-install.sh 之前：它會把預先建好的 librime 放進 librime/
+          git submodule update --init --depth 1 librime
+          bash ./action-install.sh
+          ../mac/get-llama-runtime.sh
+
+      - name: Build Squirrel.app
+        run: make -C squirrel release
+
+      - name: Check the app
+        run: |
+          app=squirrel/build/Build/Products/Release/Squirrel.app
+          for f in Contents/MacOS/Squirrel Contents/MacOS/WisdomLLMHost \
+                   Contents/Resources/web/settings/index.html \
+                   Contents/Frameworks/librime.1.dylib Contents/Frameworks/libllama.0.dylib; do
+            test -e "$app/$f" || { echo "missing $f"; exit 1; }
+          done
+          nm "$app/Contents/MacOS/Squirrel" | grep -q WisdomBridge || { echo "WisdomBridge not linked"; exit 1; }
+          otool -l "$app/Contents/MacOS/WisdomLLMHost" | grep -q "@executable_path/../Frameworks" ||
+            { echo "WisdomLLMHost rpath"; exit 1; }
+          codesign --verify --deep --strict "$app"
+
+      - name: Upload Squirrel.app
+        run: ditto -c -k --keepParent squirrel/build/Build/Products/Release/Squirrel.app Squirrel.app.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Squirrel-${{ github.sha }}
+          path: Squirrel.app.zip
+          retention-days: 30
