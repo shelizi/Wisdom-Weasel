@@ -278,6 +278,9 @@
     <ClCompile Include="..\core\platform\win\key_store_win.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\ime\calibration.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\ime\choice_log.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -309,6 +312,7 @@
     <ClInclude Include="..\include\RimeWithWeasel.h" />
     <ClInclude Include="..\core\ime\ZhuyinPreview.h" />
     <ClInclude Include="..\core\ime\choice_log.h" />
+    <ClInclude Include="..\core\ime\calibration.h" />
     <ClInclude Include="..\core\ime\choice_stats.h" />
     <ClInclude Include="..\core\ime\controller.h" />
     <ClInclude Include="..\core\ime\keys.h" />

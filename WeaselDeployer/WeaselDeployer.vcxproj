@@ -217,6 +217,9 @@
     <ClCompile Include="SettingsDialog.cpp" />
     <ClCompile Include="SettingsOps.cpp" />
     <ClCompile Include="WinSettingsPlatform.cpp" />
+    <ClCompile Include="..\core\ime\calibration.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\settings\ops.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

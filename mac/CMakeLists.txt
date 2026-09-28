@@ -51,6 +51,7 @@ add_library(wisdom_core STATIC
   ${CORE}/ime/prediction_engine.cpp
   ${CORE}/ime/rescore.cpp
   ${CORE}/ime/text_rules.cpp
+  ${CORE}/ime/calibration.cpp
   ${CORE}/ime/choice_stats.cpp
   ${CORE}/ime/choice_log.cpp
   ${CORE}/ime/rime_helpers.cpp
@@ -119,6 +120,7 @@ add_executable(TestIme
   ${CORE}/ime/text_rules.cpp
   ${CORE}/ime/rescore.cpp
   ${CORE}/ime/prediction_engine.cpp
+  ${CORE}/ime/calibration.cpp
   ${CORE}/ime/choice_stats.cpp
   ${CORE}/ime/choice_log.cpp
   ${CORE}/crypto/personal_crypto.cpp

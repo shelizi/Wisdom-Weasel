@@ -1,4 +1,4 @@
-import { h, section, card, checkbox, button, select, note, confirm, lines } from '../ui.js';
+import { h, section, card, checkbox, button, select, input, note, confirm, lines } from '../ui.js';
 
 const kSpans = [
   { value: 1, label: '今天' },
@@ -46,9 +46,11 @@ export default {
 
   async refresh(ctx) {
     try {
-      const [stats, log, grammar] = await Promise.all([
-        ctx.call('stats.get', { span }), ctx.call('choicelog.status'), ctx.call('grammar.status')]);
+      const [stats, log, grammar, calibration] = await Promise.all([
+        ctx.call('stats.get', { span }), ctx.call('choicelog.status'), ctx.call('grammar.status'),
+        ctx.call('calibration.get')]);
       this.stats = stats;
+      this.calibration = calibration;
       this.log = log;
       ctx.state.init.grammar = grammar;
       downloading = grammar.downloading || downloading;
@@ -116,6 +118,19 @@ export default {
             ctx.markDirty('llm');
           }),
           desc: '打字停頓時，比較整句裡同音字的通順度。使用智慧預測或注音校正已載入的本機模型（API 模型不支援）。',
+        }),
+        card({
+          title: '信心校準',
+          desc: '推薦與校正各自記下「比原句通順多少」和你有沒有採用（只有數字，不含打字內容），擬合出採用機率。'
+            + '累積 30 筆後，候選窗會標示機率（例如「推薦 82%」），推薦與校正依機率排先後，低於門檻的不顯示。',
+          below: [
+            h('div', { class: 'row' }, h('span', {}, '低於'),
+              input(c.min_confidence, (v) => { c.min_confidence = v; ctx.markDirty('llm'); }, { width: '80px' }),
+              h('span', { class: 'muted' }, '就不顯示（0～0.9，預設 0.1；0 = 都顯示）')),
+            h('div', { class: 'card-desc status-text' },
+              this.calibration && this.calibration.length ? lines(this.calibration.join('\n'))
+                : this.calibration ? '還沒有樣本：出現推薦或校正後，送出或按 Tab 時會記錄。' : '讀取中…'),
+          ],
         })),
       section('選字統計',
         card({

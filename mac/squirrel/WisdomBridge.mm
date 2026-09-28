@@ -265,7 +265,7 @@ class MacFrontend : public ime::Frontend {
     c.text = NS(set.candidates[i]);
     // Tab 選第一個，Shift+2~5 選其餘（數字鍵在注音中是注音符號）
     c.label = i == 0 ? @"Tab" : [NSString stringWithFormat:@"⇧%zu", i + 1];
-    c.comment = set.IsRecommend(i) ? @"推薦" : set.IsCorrection(i) ? @"校正" : @"";
+    c.comment = NS(set.Comment(i));
     [list addObject:c];
   }
   return list;

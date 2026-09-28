@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -21,6 +22,7 @@
 #include "../personal/PersonalLexicon.h"
 #include "../personal/PersonalRefiner.h"
 #include "ZhuyinPreview.h"
+#include "calibration.h"
 #include "choice_log.h"
 #include "choice_stats.h"
 #include "keys.h"
@@ -65,6 +67,7 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
     : api_(api), frontend_(frontend), options_(std::move(options)) {
   homophones_ = std::make_unique<HomophoneFinder>(api_);
   choice_store_ = std::make_unique<ChoiceStatsStore>(options_.user_dir);
+  calibration_ = std::make_unique<CalibrationStore>(options_.user_dir);
   PredictionEngine::Hooks hooks;
   hooks.models = [this] {
     PredictionModels models;
@@ -79,6 +82,9 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
   };
   hooks.on_update = [this](uint64_t tag, uint64_t seq, const PredictionSet& set) {
     OnPredictionUpdate(tag, seq, set);
+  };
+  hooks.confidence = [this](SuggestionKind kind, double gain) {
+    return calibration_->Probability(kind, gain);
   };
   prediction_ = std::make_unique<PredictionEngine>(std::move(hooks));
 }
@@ -118,6 +124,12 @@ void Controller::LoadConfig(RimeConfig* config) {
   // 推薦：本機模型比較同音字整句的通順度（預設關閉）
   flag = false;
   rescore_on_ = api_->config_get_bool(config, "llm/choice/rescore", &flag) && flag;
+  // 推薦／校正校準過的採用機率低於這個就不顯示（還沒校準時都顯示）；0 = 都顯示
+  {
+    double min_confidence = 0.1;
+    api_->config_get_double(config, "llm/choice/min_confidence", &min_confidence);
+    min_confidence_ = (std::min)(0.9, (std::max)(0.0, min_confidence));
+  }
   homophones_->ClearCache();  // 重新部署後詞典可能變了
   // LLM 整句校正（llm/typo/llm）；Rime 容錯另外設定在注音方案裡，與此無關。
   // 舊設定 llm/typo_correction: llm 視為開啟
@@ -1058,6 +1070,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
     if (!ss.mixed_active()) {
       ss.choice_changed = ss.llm_offered = false;
       ss.focus_used = ss.recommend_offered = false;
+      ForgetSuggestions(ss);
       ss.default_text.clear();
       ss.default_zhuyin.clear();
     }
@@ -1203,6 +1216,7 @@ void Controller::TriggerPrediction(uint64_t id,
     request.typo_prompt = typo_prompt_;
   }
   request.delay_ms = delay_ms;
+  request.min_confidence = min_confidence_;
   prediction_->Request(std::move(request));
 }
 
@@ -1240,18 +1254,43 @@ void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionS
     return;
   // 選字統計：這次組字第一次出現推薦（統計只在服務端的鎖下讀寫）
   SessionState* ss = frontend_->Session(id);
-  if (set.recommends > 0 && ss && !ss->recommend_offered) {
+  if (set.Count(CandidateKind::kRecommend) > 0 && ss && !ss->recommend_offered) {
     ss->recommend_offered = true;
     ++Stats(ss->session_id).recommend_offered;
     SaveStats();
   }
+  // 信心校準：記下顯示中的推薦／校正（被更新的候選取代時跟著換）
+  if (ss && prediction_mode_) {
+    ss->recommend_gain = ss->correction_gain = NoConfidence();
+    for (size_t i = 0; i < set.candidates.size(); ++i) {
+      if (set.IsRecommend(i))
+        ss->recommend_gain = set.Gain(i);
+      else if (set.IsCorrection(i))
+        ss->correction_gain = set.Gain(i);
+    }
+  }
   frontend_->Refresh(id);
+}
+
+void Controller::RecordSuggestions(SessionState& ss, CandidateKind taken) {
+  if (!std::isnan(ss.recommend_gain))
+    calibration_->Record(SuggestionKind::kRecommend, ss.recommend_gain, taken == CandidateKind::kRecommend);
+  if (!std::isnan(ss.correction_gain))
+    calibration_->Record(SuggestionKind::kCorrection, ss.correction_gain, taken == CandidateKind::kCorrection);
+  ForgetSuggestions(ss);
+}
+
+void Controller::ForgetSuggestions(SessionState& ss) {
+  ss.recommend_gain = ss.correction_gain = NoConfidence();
 }
 
 void Controller::ExitPredictionMode(uint64_t id) {
   prediction_mode_ = false;
   completion_active_ = false;
   prediction_->Cancel();  // 丟棄仍在進行中的預測
+  // 收起了：之後的送出不算是看了推薦／校正沒採用
+  if (SessionState* ss = frontend_->Session(id))
+    ForgetSuggestions(*ss);
   // 強制收起候選欄
   frontend_->HideCandidates();
   frontend_->Refresh(id);
@@ -1377,6 +1416,9 @@ bool Controller::CommitPrediction(uint64_t id, size_t index) {
   bool correction = false, recommend = false;
   if (!prediction_->Take(index, &selected, &recommend, &correction))
     return false;
+  RecordSuggestions(ss, recommend    ? CandidateKind::kRecommend
+                        : correction ? CandidateKind::kCorrection
+                                     : CandidateKind::kPrediction);
   // 推薦：用 Rime 逐段選字把整句改成推薦的樣子，留在組字區（送出時 Rime 照常學習）
   if (recommend && ConfirmText(ss, selected)) {
     ++Stats(ss.session_id).recommend_used;
@@ -1482,6 +1524,7 @@ void Controller::SaveStats() {
 }
 
 void Controller::CountCommit(SessionState& ss, const std::wstring& text, bool mixed) {
+  RecordSuggestions(ss, CandidateKind::kPrediction);  // 顯示著推薦／校正卻照 Rime 的送出
   ChoiceStats& s = Stats(ss.session_id);
   ++s.commits;
   s.chars += (int64_t)text.size();

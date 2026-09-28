@@ -31,6 +31,8 @@ namespace ime {
 
 struct ChoiceStats;
 class ChoiceStatsStore;
+class CalibrationStore;
+enum class CandidateKind : uint8_t;
 class HomophoneFinder;
 class PredictionEngine;
 struct PredictionSet;
@@ -148,6 +150,9 @@ class Controller {
   bool RescoreInput(uint64_t id, uint64_t seq, std::vector<std::wstring>* units,
                     std::vector<std::vector<std::wstring>>* homophones);
   void OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionSet& set);
+  // 信心校準：把顯示中的推薦／校正記成樣本（taken 是選了哪一種，都沒選是 kPrediction）
+  void RecordSuggestions(SessionState& ss, CandidateKind taken);
+  static void ForgetSuggestions(SessionState& ss);
   bool ConfirmText(SessionState& ss, const std::wstring& desired);
   std::wstring ComposingZhuyin(RimeSessionId session_id);
 
@@ -170,6 +175,7 @@ class Controller {
   bool while_typing_ = true;       // llm/predict_while_typing：打字停頓時自動補完
   bool typo_on_ = false;           // llm/typo/llm：LLM 整句校正
   bool rescore_on_ = false;        // llm/choice/rescore：推薦
+  double min_confidence_ = 0.1;    // llm/choice/min_confidence：推薦／校正的採用機率低於這個就不顯示
   bool choice_log_ = false;        // llm/choice/log：記錄選字過程（加密）
   size_t context_max_chars_ = 100;      // llm/context/max_chars：給模型的前文最多幾個字
   unsigned context_idle_minutes_ = 10;  // llm/context/idle_minutes：視窗閒置多久後舊前文失效
@@ -193,6 +199,7 @@ class Controller {
   std::unique_ptr<PredictionEngine> prediction_;
   std::unique_ptr<HomophoneFinder> homophones_;
   std::unique_ptr<ChoiceStatsStore> choice_store_;
+  std::unique_ptr<CalibrationStore> calibration_;  // 推薦／校正的信心校準（預測背景執行緒也會讀）
   std::map<std::string, std::string> schema_flags_;  // 方案 → 方案裡的設定（語言模型等）
 
   // 預測狀態

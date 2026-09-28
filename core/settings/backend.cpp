@@ -14,6 +14,7 @@
 
 #include "../net/http.h"
 #include "../base/utf8.h"
+#include "../ime/calibration.h"
 #include "bench.h"
 #include "ops.h"
 
@@ -698,6 +699,17 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
                       {"llm", r.llm},
                       {"detail", r.detail}});
     return rows;
+  }
+  if (method == "calibration.get") {
+    // 推薦／校正的信心校準（輸入法寫的 weasel_calibration.txt）
+    ime::CalibrationStore store(platform.UserDataDir());
+    json lines = json::array();
+    for (const auto kind : {ime::SuggestionKind::kRecommend, ime::SuggestionKind::kCorrection}) {
+      const std::string text = store.Summary(kind);
+      if (!text.empty())
+        lines.push_back(text);
+    }
+    return lines;
   }
   if (method == "stats.reset") {
     ResetChoiceStats(platform);

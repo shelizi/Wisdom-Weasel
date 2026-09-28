@@ -3,6 +3,7 @@
 // 每個輸入 session 在 Rime 之外的狀態（混打、注音預覽、逐字選字、這次組字的統計）
 #include <rime_api.h>
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,9 @@ struct SessionState {
   bool recommend_offered = false;  // 這次組字出現過「推薦」
   bool llm_committed = false;      // 這次送出的是 LLM 候選
   bool correction_committed = false;
+  // 信心校準：目前顯示中的推薦／校正比原句好多少（沒有是 NaN）；送出或選了候選時記成一筆樣本
+  double recommend_gain = std::numeric_limits<double>::quiet_NaN();
+  double correction_gain = std::numeric_limits<double>::quiet_NaN();
   // 選字紀錄：還沒換字前 Rime 的預設轉換（整句）與對應的注音
   std::wstring default_text;
   std::wstring default_zhuyin;

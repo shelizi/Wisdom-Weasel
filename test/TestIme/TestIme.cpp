@@ -1,6 +1,7 @@
 // core/ime
-// 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、選字統計與選字紀錄、學習過濾
+// 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、信心校準、選字統計與選字紀錄、學習過濾
 #include "../../core/ime/ZhuyinPreview.h"
+#include "../../core/ime/calibration.h"
 #include "../../core/ime/choice_log.h"
 #include "../../core/ime/choice_stats.h"
 #include "../../core/ime/prediction_engine.h"
@@ -14,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #include <cstdio>
@@ -147,7 +149,10 @@ static void TestRescore() {
   const Strings units = {L"今", L"天", L"汽", L"ㄏㄣ"};
   const std::vector<Strings> homophones = {
       {L"今"}, {L"天", L"添"}, {L"汽", L"器", L"氣"}, {}};
-  CHECK(ime::RescoreSentence(&scorer, L"", units, homophones) == L"今天氣ㄏㄣ");
+  double gain = 0;
+  CHECK(ime::RescoreSentence(&scorer, L"", units, homophones, &gain) ==
+        L"今天氣ㄏㄣ");
+  CHECK(std::abs(gain - 6) < 1e-9);  // -8 → -2
   // 同音字都沒比較好：不推薦
   scorer.score[L'汽'] = -1;
   CHECK(ime::RescoreSentence(&scorer, L"", units, homophones).empty());
@@ -322,8 +327,8 @@ static void TestPredictionEngine() {
     CHECK(updates[0].second.candidates == (Strings{L"很好", L"不錯"}));
     CHECK(updates[1].second.candidates ==
           (Strings{L"很好", L"不錯", L"天氣很好"}));
-    CHECK(updates[1].second.recommends == 0 &&
-          updates[1].second.corrections == 0);
+    CHECK(updates[1].second.Count(ime::CandidateKind::kRecommend) == 0 &&
+          updates[1].second.Count(ime::CandidateKind::kCorrection) == 0);
   }
   CHECK(model.last_context == L"前文");
 
@@ -341,9 +346,14 @@ static void TestPredictionEngine() {
   CHECK(final_set.candidates ==
         (Strings{L"今天氣", L"今天天氣", L"今天汽車", L"今天天氣天氣很好",
                  L"今天天氣很好"}));
-  CHECK(final_set.recommends == 1 && final_set.corrections == 1);
+  CHECK(final_set.Count(ime::CandidateKind::kRecommend) == 1 &&
+        final_set.Count(ime::CandidateKind::kCorrection) == 1);
   CHECK(final_set.IsRecommend(0) && final_set.IsCorrection(1) &&
         !final_set.IsCorrection(2));
+  // 沒有校準：註解只有種類，沒有機率
+  CHECK(final_set.Comment(0) == L"推薦" && final_set.Comment(1) == L"校正" &&
+        final_set.Comment(2).empty());
+  CHECK(!ime::HasConfidence(final_set.Confidence(0)));
   CHECK(model.last_context == L"前文今天天氣");  // 續寫接在校正結果後面
 
   // 取出候選：知道是推薦還是校正，取出後候選清空
@@ -409,6 +419,162 @@ static void TestPredictionEngine() {
   CHECK(WaitFor([&] { return update_count() == 1; }));
 }
 
+// 可重現的亂數（0～1）
+static double Uniform(uint64_t* state) {
+  *state = *state * 6364136223846793005ULL + 1442695040888963407ULL;
+  return (double)(*state >> 11) / (double)(1ULL << 53);
+}
+
+static void TestCalibration(const fs::path& dir) {
+  // 樣本不夠或只有一種結果：不給機率
+  ime::Calibrator few;
+  for (int i = 0; i < 29; ++i)
+    few.Add(i % 2 ? 5 : 0, i % 2 == 1);
+  CHECK(!few.Ready() && !ime::HasConfidence(few.Probability(3)));
+  ime::Calibrator same;
+  for (int i = 0; i < 100; ++i)
+    same.Add(i * 0.1, true);
+  CHECK(!same.Ready());
+
+  // 使用者真正的採用機率是 sigmoid(1.5·(gain −
+  // 4))：擬合出來要接近，而且是校準的
+  ime::Calibrator c;
+  uint64_t rng = 42;
+  for (int i = 0; i < 2000; ++i) {
+    const double gain = (i % 100) / 10.0;
+    const double truth = 1.0 / (1.0 + std::exp(-1.5 * (gain - 4)));
+    c.Add(gain, Uniform(&rng) < truth, false);
+  }
+  c.Fit();
+  CHECK(c.Ready());
+  CHECK(std::abs(c.a() - 1.5) < 0.3);
+  CHECK(std::abs(c.b() + 6) < 1.2);
+  CHECK(c.Probability(8) > 0.95 && c.Probability(1) < 0.05);
+  CHECK(c.Probability(2) < c.Probability(3));
+  CHECK(c.Ece() < 0.05);
+  CHECK(c.LogLoss() < std::log(2.0));  // 比亂猜好
+  // 只留最近的樣本
+  for (int i = 0; i < 100; ++i)
+    c.Add(1, true);
+  CHECK(c.Samples() == ime::Calibrator::kMaxSamples);
+
+  // 存檔：另一個 store 讀回來的結果一樣
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  {
+    ime::CalibrationStore store(dir);
+    CHECK(store.Summary(ime::SuggestionKind::kRecommend).empty());
+    for (int i = 0; i < 40; ++i)
+      store.Record(ime::SuggestionKind::kRecommend, i % 10, i % 10 >= 5);
+    store.Record(ime::SuggestionKind::kCorrection, 2, true);
+    CHECK(ime::HasConfidence(
+        store.Probability(ime::SuggestionKind::kRecommend, 7)));
+    CHECK(!ime::HasConfidence(
+        store.Probability(ime::SuggestionKind::kCorrection, 7)));
+  }
+  ime::CalibrationStore reloaded(dir);
+  const double p7 = reloaded.Probability(ime::SuggestionKind::kRecommend, 7);
+  const double p2 = reloaded.Probability(ime::SuggestionKind::kRecommend, 2);
+  CHECK(ime::HasConfidence(p7) && p7 > 0.8 && p2 < 0.2);
+  CHECK(reloaded.Summary(ime::SuggestionKind::kRecommend).find("ECE") !=
+        std::string::npos);
+  CHECK(reloaded.Summary(ime::SuggestionKind::kCorrection).find("1 筆") !=
+        std::string::npos);
+}
+
+static void TestConfidenceOrdering() {
+  // 推薦「今天汽 → 今天氣」gain 6；校正「今天汽 → 今天天氣」gain 5（-10 → -5）
+  FakeScorer model;
+  model.predictions = {L"很好"};
+  model.correction = L"今天天氣";
+  model.score = {{L'今', -1}, {L'天', -1}, {L'汽', -8}, {L'氣', -2}};
+  std::mutex mutex;
+  double p_recommend = 0.3, p_correction = 0.9;
+  std::vector<std::pair<ime::SuggestionKind, double>> asked;
+  ime::PredictionEngine::Hooks hooks;
+  hooks.models = [&] {
+    ime::PredictionModels m;
+    m.predict = m.typo = m.rescore = &model;
+    return m;
+  };
+  hooks.rescore_input =
+      [&](uint64_t, uint64_t, std::vector<std::wstring>* units,
+          std::vector<std::vector<std::wstring>>* homophones) {
+        *units = {L"今", L"天", L"汽"};
+        *homophones = {{L"今"}, {L"天"}, {L"汽", L"氣"}};
+        return true;
+      };
+  hooks.confidence = [&](ime::SuggestionKind kind, double gain) {
+    std::lock_guard<std::mutex> lock(mutex);
+    asked.emplace_back(kind, gain);
+    return kind == ime::SuggestionKind::kRecommend ? p_recommend : p_correction;
+  };
+  std::atomic<int> updates{0};
+  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) {
+    ++updates;
+  };
+  ime::PredictionEngine engine(hooks);
+
+  ime::PredictionRequest typing;
+  typing.history = L"前文";
+  typing.prefix = L"今天汽";
+  typing.predict = typing.correct = typing.rescore = true;
+  typing.zhuyin = L"ㄐㄧㄣ ㄊㄧㄢ ㄑㄧˋ";
+  const auto run = [&](const ime::PredictionRequest& req, int publishes) {
+    updates = 0;
+    engine.Request(req);
+    CHECK(WaitFor([&] { return updates.load() == publishes; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    return engine.Snapshot();
+  };
+
+  // 校正的採用機率比較高：排到推薦前面（Tab 選到的是校正）
+  ime::PredictionSet set = run(typing, 3);
+  CHECK(set.candidates.size() >= 2 && set.candidates[0] == L"今天天氣" &&
+        set.candidates[1] == L"今天氣");
+  CHECK(set.IsCorrection(0) && set.IsRecommend(1));
+  CHECK(std::abs(set.Gain(0) - 5) < 1e-9 && std::abs(set.Gain(1) - 6) < 1e-9);
+  CHECK(set.Confidence(0) == 0.9 && set.Comment(0) == L"校正 90%" &&
+        set.Comment(1) == L"推薦 30%");
+  CHECK(!ime::HasConfidence(set.Confidence(2)) && set.Comment(2).empty());
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK(asked.size() == 2 &&
+          asked[0].first == ime::SuggestionKind::kRecommend &&
+          asked[1].first == ime::SuggestionKind::kCorrection);
+  }
+
+  // 推薦低於門檻：不顯示，續寫接在校正後面
+  typing.min_confidence = 0.5;
+  set = run(typing, 2);
+  CHECK(set.Count(ime::CandidateKind::kRecommend) == 0 && set.IsCorrection(0));
+  CHECK(model.last_context == L"前文今天天氣");
+
+  // 都低於門檻：只剩續寫，接在原本的轉換結果後面
+  p_correction = 0.2;
+  set = run(typing, 1);
+  CHECK(set.Count(ime::CandidateKind::kRecommend) == 0 &&
+        set.Count(ime::CandidateKind::kCorrection) == 0);
+  CHECK(model.last_context == L"前文今天汽");
+
+  // 還在拼注音時不比較校正前後（避免沒拼完的注音把 gain 灌高）
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    asked.clear();
+  }
+  p_correction = 0.9;
+  typing.min_confidence = 0;
+  typing.prefix = L"今天ㄑ";
+  typing.rescore = false;
+  model.correction = L"今天氣";
+  set = run(typing, 2);
+  CHECK(set.IsCorrection(0) && !ime::HasConfidence(set.Gain(0)));
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK(asked.empty());
+  }
+}
+
 static void TestLearnFilter(const fs::path& dir) {
   // 片段的平均分數：逗號切開，低於門檻的不學；分數與文字長度對不上時不擋
   const std::wstring text = L"今天很好，ㄅㄅㄅ";
@@ -420,7 +586,8 @@ static void TestLearnFilter(const fs::path& dir) {
   // 假的評分：「亂」「碼」很低，其他 -2；前幾次回報忙碌
   std::atomic<int> busy{2};
   std::atomic<bool> available{true};
-  auto scorer = [&](const std::wstring&, const std::wstring& t, std::vector<double>* per_char) {
+  auto scorer = [&](const std::wstring&, const std::wstring& t,
+                    std::vector<double>* per_char) {
     if (busy > 0) {
       --busy;
       return LearnFilter::Score::kBusy;
@@ -485,8 +652,10 @@ static void TestSplits(const fs::path& dir) {
     lexicon.Record(L"w", L"我明天下午要去台北開會");
     CHECK(lexicon.WordScore(L"我明天下午要去台北開會") > 1.5);
     // 接不回原片段（改了字）、只有一段：不收
-    lexicon.ApplySplits({{L"好啊", {L"好", L"阿"}}, {L"再說", {L"再說"}},
-                         {L"我明天下午要去台北開會", {L"我", L"明天下午", L"要去", L"台北", L"開會"}}});
+    lexicon.ApplySplits({{L"好啊", {L"好", L"阿"}},
+                         {L"再說", {L"再說"}},
+                         {L"我明天下午要去台北開會",
+                          {L"我", L"明天下午", L"要去", L"台北", L"開會"}}});
     CHECK(lexicon.Splits().size() == 1);
     // 分數與接續移到拆出來的部分
     CHECK(lexicon.WordScore(L"我明天下午要去台北開會") == 0);
@@ -519,15 +688,18 @@ static void TestSplits(const fs::path& dir) {
     CHECK(lexicon.ExportTo(exported, 100));
     std::string plain;
     CHECK(personal_crypto::ReadProtected(exported, &plain));
-    CHECK(plain.find(utf8::FromWide(L"S\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n")) !=
+    CHECK(plain.find(utf8::FromWide(
+              L"S\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n")) !=
           std::string::npos);
     const fs::path edits = dir / "edit.dat";
-    CHECK(personal_crypto::WriteProtected(edits, utf8::FromWide(L"WWPE1\nZ\t我明天下午要去台北開會\n")));
+    CHECK(personal_crypto::WriteProtected(
+        edits, utf8::FromWide(L"WWPE1\nZ\t我明天下午要去台北開會\n")));
     CHECK(lexicon.ApplyEdits(edits) == 1);
     CHECK(lexicon.Splits().empty());
     lexicon.Record(L"w", L"我明天下午要去台北開會");
     CHECK(lexicon.WordScore(L"我明天下午要去台北開會") > 0);
-    lexicon.ApplySplits({{L"我明天下午要去台北開會", {L"我", L"明天下午", L"要去", L"台北", L"開會"}}});
+    lexicon.ApplySplits({{L"我明天下午要去台北開會",
+                          {L"我", L"明天下午", L"要去", L"台北", L"開會"}}});
     CHECK(lexicon.Splits().size() == 1);
     // 親自加入整個片段：取消拆解
     lexicon.AddWord(L"我明天下午要去台北開會");
@@ -545,6 +717,8 @@ int main() {
   TestZhuyin();
   TestRescore();
   TestPredictionEngine();
+  TestConfidenceOrdering();
+  TestCalibration(dir / "calibration");
   TestChoiceStats(dir / "stats");
   TestChoiceLog(dir / "log");
   TestLearnFilter(dir / "personal");

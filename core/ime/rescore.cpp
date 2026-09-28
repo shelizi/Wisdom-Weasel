@@ -11,7 +11,8 @@ namespace ime {
 std::wstring RescoreSentence(LLMProvider* scorer,
                              const std::wstring& context,
                              const std::vector<std::wstring>& units,
-                             const std::vector<std::vector<std::wstring>>& homophones) {
+                             const std::vector<std::vector<std::wstring>>& homophones,
+                             double* gain) {
   const double kMargin = 0.5;      // 推薦門檻
   const size_t kPositions = 4;     // 最多檢查幾個位置
   const size_t kAlternatives = 5;  // 每個位置最多試幾個同音字
@@ -89,6 +90,8 @@ std::wstring RescoreSentence(LLMProvider* scorer,
   if (g_dev_console && g_dev_console->IsEnabled())
     g_dev_console->WriteLine(L"[LLM] 推薦：" + base_text + L" → " + zhuyin_preview::Join(current) +
                              L"（改善 " + std::to_wstring(current_total - base_total) + L"）");
+  if (gain)
+    *gain = current_total - base_total;
   return zhuyin_preview::Join(current) + rest;
 }
 
