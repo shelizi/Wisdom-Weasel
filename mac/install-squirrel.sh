@@ -118,35 +118,19 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 killall imklaunchagent 2> /dev/null || true
 
 # ---- 4. 設定
-if [ "$with_model" = 1 ]; then
-  step "LLM 設定：$rime_dir/squirrel.custom.yaml"
-  mkdir -p "$rime_dir"
-  custom="$rime_dir/squirrel.custom.yaml"
-  if [ -f "$custom" ]; then
-    backup="$custom.bak.$(date +%Y%m%d%H%M%S)"
-    cp "$custom" "$backup"
-    echo "原本的設定備份在 $backup"
+# 把設定合併進 <檔案> 的 patch: 底下，以標記框起來；再執行時只替換這一段。
+# 其他地方已經有的同名設定（連同底下的子項目）會拿掉：同一個鍵出現兩次時 YAML 無效。
+# 改之前先備份。回傳 3：<檔案> 已經有網頁版設定寫的整個 <map> 區塊（會蓋過單一設定），沒有修改
+#   merge_patch <檔案> <標記名稱> <map 或空字串> <JSON：[[鍵, YAML 值], …]>
+merge_patch() {
+  mkdir -p "$(dirname "$1")"
+  if [ -f "$1" ]; then
+    cp "$1" "$1.bak.$(date +%Y%m%d%H%M%S)"
   fi
-  # 設定放在 patch: 底下、以標記框起來的一段；再執行時只替換這一段。
-  # 其他地方已經有的同名設定會拿掉（同一個鍵出現兩次時 YAML 無效）
-  merge_status=0
-  MODEL_PATH="$model_path" /usr/bin/python3 - "$custom" <<'PYEOF' || merge_status=$?
-import os, re, sys
-path = sys.argv[1]
-begin, end = "# >>> Wisdom-Weasel 本機 LLM（mac/install-squirrel.sh 產生）", "# <<< Wisdom-Weasel 本機 LLM"
-settings = [
-    ("llm/enabled", "true"),
-    ("llm/provider_type", "llamacpp"),
-    ("llm/llamacpp/model_path", '"%s"' % os.environ["MODEL_PATH"]),
-    ("llm/llamacpp/model_type", "Instruct"),
-    # Gemma 常輸出簡體字。提示詞由預測與整句校正共用，只放兩者都適用的要求
-    ("llm/prompt", '"一律使用繁體中文（臺灣用字）輸出，不要使用簡體字。"'),
-    ("llm/llamacpp/n_ctx", "2048"),
-    ("llm/llamacpp/n_gpu_layers", "-1"),
-    ("llm/llamacpp/max_tokens", "8"),
-    # 快打模式以 Tab、Shift+數字選字：打字中不顯示 LLM 補全，才不會搶走選字鍵（送出後的預測照常）
-    ("llm/predict_while_typing", "false"),
-]
+  /usr/bin/python3 - "$@" <<'PYEOF'
+import json, os, re, sys
+path, label, map_key, settings = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+begin, end = "# >>> Wisdom-Weasel %s（mac/install-squirrel.sh 產生）" % label, "# <<< Wisdom-Weasel %s" % label
 lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
 # 拿掉上次產生的一段
 out, skipping = [], False
@@ -160,17 +144,28 @@ for line in lines:
         continue
     out.append(line)
 lines = out
-keys = {k for k, _ in settings}
-if any(re.match(r"^\s+llm:\s*(#.*)?$", l) for l in lines):
-    # 網頁版設定已經寫了整個 llm: 區塊（會蓋過 "llm/..." 的單一設定）：不重複寫，拿掉上次的一段就好
+if map_key and any(re.match(r"^\s+%s:\s*(#.*)?$" % re.escape(map_key), l) for l in lines):
     open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     sys.exit(3)
-key_re = re.compile(r'^\s+["\']?([^"\':]+)["\']?\s*:')
-lines = [l for l in lines if not (key_re.match(l) and key_re.match(l).group(1).strip() in keys)]
+keys = {k for k, _ in settings}
+key_re = re.compile(r'^(\s+)["\']?([^"\':]+)["\']?\s*:')
+indent_of = lambda l: len(l) - len(l.lstrip())
+out, drop_deeper = [], None
+for l in lines:
+    if drop_deeper is not None:
+        if not l.strip() or indent_of(l) > drop_deeper:
+            continue
+        drop_deeper = None
+    m = key_re.match(l)
+    if m and m.group(2).strip() in keys:
+        drop_deeper = len(m.group(1))
+        continue
+    out.append(l)
+lines = out
 patch_at = next((i for i, l in enumerate(lines) if re.match(r"^patch:\s*(#.*)?$", l)), None)
 if patch_at is None:
     if any(re.match(r"^patch:", l) for l in lines):
-        sys.exit("squirrel.custom.yaml 的 patch: 不是一般的區塊寫法，請手動加入 llm/* 設定")
+        sys.exit("%s 的 patch: 不是一般的區塊寫法，請手動加入設定" % path)
     lines += ([""] if lines and lines[-1].strip() else []) + ["patch:"]
     patch_at = len(lines) - 1
 # 沿用 patch: 底下原本的縮排
@@ -185,6 +180,25 @@ block = [indent + begin] + ['%s"%s": %s' % (indent, k, v) for k, v in settings] 
 lines[patch_at + 1:patch_at + 1] = block
 open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 PYEOF
+}
+
+if [ "$with_model" = 1 ]; then
+  step "LLM 設定：$rime_dir/squirrel.custom.yaml"
+  # Gemma 常輸出簡體字。提示詞由預測與整句校正共用，只放兩者都適用的要求。
+  # 快打模式以 Tab、Shift+數字選字：打字中不顯示 LLM 補全，才不會搶走選字鍵（送出後的預測照常）
+  llm_settings="$(MODEL_PATH="$model_path" /usr/bin/python3 -c 'import json, os; print(json.dumps([
+    ["llm/enabled", "true"],
+    ["llm/provider_type", "llamacpp"],
+    ["llm/llamacpp/model_path", json.dumps(os.environ["MODEL_PATH"])],
+    ["llm/llamacpp/model_type", "Instruct"],
+    ["llm/prompt", json.dumps("一律使用繁體中文（臺灣用字）輸出，不要使用簡體字。", ensure_ascii=False)],
+    ["llm/llamacpp/n_ctx", "2048"],
+    ["llm/llamacpp/n_gpu_layers", "-1"],
+    ["llm/llamacpp/max_tokens", "8"],
+    ["llm/predict_while_typing", "false"],
+  ], ensure_ascii=False))')"
+  merge_status=0
+  merge_patch "$rime_dir/squirrel.custom.yaml" "本機 LLM" llm "$llm_settings" || merge_status=$?
   if [ "$merge_status" = 3 ]; then
     echo "LLM 設定由網頁版設定管理（squirrel.custom.yaml 的 llm: 區塊），沒有修改：模型在網頁版設定選 ${model_path}"
   elif [ "$merge_status" != 0 ]; then
@@ -205,6 +219,16 @@ patch:
     - schema: bopomofo_express
 YAMLEOF
 fi
+
+# macOS 用 Caps Lock 切換輸入法時，這一下也會送到鼠鬚管，把 Rime 切成西文：
+# Caps Lock 不切換中英（中英用 Shift）
+step "Caps Lock 不切換中英：$rime_dir/default.custom.yaml"
+merge_patch "$rime_dir/default.custom.yaml" "Caps Lock" "" '[["ascii_composer/switch_key/Caps_Lock", "noop"]]'
+
+# 注音·快打模式的說明寫「支持亂序輸入」，但它的拼寫規則漏了 zhuyin:/free_order：照一般注音的順序補上
+step "快打模式的亂序輸入：$rime_dir/bopomofo_express.custom.yaml"
+merge_patch "$rime_dir/bopomofo_express.custom.yaml" "亂序輸入" "" \
+  '[["speller/algebra", "{__patch: [\"zhuyin:/pinyin_to_zhuyin\", \"zhuyin:/free_order\", \"zhuyin:/abbreviation\", \"zhuyin:/keymap_bopomofo\"]}"]]'
 
 step "重新部署"
 "$install_dir/Squirrel.app/Contents/MacOS/Squirrel" --reload || true
