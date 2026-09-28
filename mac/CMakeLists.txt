@@ -77,6 +77,8 @@ if(LLAMA_ROOT AND RIME_LIB)
   find_library(LLAMA_LIB llama HINTS "${LLAMA_ROOT}/lib" REQUIRED)
   find_library(GGML_LIB ggml HINTS "${LLAMA_ROOT}/lib" REQUIRED)
   find_library(GGML_BASE_LIB ggml-base HINTS "${LLAMA_ROOT}/lib")
+  # llama.h 引用 ggml.h；Homebrew 的 ggml 是另一個套件，不在 llama.cpp 的前綴裡
+  find_path(GGML_INCLUDE ggml.h HINTS "${LLAMA_ROOT}/include" REQUIRED)
   add_executable(WisdomLLMHost
     ${ROOT}/mac/WisdomLLMHost/main.cpp
     ${CORE}/llm/host_service.cpp
@@ -87,7 +89,7 @@ if(LLAMA_ROOT AND RIME_LIB)
     ${CORE}/platform/posix/process_posix.cpp
     ${CORE}/net/curl/http_curl.cpp
   )
-  target_include_directories(WisdomLLMHost PRIVATE ${COMMON_INCLUDES} "${LLAMA_ROOT}/include")
+  target_include_directories(WisdomLLMHost PRIVATE ${COMMON_INCLUDES} "${LLAMA_ROOT}/include" "${GGML_INCLUDE}")
   target_link_libraries(WisdomLLMHost PRIVATE ${LLAMA_LIB} ${GGML_LIB} CURL::libcurl ${RIME_LIB})
   if(GGML_BASE_LIB)
     target_link_libraries(WisdomLLMHost PRIVATE ${GGML_BASE_LIB})
