@@ -322,6 +322,9 @@ struct Backend::State {
     if (!saved)
       return {{"deployed", false}, {"message", "沒有需要套用的變更。"}};
     platform.Deploy();
+    // settings_get_config 是開啟設定時載入的部署結果，不含剛存的修改：部署完重新載入，
+    // 回傳給網頁的 llm 才是新的（否則表單會顯示舊值，例如關掉的整句校正又顯示開啟）
+    api->load_settings(style);
     return {{"deployed", true},
             {"message", errors.empty() ? "已套用。" : "已套用；" + errors},
             {"llm", LLMJson()},
