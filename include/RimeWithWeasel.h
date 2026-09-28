@@ -117,7 +117,9 @@ class RimeWithWeaselHandler : public weasel::RequestHandler,
   void _GetStatus(weasel::Status& stat,
                   WeaselSessionId ipc_id,
                   weasel::Context& ctx);
-  void _GetContext(weasel::Context& ctx, RimeSessionId session_id);
+  void _GetContext(weasel::Context& ctx,
+                   WeaselSessionId ipc_id,
+                   bool ascii_mode);
   void _UpdateShowNotifications(RimeConfig* config, bool initialize = false);
 
   bool _IsSessionTSF(RimeSessionId session_id);

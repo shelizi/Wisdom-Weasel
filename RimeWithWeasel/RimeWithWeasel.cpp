@@ -669,7 +669,7 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   bool need_context = !is_tsf || has_llm_candidates;
 
   if (need_context) {
-    _GetContext(weasel_context, session_id);
+    _GetContext(weasel_context, ipc_id, weasel_status.ascii_mode);
     // 中英混打：服务端候选窗（非 TSF）的组字前面接上混打内容
     const SessionStatus& mixed_status = get_session_status(ipc_id);
     if (mixed_status.mixed_active()) {
@@ -1655,10 +1655,27 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
 }
 
 void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
-                                        RimeSessionId session_id) {
+                                        WeaselSessionId ipc_id,
+                                        bool ascii_mode) {
+  RimeSessionId session_id = to_session_id(ipc_id);
   RIME_STRUCT(RimeContext, ctx);
   if (rime_api->get_context(session_id, &ctx)) {
-    if (ctx.composition.length > 0) {
+    ime::Preedit preview;
+    // 與 _Respond 相同：preedit_type: preview 時顯示轉換後的預覽，
+    // 否則 LLM 結果非同步刷新候選窗時，組字會變回注音
+    if (ctx.composition.length > 0 &&
+        get_session_status(ipc_id).style.preedit_type == UIStyle::PREVIEW &&
+        m_controller->PreviewPreedit(ipc_id, ctx, ascii_mode, &preview)) {
+      weasel_context.preedit.str = preview.text;
+      if (preview.cursor >= 0) {
+        TextAttribute attr;
+        attr.type = HIGHLIGHTED;
+        attr.range.start = preview.sel_start;
+        attr.range.end = preview.sel_end;
+        attr.range.cursor = preview.cursor;
+        weasel_context.preedit.attributes.push_back(attr);
+      }
+    } else if (ctx.composition.length > 0) {
       weasel_context.preedit.str = u8tow(ctx.composition.preedit);
       if (ctx.composition.sel_start < ctx.composition.sel_end) {
         TextAttribute attr;
