@@ -327,7 +327,8 @@ int main(int argc, char** argv) {
       const PredictionSet set = controller.Predictions();
       CHECK(set.candidates.size() == 1 && set.candidates[0] == first + L"很好");
     }
-    CHECK(frontend.refreshes > 0);
+    // 引擎先寫入候選、再拿鎖通知候選窗：等通知送到
+    CHECK(WaitFor([&] { return frontend.refreshes > 0; }));
     const int calls = model->calls;
     t.Key(key::kTab);
     CHECK(t.commits.size() == 1 && t.commits.back() == first + L"很好");
