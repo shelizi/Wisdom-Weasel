@@ -49,7 +49,8 @@ mac/install-squirrel.sh              # --no-model：只安裝輸入法；--rebui
 
 手動的步驟：
 
-`squirrel/` 是鼠鬚管的修改版（`wisdom` 分支，下面「接到鼠鬚管」的改動都在裡面）。需要完整的 Xcode。
+`squirrel/` 是鼠鬚管的修改版（submodule：[shelizi/squirrel](https://github.com/shelizi/squirrel) 的 `wisdom` 分支，
+下面「接到鼠鬚管」的改動都在裡面；`git submodule update --init squirrel` 取得）。需要完整的 Xcode。
 
 ```sh
 cd squirrel

@@ -1,3 +1,7 @@
 [submodule "plum"]
 	path = plum
 	url = https://github.com/rime/plum.git
+[submodule "squirrel"]
+	path = squirrel
+	url = https://github.com/shelizi/squirrel.git
+	branch = wisdom
