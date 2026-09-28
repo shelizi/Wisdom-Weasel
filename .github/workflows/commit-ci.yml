@@ -83,9 +83,15 @@ jobs:
 
       - name: Get Rime files
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
+          # get-rime.ps1 exits quietly on errors (e.g. API rate limits): fail here instead of at link time
+          foreach ($f in 'libime.lib', 'lib64ime.lib', 'outputime.dll') {
+            if (-not (Test-Path $f)) { throw "get-rime.ps1 did not provide $f" }
+          }
 
       - name: Get WebView2 SDK
         shell: pwsh
@@ -192,9 +198,15 @@ jobs:
 
       - name: Get Rime files
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
+          # get-rime.ps1 exits quietly on errors (e.g. API rate limits): fail here instead of at link time
+          foreach ($f in 'libime.lib', 'lib64ime.lib', 'outputime.dll') {
+            if (-not (Test-Path $f)) { throw "get-rime.ps1 did not provide $f" }
+          }
 
       - name: Get WebView2 SDK
         shell: pwsh

@@ -110,6 +110,8 @@ if ($tag) {
 } else {
   $apiUrl = $api_pat + "latest"
 }
+# CI：未設定 authorization 時用 GITHUB_TOKEN，避免共用 IP 的匿名呼叫碰到流量限制
+if (!$authorization -and $env:GITHUB_TOKEN) { $global:authorization = $env:GITHUB_TOKEN }
 $webRequestParams = @{
   Uri = $apiUrl
   Headers = @{ Accept = "application/vnd.github.v3+json" }
