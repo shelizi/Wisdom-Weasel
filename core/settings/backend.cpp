@@ -394,8 +394,10 @@ Backend::Backend(Platform& platform, Options options, Emit emit)
     throw Error("無法載入 Rime 設定模組（levers）。");
   s_->switcher = s_->api->switcher_settings_init();
   s_->style = s_->api->custom_settings_init(s_->options.config_id.c_str(), s_->options.generator_id.c_str());
-  if (!s_->api->load_settings((RimeCustomSettings*)s_->switcher) || !s_->api->load_settings(s_->style))
-    throw Error("無法讀取 Rime 設定。");
+  // load_settings 在 <設定>.custom.yaml 還不存在時回傳 false（基本設定照樣載入）：還沒自訂過是正常的，
+  // 例如鼠鬚管沒有 default.custom.yaml。套用時 save_settings 會建立它
+  s_->api->load_settings((RimeCustomSettings*)s_->switcher);
+  s_->api->load_settings(s_->style);
   s_->LoadSchemas();
 }
 
