@@ -177,6 +177,7 @@ rem web settings pages (the installer takes them from output\web)
 xcopy /E /I /Y /Q web output\web >nul
 if errorlevel 1 goto error
 if %build_installer% == 1 (
+  if not exist output\archives mkdir output\archives
   "%ProgramFiles(x86)%"\NSIS\Bin\makensis.exe ^
   /DWEASEL_VERSION=%WEASEL_VERSION% ^
   /DWEASEL_BUILD=%WEASEL_BUILD% ^
