@@ -93,6 +93,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\get-webview2.ps1
 
+      - name: Get llama.cpp headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-llama-headers.ps1
+
       - name: Build data
         shell: pwsh
         run: |
@@ -195,6 +201,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           .\get-webview2.ps1
+
+      - name: Get llama.cpp headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-llama-headers.ps1
 
 
       - name: Build data
