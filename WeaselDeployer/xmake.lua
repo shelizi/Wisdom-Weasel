@@ -2,7 +2,7 @@ target("WeaselDeployer")
   set_kind("binary")
   add_files("./*.cpp")
   add_rules("add_rcfiles", "use_weaselconstants", "subwin")
-  add_links("imm32", "kernel32", "rime", "d2d1", "dwrite", "Shcore")
+  add_links("imm32", "kernel32", "rime", "d2d1", "dwrite", "Shcore", "comdlg32")
   add_deps("WeaselIPC", "RimeWithWeasel")
   -- 網頁版設定：WebView2 SDK（get-webview2.ps1 下載到 deps\webview2）
   add_includedirs("$(projectdir)/deps/webview2/include")
