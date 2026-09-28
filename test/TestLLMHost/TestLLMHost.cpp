@@ -1,5 +1,6 @@
 // 輸入法端 llm_ipc::Client 的測試：推理行程正常回覆、取消、當掉後重新啟動、
-// 連續當掉後停用、取消後不回應時強制結束、逾時、請求進行中解構。以 run.bat 編譯執行。
+// 連續當掉後停用、取消後不回應時強制結束、逾時、請求進行中解構。以 run.bat
+// 編譯執行。
 #include "../../core/llm_ipc/client.h"
 
 #include <atomic>
@@ -48,7 +49,9 @@ static Writer Predict(const std::string& context, const std::string& mode) {
 }
 
 // 回覆的第一個候選；失敗時回傳 "<none>"
-static std::string First(Client& client, const std::string& context, const std::string& mode,
+static std::string First(Client& client,
+                         const std::string& context,
+                         const std::string& mode,
                          const std::function<bool()>& cancelled = nullptr,
                          milliseconds timeout = milliseconds(0)) {
   auto reply = client.Call(Predict(context, mode), cancelled, timeout);
@@ -64,7 +67,11 @@ int main(int argc, char** argv) {
   // 正常回覆，含 UTF-8 與較大的內容
   {
     Client client(MakeOptions());
-    CHECK(client.Setup([] { Writer w(Op::kCreate, 0); w.Str("test"); return w; }()));
+    CHECK(client.Setup([] {
+      Writer w(Op::kCreate, 0);
+      w.Str("test");
+      return w;
+    }()));
     CHECK(First(client, "你好", "echo") == "你好");
     const std::string big(3 << 20, 'x');
     CHECK(First(client, big, "echo") == big);
@@ -87,7 +94,8 @@ int main(int argc, char** argv) {
       cancel = true;
     });
     const auto start = steady_clock::now();
-    CHECK(First(client, "", "wait", [&] { return cancel.load(); }) == "cancelled");
+    CHECK(First(client, "", "wait", [&] { return cancel.load(); }) ==
+          "cancelled");
     CHECK(steady_clock::now() - start < seconds(2));
     canceller.join();
     CHECK(First(client, "still", "echo") == "still");  // 同一個推理行程繼續用
@@ -97,12 +105,21 @@ int main(int argc, char** argv) {
   {
     std::vector<std::string> events;
     Client client(MakeOptions(&events));
-    client.Setup([] { Writer w(Op::kCreate, 0); w.Str("test"); return w; }());
-    client.Setup([] { Writer w(Op::kLoadConfig, 0); w.Str("weasel"); return w; }());
+    client.Setup([] {
+      Writer w(Op::kCreate, 0);
+      w.Str("test");
+      return w;
+    }());
+    client.Setup([] {
+      Writer w(Op::kLoadConfig, 0);
+      w.Str("weasel");
+      return w;
+    }());
     CHECK(First(client, "", "setups") == "2");
     CHECK(First(client, "", "crash") == "<none>");
     CHECK(!client.GaveUp());
-    CHECK(First(client, "", "setups") == "2");  // 新的推理行程收到了重送的兩個設定
+    CHECK(First(client, "", "setups") ==
+          "2");  // 新的推理行程收到了重送的兩個設定
     CHECK(First(client, "back", "echo") == "back");
     CHECK(!events.empty());
   }
@@ -110,7 +127,11 @@ int main(int argc, char** argv) {
   // 兩次請求之間當掉：下一次請求不會失敗，自動重新啟動
   {
     Client client(MakeOptions());
-    client.Setup([] { Writer w(Op::kCreate, 0); w.Str("test"); return w; }());
+    client.Setup([] {
+      Writer w(Op::kCreate, 0);
+      w.Str("test");
+      return w;
+    }());
     CHECK(First(client, "", "exit") == "bye");
     std::this_thread::sleep_for(milliseconds(300));
     CHECK(First(client, "next", "echo") == "next");
@@ -131,7 +152,8 @@ int main(int argc, char** argv) {
     const auto start = steady_clock::now();
     CHECK(First(client, "x", "echo") == "<none>");
     CHECK(steady_clock::now() - start < milliseconds(100));  // 停用後立即回傳
-    CHECK(!events.empty() && events.back().find("暫停使用") != std::string::npos);
+    CHECK(!events.empty() &&
+          events.back().find("暫停使用") != std::string::npos);
   }
 
   // 取消後不回應：寬限時間後強制結束

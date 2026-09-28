@@ -203,8 +203,8 @@ int WalkStack(CONTEXT ctx, DWORD64* frames, int max_frames) {
       } else {
         PVOID handler_data = NULL;
         DWORD64 establisher = 0;
-        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, ctx.Rip, fn, &ctx, &handler_data,
-                         &establisher, NULL);
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, ctx.Rip, fn, &ctx,
+                         &handler_data, &establisher, NULL);
       }
     }
   } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -223,9 +223,11 @@ void WriteStall(ULONGLONG elapsed, DWORD msg) {
   SYSTEMTIME t;
   GetLocalTime(&t);
   char head[160];
-  sprintf_s(head, "==== %04d-%02d-%02d %02d:%02d:%02d request msg=%lu stalled %llu ms (listener tid=%lu)",
-            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, msg, elapsed,
-            g_listener_tid.load());
+  sprintf_s(head,
+            "==== %04d-%02d-%02d %02d:%02d:%02d request msg=%lu stalled %llu "
+            "ms (listener tid=%lu)",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, msg,
+            elapsed, g_listener_tid.load());
   out << head << "\n";
 
   const DWORD pid = GetCurrentProcessId();
@@ -237,8 +239,9 @@ void WriteStall(ULONGLONG elapsed, DWORD msg) {
   for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
     if (te.th32OwnerProcessID != pid || te.th32ThreadID == self)
       continue;
-    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
-                           FALSE, te.th32ThreadID);
+    HANDLE th = OpenThread(
+        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+        FALSE, te.th32ThreadID);
     if (!th)
       continue;
     CONTEXT ctx = {};
@@ -252,7 +255,8 @@ void WriteStall(ULONGLONG elapsed, DWORD msg) {
     }
     CloseHandle(th);
     out << "-- thread " << te.th32ThreadID
-        << (te.th32ThreadID == g_listener_tid.load() ? " (IPC listener)" : "") << "\n";
+        << (te.th32ThreadID == g_listener_tid.load() ? " (IPC listener)" : "")
+        << "\n";
     for (int i = 0; i < n; ++i) {
       char buf[sizeof(SYMBOL_INFO) + 256] = {};
       SYMBOL_INFO* sym = (SYMBOL_INFO*)buf;
@@ -260,7 +264,8 @@ void WriteStall(ULONGLONG elapsed, DWORD msg) {
       sym->MaxNameLen = 255;
       DWORD64 disp = 0;
       IMAGEHLP_MODULE64 mod = {sizeof(mod)};
-      const char* mod_name = SymGetModuleInfo64(process, frames[i], &mod) ? mod.ModuleName : "?";
+      const char* mod_name =
+          SymGetModuleInfo64(process, frames[i], &mod) ? mod.ModuleName : "?";
       out << "   " << mod_name << "!";
       if (SymFromAddr(process, frames[i], &disp, sym))
         out << sym->Name << "+0x" << std::hex << disp << std::dec;
@@ -283,7 +288,8 @@ void WriteStall(ULONGLONG, DWORD) {}
 
 void StartStallWatchdog() {
   std::thread([]() {
-    ULONGLONG reported = 0;  // 已回报过的请求（以开始时间辨识），同一次卡住只写一次
+    ULONGLONG reported =
+        0;  // 已回报过的请求（以开始时间辨识），同一次卡住只写一次
     for (;;) {
       Sleep(250);
       const ULONGLONG start = g_request_start.load();
@@ -301,7 +307,8 @@ void StartStallWatchdog() {
 }  // namespace
 
 // 所有 IPC 请求都在这把锁下串行处理（librime 与候选窗都不是线程安全的）。
-// 后台线程（如 LLM 异步预测完成后刷新候选窗）也必须先取得这把锁，见 weasel::ServerApiMutex()。
+// 后台线程（如 LLM 异步预测完成后刷新候选窗）也必须先取得这把锁，见
+// weasel::ServerApiMutex()。
 std::mutex& weasel::ServerApiMutex() {
   static std::mutex m;
   return m;
@@ -465,13 +472,17 @@ DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
   return 0;
 }
 
-DWORD ServerImpl::OnLLMTest(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
+DWORD ServerImpl::OnLLMTest(WEASEL_IPC_COMMAND uMsg,
+                            DWORD wParam,
+                            DWORD lParam) {
   if (m_pRequestHandler)
     m_pRequestHandler->LLMTestRequest();
   return 0;
 }
 
-DWORD ServerImpl::OnPersonal(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
+DWORD ServerImpl::OnPersonal(WEASEL_IPC_COMMAND uMsg,
+                             DWORD wParam,
+                             DWORD lParam) {
   if (m_pRequestHandler)
     m_pRequestHandler->PersonalCommand(wParam);
   return 0;

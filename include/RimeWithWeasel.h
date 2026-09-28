@@ -46,16 +46,20 @@ typedef std::map<std::string, bool> AppOptions;
 typedef std::map<std::string, AppOptions, CaseInsensitiveCompare>
     AppOptionsByAppName;
 
-// Rime 之外的輸入法狀態在 ime::SessionState（core/ime/session_state.h），這裡只多了 Weasel 的介面狀態
+// Rime 之外的輸入法狀態在
+// ime::SessionState（core/ime/session_state.h），這裡只多了 Weasel 的介面狀態
 struct SessionStatus : ime::SessionState {
-  SessionStatus() : style(weasel::UIStyle()), __synced(false) { RIME_STRUCT(RimeStatus, status); }
+  SessionStatus() : style(weasel::UIStyle()), __synced(false) {
+    RIME_STRUCT(RimeStatus, status);
+  }
   weasel::UIStyle style;
   RimeStatus status;
   bool __synced;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
-class RimeWithWeaselHandler : public weasel::RequestHandler, private ime::Frontend {
+class RimeWithWeaselHandler : public weasel::RequestHandler,
+                              private ime::Frontend {
  public:
   RimeWithWeaselHandler(weasel::UI* ui);
   virtual ~RimeWithWeaselHandler();
@@ -91,7 +95,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler, private ime::Fronte
 
   // 设置上下文历史记录实例
   void SetContextHistory(ContextHistory* context_history);
-  
+
   // 设置开发终端实例
   void SetDevConsole(DevConsole* dev_console);
 
@@ -153,14 +157,16 @@ class RimeWithWeaselHandler : public weasel::RequestHandler, private ime::Fronte
   bool m_global_ascii_mode;
   int m_show_notifications_time;
   DWORD m_pid;
-  
+
   // 上下文历史记录和开发终端
   ContextHistory* m_context_history;
   DevConsole* m_dev_console;
 
-  // 輸入法行為（混打、逐字選字、LLM 預測、個人詞庫、選字統計）在 core/ime 的控制器
+  // 輸入法行為（混打、逐字選字、LLM 預測、個人詞庫、選字統計）在 core/ime
+  // 的控制器
   std::unique_ptr<ime::Controller> m_controller;
-  bool m_llm_server_ui_shown = false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
+  bool m_llm_server_ui_shown =
+      false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
 
   // ime::Frontend：控制器用到的 Weasel 功能
   ime::SessionState* Session(uint64_t id) override;

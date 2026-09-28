@@ -66,12 +66,14 @@ int Configurator::Run(bool installing, int start_page) {
 
   // 安裝時只有首次執行才顯示設定視窗（與原本逐一詢問的行為一致）
   const bool skip_settings =
-      installing && !api->is_first_run((RimeCustomSettings*)switcher_settings) &&
+      installing &&
+      !api->is_first_run((RimeCustomSettings*)switcher_settings) &&
       !api->is_first_run(ui_style_settings.settings());
 
   // 輸入方案、外觀、LLM 智慧預測合併在同一個視窗；套用時在視窗內直接重新部署
   bool deployed = false;
-  if (!skip_settings && api->load_settings((RimeCustomSettings*)switcher_settings) &&
+  if (!skip_settings &&
+      api->load_settings((RimeCustomSettings*)switcher_settings) &&
       api->load_settings(ui_style_settings.settings())) {
     SettingsDialog dialog(switcher_settings, &ui_style_settings,
                           [this] { UpdateWorkspace(true); });

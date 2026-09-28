@@ -1,4 +1,5 @@
-// 個人資料加密的測試。以 run.bat 編譯執行；金鑰檔放在暫存資料夾，不動到真正的金鑰。
+// 個人資料加密的測試。以 run.bat
+// 編譯執行；金鑰檔放在暫存資料夾，不動到真正的金鑰。
 #include <PersonalCrypto.h>
 
 #include "../../core/platform/key_store.h"
@@ -18,17 +19,18 @@ namespace fs = std::filesystem;
 using namespace personal_crypto;
 
 static int failures = 0;
-#define CHECK(cond)                                           \
-  do {                                                        \
-    if (!(cond)) {                                            \
+#define CHECK(cond)                                               \
+  do {                                                            \
+    if (!(cond)) {                                                \
       std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      ++failures;                                             \
-    }                                                         \
+      ++failures;                                                 \
+    }                                                             \
   } while (0)
 
 static std::string ReadAll(const fs::path& p) {
   std::ifstream in(p, std::ios::binary);
-  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  return std::string(std::istreambuf_iterator<char>(in),
+                     std::istreambuf_iterator<char>());
 }
 
 // 舊版格式：直接以 DPAPI 加密
@@ -52,11 +54,13 @@ int main() {
 
   // 多個執行緒同時第一次建立金鑰：大家拿到同一把
   {
-    std::vector<std::vector<uint8_t>> keys(8, std::vector<uint8_t>(platform::kKeySize));
+    std::vector<std::vector<uint8_t>> keys(
+        8, std::vector<uint8_t>(platform::kKeySize));
     std::vector<std::thread> threads;
     std::vector<int> ok(keys.size());
     for (size_t i = 0; i < keys.size(); ++i)
-      threads.emplace_back([&, i] { ok[i] = platform::LoadOrCreateKey(keys[i].data()); });
+      threads.emplace_back(
+          [&, i] { ok[i] = platform::LoadOrCreateKey(keys[i].data()); });
     for (auto& t : threads)
       t.join();
     for (size_t i = 0; i < keys.size(); ++i) {
@@ -71,8 +75,9 @@ int main() {
   }
 
   // 來回加解密；空字串與含 NUL 的資料
-  for (const std::string plain : {std::string(), std::string("WWPL1\n詞\t3\n"),
-                                  std::string("a\0b", 3), std::string(100000, 'x')}) {
+  for (const std::string plain :
+       {std::string(), std::string("WWPL1\n詞\t3\n"), std::string("a\0b", 3),
+        std::string(100000, 'x')}) {
     std::string cipher, back;
     CHECK(Protect(plain, &cipher));
     CHECK(cipher.size() == plain.size() + 44);

@@ -16,8 +16,10 @@ namespace {
 const wchar_t kRegKey[] = L"Software\\Rime\\Weasel";
 
 template <typename T, typename U>
-fs::path DoFileDialog(HWND owner, const std::string& title,
-                      const std::vector<settings::FileFilter>& filters, const std::string& file_name,
+fs::path DoFileDialog(HWND owner,
+                      const std::string& title,
+                      const std::vector<settings::FileFilter>& filters,
+                      const std::string& file_name,
                       const std::string& def_ext) {
   std::vector<std::wstring> names, specs;
   for (const auto& f : filters) {
@@ -113,12 +115,14 @@ void WinSettingsPlatform::Deploy() {
 bool WinSettingsPlatform::InstallSchemas(std::string* error) {
   // 執行安裝資料夾裡的 rime-install.bat（東風破），等它結束
   HKEY key;
-  const std::wstring reg = is_wow64() ? L"Software\\WOW6432Node\\Rime\\Weasel" : L"Software\\Rime\\Weasel";
+  const std::wstring reg = is_wow64() ? L"Software\\WOW6432Node\\Rime\\Weasel"
+                                      : L"Software\\Rime\\Weasel";
   wchar_t root[MAX_PATH] = {0};
   DWORD len = sizeof(root), type = 0;
   bool found = false;
   if (RegOpenKeyW(HKEY_LOCAL_MACHINE, reg.c_str(), &key) == ERROR_SUCCESS) {
-    found = RegQueryValueExW(key, L"WeaselRoot", NULL, &type, (LPBYTE)root, &len) == ERROR_SUCCESS &&
+    found = RegQueryValueExW(key, L"WeaselRoot", NULL, &type, (LPBYTE)root,
+                             &len) == ERROR_SUCCESS &&
             type == REG_SZ;
     RegCloseKey(key);
   }
@@ -126,7 +130,8 @@ bool WinSettingsPlatform::InstallSchemas(std::string* error) {
     *error = "找不到小狼毫的安裝資料夾。";
     return false;
   }
-  const std::wstring parameters = std::wstring(L"/k \"") + root + L"\\rime-install.bat\"";
+  const std::wstring parameters =
+      std::wstring(L"/k \"") + root + L"\\rime-install.bat\"";
   SHELLEXECUTEINFOW cmd = {sizeof(cmd)};
   cmd.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
   cmd.lpVerb = L"open";
@@ -140,16 +145,24 @@ bool WinSettingsPlatform::InstallSchemas(std::string* error) {
   return true;
 }
 
-fs::path WinSettingsPlatform::OpenFileDialog(void* owner, const std::string& title,
-                                             const std::vector<settings::FileFilter>& filters,
-                                             const std::string& file_name, const std::string& default_ext) {
-  return DoFileDialog<IFileOpenDialog, FileOpenDialog>((HWND)owner, title, filters, file_name, default_ext);
+fs::path WinSettingsPlatform::OpenFileDialog(
+    void* owner,
+    const std::string& title,
+    const std::vector<settings::FileFilter>& filters,
+    const std::string& file_name,
+    const std::string& default_ext) {
+  return DoFileDialog<IFileOpenDialog, FileOpenDialog>(
+      (HWND)owner, title, filters, file_name, default_ext);
 }
 
-fs::path WinSettingsPlatform::SaveFileDialog(void* owner, const std::string& title,
-                                             const std::vector<settings::FileFilter>& filters,
-                                             const std::string& file_name, const std::string& default_ext) {
-  return DoFileDialog<IFileSaveDialog, FileSaveDialog>((HWND)owner, title, filters, file_name, default_ext);
+fs::path WinSettingsPlatform::SaveFileDialog(
+    void* owner,
+    const std::string& title,
+    const std::vector<settings::FileFilter>& filters,
+    const std::string& file_name,
+    const std::string& default_ext) {
+  return DoFileDialog<IFileSaveDialog, FileSaveDialog>(
+      (HWND)owner, title, filters, file_name, default_ext);
 }
 
 void WinSettingsPlatform::Reveal(const fs::path& file) {
@@ -193,14 +206,16 @@ std::vector<std::string> WinSettingsPlatform::SystemFonts() {
   GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH);
   CComPtr<IDWriteFactory> factory;
   CComPtr<IDWriteFontCollection> collection;
-  if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+  if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                                 __uuidof(IDWriteFactory),
                                  reinterpret_cast<IUnknown**>(&factory))) ||
       FAILED(factory->GetSystemFontCollection(&collection)))
     return fonts;
   for (UINT32 i = 0; i < collection->GetFontFamilyCount(); ++i) {
     CComPtr<IDWriteFontFamily> family;
     CComPtr<IDWriteLocalizedStrings> names;
-    if (FAILED(collection->GetFontFamily(i, &family)) || FAILED(family->GetFamilyNames(&names)))
+    if (FAILED(collection->GetFontFamily(i, &family)) ||
+        FAILED(family->GetFamilyNames(&names)))
       continue;
     UINT32 index = 0;
     BOOL exists = FALSE;
@@ -222,13 +237,14 @@ std::vector<std::string> WinSettingsPlatform::SystemFonts() {
 
 int WinSettingsPlatform::GetPreference(const std::string& key, int fallback) {
   DWORD value = 0, size = sizeof(value);
-  if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, u8tow(key).c_str(), RRF_RT_REG_DWORD, NULL, &value,
-                   &size) != ERROR_SUCCESS)
+  if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, u8tow(key).c_str(),
+                   RRF_RT_REG_DWORD, NULL, &value, &size) != ERROR_SUCCESS)
     return fallback;
   return (int)value;
 }
 
 void WinSettingsPlatform::SetPreference(const std::string& key, int value) {
   DWORD v = (DWORD)value;
-  RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, u8tow(key).c_str(), REG_DWORD, &v, sizeof(v));
+  RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, u8tow(key).c_str(), REG_DWORD, &v,
+                  sizeof(v));
 }

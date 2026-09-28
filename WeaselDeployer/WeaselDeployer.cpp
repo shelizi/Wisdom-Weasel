@@ -65,12 +65,15 @@ static int Run(LPTSTR lpCmdLine) {
   Configurator configurator;
   configurator.Initialize();
 
-  // 去掉命令列頭尾的空白（有些啟動方式會在參數後面多加空白，例如 Windows PowerShell 5.1）
+  // 去掉命令列頭尾的空白（有些啟動方式會在參數後面多加空白，例如 Windows
+  // PowerShell 5.1）
   std::wstring command_line = lpCmdLine ? lpCmdLine : L"";
   const size_t first = command_line.find_first_not_of(L" \t");
-  command_line = first == std::wstring::npos
-                     ? std::wstring()
-                     : command_line.substr(first, command_line.find_last_not_of(L" \t") - first + 1);
+  command_line =
+      first == std::wstring::npos
+          ? std::wstring()
+          : command_line.substr(
+                first, command_line.find_last_not_of(L" \t") - first + 1);
   lpCmdLine = &command_line[0];
 
   if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
@@ -104,7 +107,8 @@ static int Run(LPTSTR lpCmdLine) {
     return configurator.Run(false);
   }
 
-  // 網頁版設定：/websettings [--page N] [--screenshot 檔案 --theme 1|2 --size 寬 高]
+  // 網頁版設定：/websettings [--page N] [--screenshot 檔案 --theme 1|2 --size
+  // 寬 高]
   if (!wcsncmp(L"/websettings", lpCmdLine, 12)) {
     WebSettingsOptions options;
     int argc = 0;

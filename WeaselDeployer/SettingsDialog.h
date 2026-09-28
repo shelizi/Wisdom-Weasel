@@ -44,29 +44,32 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 開啟時顯示的分頁（例如托盤的「用戶詞典管理」直接開到詞庫管理）
   void SetStartPage(int page) { start_page_ = page; }
 
-  // 一組模型設定（本機 llama.cpp 或 OpenAI 相容 API）；預測與個人詞庫精煉各自選用一組
+  // 一組模型設定（本機 llama.cpp 或 OpenAI 相容
+  // API）；預測與個人詞庫精煉各自選用一組
   struct ModelProfile {
     std::wstring name;
     bool remote = false;
-    std::wstring model_path;           // 本機
+    std::wstring model_path;            // 本機
     std::wstring model_type = L"Base";  // Base / Instruct
-    std::wstring api_url;              // OpenAI 相容 API
+    std::wstring api_url;               // OpenAI 相容 API
     std::wstring api_key;
     std::wstring model;
-    bool no_think = false;             // 關閉思考（思考型模型）
-    int think_tokens = 2048;           // 開啟思考時的思考長度上限（0 = 不限制）
+    bool no_think = false;  // 關閉思考（思考型模型）
+    int think_tokens = 2048;  // 開啟思考時的思考長度上限（0 = 不限制）
   };
 
  protected:
   enum {
     WM_APP_REFONT = WM_APP + 1,  // DPI 變更後重新套用自訂字型
-    WM_APP_FILE_PROGRESS,        // 模型檔下載／複製進度（wParam：0 進行中、1 完成、2 失敗）
-    WM_APP_API_TEST,             // API 連線測試完成
-    WM_APP_GRAMMAR_PROGRESS,     // 語言模型下載進度（wParam：0 進行中、1 完成、2 失敗）
-    WM_APP_WORD_RENAME,          // 詞彙清單的就地編輯結束後，送出修改
-    kTimerTestPoll = 1,          // 等待輸入法回覆預測測試
-    kTimerStatusPoll = 2,        // 重新部署後，等輸入法載入模型
-    kTimerPersonalPoll = 3,      // 個人詞庫頁：更新狀態（精煉進度）
+    WM_APP_FILE_PROGRESS,  // 模型檔下載／複製進度（wParam：0 進行中、1 完成、2
+                           // 失敗）
+    WM_APP_API_TEST,  // API 連線測試完成
+    WM_APP_GRAMMAR_PROGRESS,  // 語言模型下載進度（wParam：0 進行中、1 完成、2
+                              // 失敗）
+    WM_APP_WORD_RENAME,  // 詞彙清單的就地編輯結束後，送出修改
+    kTimerTestPoll = 1,  // 等待輸入法回覆預測測試
+    kTimerStatusPoll = 2,    // 重新部署後，等輸入法載入模型
+    kTimerPersonalPoll = 3,  // 個人詞庫頁：更新狀態（精煉進度）
   };
 
   BEGIN_MSG_MAP(SettingsDialog)
@@ -250,7 +253,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   };
 
  protected:
-  // 主題：0 = 跟隨系統、1 = 淺色、2 = 深色（存在 HKCU\Software\Rime\Weasel\SettingsTheme）
+  // 主題：0 = 跟隨系統、1 = 淺色、2 = 深色（存在
+  // HKCU\Software\Rime\Weasel\SettingsTheme）
   void ApplyTheme();
   void ShowPage(int page);
   void ApplyFonts();
@@ -265,7 +269,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 選字策略頁
   void RefreshGrammarStatus();
   void RefreshChoiceStats();
-  static LRESULT CALLBACK HeaderTextSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+  static LRESULT CALLBACK
+      HeaderTextSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   LRESULT OnStatsSelChanged(int, LPNMHDR, BOOL&);
   LRESULT OnStatsPeriod(WORD, WORD, HWND, BOOL&);
   void RefreshChoiceLogStatus();
@@ -283,26 +288,31 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void PopulateModels(const std::wstring& current);
   int AddModel(const std::wstring& path);
   void UpdateLLMEnableState();
-  bool IsRemoteProvider() const;  // 目前編輯的模型設定是 OpenAI 相容 API（否則為本機 llama.cpp）
+  bool IsRemoteProvider()
+      const;  // 目前編輯的模型設定是 OpenAI 相容 API（否則為本機 llama.cpp）
   void GoToPage(int page);
   // 語言模型（多組設定）
   void LoadProfiles(RimeConfig* config);
   void SaveProfiles(RimeConfig* llm);
   bool ValidateProfiles();
   void PopulateProfileList();
-  void SelectProfile(int index);    // 顯示到右側編輯區
-  void UpdateThinkState();          // 關閉思考時停用「思考長度上限」
-  void CommitProfileEditor();       // 編輯區 → profiles_
-  // 預測與精煉的下拉選單；參數為要選的 profiles_ 索引（-1 = 不選，-2 = 維持目前的選擇）
+  void SelectProfile(int index);  // 顯示到右側編輯區
+  void UpdateThinkState();     // 關閉思考時停用「思考長度上限」
+  void CommitProfileEditor();  // 編輯區 → profiles_
+  // 預測與精煉的下拉選單；參數為要選的 profiles_ 索引（-1 = 不選，-2 =
+  // 維持目前的選擇）
   void RefreshProfileCombos(int predict = -2, int refine = -2, int typo = -2);
   void UpdateProfileUsage();
   // 模型檔案（使用者資料夾的 models）
   void PopulateModelFiles(const std::wstring& select = L"");
   void UpdateModelFileButtons();
   // 在背景下載或複製模型檔（src 為網址或本機路徑）
-  void StartModelFileJob(const std::wstring& src, const std::wstring& dest, bool download);
+  void StartModelFileJob(const std::wstring& src,
+                         const std::wstring& dest,
+                         bool download);
   void SetFileStatus(const std::wstring& text);
-  int ComboProfile(int combo_id) const;  // 下拉選單選到的 profiles_ 索引（-1 = 沒有 / 不使用）
+  int ComboProfile(int combo_id)
+      const;  // 下拉選單選到的 profiles_ 索引（-1 = 沒有 / 不使用）
   static std::wstring ProfileLabel(const ModelProfile& p);
   bool SaveLLMSettings();
   // 預測測試（透過正在執行的輸入法）
@@ -312,16 +322,19 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   void LoadPersonalSettings(RimeConfig* llm_config);
   void SavePersonalSettings(RimeConfig* llm);
   void UpdatePersonalEnableState();
-  // 注音排序：修改注音方案的 custom.yaml 改用 terra_pinyin.personal，並準備好詞典檔
+  // 注音排序：修改注音方案的 custom.yaml 改用
+  // terra_pinyin.personal，並準備好詞典檔
   bool ApplyRimeBoost(bool enable, std::wstring* error);
   bool SendPersonalCommand(DWORD command);  // 見 WEASEL_IPC_PERSONAL
   void RefreshPersonalStatus();             // 讀 personal/status.txt
   // 詞庫管理
-  void LoadPersonalWords();                 // 請輸入法匯出詞彙與規則後讀回
+  void LoadPersonalWords();  // 請輸入法匯出詞彙與規則後讀回
   void PopulateWordList();
   void PopulateRuleList();
-  bool SendWordEdits(const std::vector<std::wstring>& lines);  // 格式見 PersonalLexicon::ApplyEdits
-  bool EndWordLabelEdit(bool save);  // 詞彙清單正在就地編輯時結束編輯；沒在編輯時回傳 false
+  bool SendWordEdits(const std::vector<std::wstring>&
+                         lines);  // 格式見 PersonalLexicon::ApplyEdits
+  bool EndWordLabelEdit(
+      bool save);  // 詞彙清單正在就地編輯時結束編輯；沒在編輯時回傳 false
   void PopulateDicts();
   void UpdateDictButtons();
 
@@ -340,9 +353,10 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   bool style_modified_ = false;
   bool llm_modified_ = false;
   bool personal_modified_ = false;
-  bool rime_boost_loaded_ = false;  // 載入時的「注音排序」設定（變更時才改方案）
+  bool rime_boost_loaded_ =
+      false;  // 載入時的「注音排序」設定（變更時才改方案）
   bool typo_modified_ = false;
-  bool typo_rime_loaded_ = false;   // 載入時的 Rime 容錯設定（有變才改方案）
+  bool typo_rime_loaded_ = false;  // 載入時的 Rime 容錯設定（有變才改方案）
   int start_page_ = 0;
 
   // 語言模型
@@ -350,7 +364,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   int profile_sel_ = -1;
   bool loading_profile_ = false;  // 載入編輯區時不觸發變更
   CListBox model_files_;
-  std::vector<std::wstring> model_file_paths_;  // 與 model_files_ 的項目一一對應
+  std::vector<std::wstring>
+      model_file_paths_;  // 與 model_files_ 的項目一一對應
   std::thread file_worker_;
   std::atomic<bool> file_busy_{false};
   // 語言模型（octagram）：載入時是否已啟用、是否改過、下載狀態
@@ -361,12 +376,12 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   std::shared_ptr<std::wstring> grammar_error_;
   std::atomic<bool> file_cancel_{false};
   std::mutex file_mutex_;
-  std::wstring file_message_;   // 背景工作的進度／結果文字（file_mutex_）
-  std::wstring file_result_;    // 完成的檔案路徑
-  std::thread api_worker_;      // API 連線測試
+  std::wstring file_message_;  // 背景工作的進度／結果文字（file_mutex_）
+  std::wstring file_result_;  // 完成的檔案路徑
+  std::thread api_worker_;    // API 連線測試
   std::atomic<bool> api_busy_{false};
-  std::wstring api_result_;     // 測試結果（file_mutex_）
-  int api_profile_ = -1;        // 測試的是哪一組
+  std::wstring api_result_;  // 測試結果（file_mutex_）
+  int api_profile_ = -1;     // 測試的是哪一組
   CListBox profile_list_;
   CComboBox predict_profile_;
   CComboBox typo_profile_;  // 注音校正使用的模型
@@ -380,12 +395,13 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   std::vector<std::pair<std::wstring, double>> words_;
   std::vector<WordRule> rules_;
   bool words_loaded_ = false;
-  std::pair<std::wstring, std::wstring> pending_rename_;  // 就地編輯：原寫法 → 新寫法
+  std::pair<std::wstring, std::wstring>
+      pending_rename_;             // 就地編輯：原寫法 → 新寫法
   bool word_edit_cancel_ = false;  // 就地編輯按了 Esc：結束時不套用
   bool personal_disabled_ = false;
   CListViewCtrl words_list_;
   CListViewCtrl rules_list_;
-  CListViewCtrl stats_list_;                 // 選字統計：每個版本與設定組合一列
+  CListViewCtrl stats_list_;  // 選字統計：每個版本與設定組合一列
   CComboBox stats_period_;
   std::vector<std::wstring> stats_details_;  // 每一列的詳細資訊
   CListBox dicts_;
@@ -415,7 +431,8 @@ class SettingsDialog : public CDialogDpiAware<SettingsDialog> {
   // 樣式
   DWORD theme_pref_ = 0;
   bool dark_ = false;
-  std::map<HWND, std::pair<LONG, LONG>> original_frames_;  // 清單原本的 style / exstyle
+  std::map<HWND, std::pair<LONG, LONG>>
+      original_frames_;  // 清單原本的 style / exstyle
   const Palette* pal_ = nullptr;
   HBRUSH input_brush_ = nullptr;
   HBRUSH separator_brush_ = nullptr;

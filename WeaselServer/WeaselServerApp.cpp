@@ -32,23 +32,24 @@ int WeaselServerApp::Run() {
 
   // 先初始化Rime（需要先initialize才能读取配置）
   m_handler->Initialize();
-  
+
   // 初始化开发终端（需要在rime_api->initialize()之后，才能读取配置）
   m_dev_console.Initialize();
   // 先设置全局 g_dev_console，以便 MemoryCompressor 等加载时能输出记忆相关日志
   m_handler->SetDevConsole(&m_dev_console);
-  
+
   // 创建上下文历史记录（最大50个词，超过时异步压缩旧25词，即一半）
-  m_context_history = std::make_unique<ContextHistory>(200);  // 每个窗口最多 200 段提交
-  
+  m_context_history =
+      std::make_unique<ContextHistory>(200);  // 每个窗口最多 200 段提交
+
   // 记忆压缩 LLM（从 weasel 配置 llm/memory/ 单独配置）
   m_memory_compressor = std::make_unique<MemoryCompressor>();
   m_memory_compressor->LoadConfig("weasel");
   m_context_history->SetMemoryCompressor(m_memory_compressor.get());
-  
+
   // 将上下文历史记录传递给 handler
   m_handler->SetContextHistory(m_context_history.get());
-  
+
   m_handler->OnUpdateUI([this]() { tray_icon.Refresh(); });
 
   tray_icon.Create(m_server.GetHWnd());

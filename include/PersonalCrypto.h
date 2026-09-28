@@ -14,10 +14,12 @@ bool Protect(const std::string& in, std::string* out);
 bool Unprotect(const std::string& in, std::string* out);
 
 // 先寫暫存檔再取代，避免存到一半斷電留下壞檔
-bool WriteFileAtomic(const std::filesystem::path& path, const std::string& data);
+bool WriteFileAtomic(const std::filesystem::path& path,
+                     const std::string& data);
 
 // 加密寫檔 / 讀檔解密
-bool WriteProtected(const std::filesystem::path& path, const std::string& plain);
+bool WriteProtected(const std::filesystem::path& path,
+                    const std::string& plain);
 bool ReadProtected(const std::filesystem::path& path, std::string* plain);
 
 }  // namespace personal_crypto

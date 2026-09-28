@@ -1,4 +1,5 @@
-// ime::Controller 的測試：用真的 librime（注音方案）與假的平台、假的模型，模擬打字
+// ime::Controller 的測試：用真的
+// librime（注音方案）與假的平台、假的模型，模擬打字
 //   TestController.exe <Rime 共用資料夾> <測試用的使用者資料夾>
 #include "../../core/ime/controller.h"
 #include "../../core/ime/keys.h"
@@ -65,7 +66,8 @@ class FakeModel : public LLMProvider {
   std::mutex mutex;
   std::wstring last_context;
   bool LoadConfig(const std::string&) override { return true; }
-  std::vector<std::wstring> PredictCandidates(const std::wstring& context, const std::wstring&,
+  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
+                                              const std::wstring&,
                                               size_t) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -81,7 +83,10 @@ class FakeModel : public LLMProvider {
 // 模擬 Weasel 的一次按鍵與回應
 class Typist {
  public:
-  Typist(RimeApi* api, Controller* controller, TestFrontend* frontend, uint64_t id)
+  Typist(RimeApi* api,
+         Controller* controller,
+         TestFrontend* frontend,
+         uint64_t id)
       : api_(api), c_(controller), f_(frontend), id_(id) {}
 
   SessionState& State() { return f_->sessions[id_]; }
@@ -241,7 +246,8 @@ int main(int argc, char** argv) {
     CHECK(!t.Composing());
   }
 
-  // 中英混打：組字中按 Shift 切英文，打的英文接在轉好的中文後面，再按 Shift 回中文，Enter 一起送出
+  // 中英混打：組字中按 Shift 切英文，打的英文接在轉好的中文後面，再按 Shift
+  // 回中文，Enter 一起送出
   {
     t.Type("5j4");
     const std::wstring first = t.preedit.text;
@@ -255,13 +261,14 @@ int main(int argc, char** argv) {
     t.Type("5j4");
     CHECK(t.Composing());
     CHECK(t.preedit.text.size() == first.size() + 3);  // 混打內容 + 組字
-    CHECK(t.commits.empty());  // 還沒送出
+    CHECK(t.commits.empty());                          // 還沒送出
     t.Key(key::kReturn);
     CHECK(t.commits.size() == 1);
     if (!t.commits.empty()) {
       const std::wstring& c = t.commits.back();
       std::printf("  mixed -> %s\n", U8(c).c_str());
-      CHECK(c.size() == 4 && c.compare(0, 3, first + L"ok") == 0 && IsCJK(c[3]));
+      CHECK(c.size() == 4 && c.compare(0, 3, first + L"ok") == 0 &&
+            IsCJK(c[3]));
     }
     CHECK(!ss.mixed_active());
     t.commits.clear();
@@ -272,7 +279,8 @@ int main(int argc, char** argv) {
     t.Type("5j4");
     t.Key('!', mod::kShift);
     CHECK(t.commits.empty());
-    CHECK(ss.mixed_text.size() == 2 && IsCJK(ss.mixed_text[0]) && !IsCJK(ss.mixed_text[1]));
+    CHECK(ss.mixed_text.size() == 2 && IsCJK(ss.mixed_text[0]) &&
+          !IsCJK(ss.mixed_text[1]));
     std::printf("  punct -> %s\n", U8(ss.mixed_text).c_str());
     t.Key(key::kReturn);
     CHECK(t.commits.size() == 1 && t.commits.back().size() == 2);
@@ -325,7 +333,8 @@ int main(int argc, char** argv) {
     {
       std::lock_guard<std::mutex> lock(model->mutex);
       CHECK(model->last_context.size() >= 3 &&
-            model->last_context.compare(model->last_context.size() - 3, 3, first + L"很好") == 0);
+            model->last_context.compare(model->last_context.size() - 3, 3,
+                                        first + L"很好") == 0);
     }
     const int hides = frontend.hides;
     const KeyResult esc = t.Key(key::kEscape);
@@ -344,10 +353,12 @@ int main(int argc, char** argv) {
     t.Type("5j");
     const KeyResult grave = t.Key(key::kGrave);
     CHECK(grave.handled && !grave.respond);
-    CHECK(WaitFor([&] {
-      std::lock_guard<std::mutex> lock(frontend.mutex);
-      return controller.ShowingPredictions();
-    }, 1000));
+    CHECK(WaitFor(
+        [&] {
+          std::lock_guard<std::mutex> lock(frontend.mutex);
+          return controller.ShowingPredictions();
+        },
+        1000));
     CHECK(history.GetSize() > 0);
     t.Key(key::kGrave);  // 500ms 內第二次
     CHECK(history.GetSize() == 0);

@@ -37,7 +37,8 @@ bool ResponseParser::operator()(LPWSTR buffer, UINT length) {
     return bs.good();
   } catch (...) {
     // 运行在宿主应用进程内，绝不让异常逃逸
-    OutputDebugStringA("[weasel] IPC response dropped: exception while parsing\n");
+    OutputDebugStringA(
+        "[weasel] IPC response dropped: exception while parsing\n");
     return false;
   }
 }

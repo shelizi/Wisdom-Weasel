@@ -25,10 +25,13 @@ std::wstring ToLower(std::wstring s);
 std::wstring FileNameOf(const std::wstring& path);
 std::wstring Trim(const std::wstring& s);  // 去掉首尾空白（含全形空白）與換行
 std::wstring FormatSize(unsigned long long bytes);
-std::wstring FormatTime(int64_t t);  // 本機時間 YYYY/MM/DD HH:MM；t <= 0 時為「—」
-// 輸入法回報的「目前載入」：本機模型是檔案路徑，只顯示檔名；OpenAI 相容 API 原樣顯示
+std::wstring FormatTime(
+    int64_t t);  // 本機時間 YYYY/MM/DD HH:MM；t <= 0 時為「—」
+// 輸入法回報的「目前載入」：本機模型是檔案路徑，只顯示檔名；OpenAI 相容 API
+// 原樣顯示
 std::wstring LoadedModelDisplay(const std::wstring& model);
-// 依檔名猜模型類型：含 base → Base；含 instruct / chat / -it → Instruct；否則 nullptr
+// 依檔名猜模型類型：含 base → Base；含 instruct / chat / -it → Instruct；否則
+// nullptr
 const wchar_t* GuessModelType(const std::wstring& path);
 
 // ---------------------------------------------------------------------------
@@ -41,11 +44,15 @@ struct FileFilter {
   std::wstring spec;
 };
 // 開檔／存檔對話框；取消時回傳空字串
-std::wstring OpenFileDialog(void* owner, const std::wstring& title,
-                            const std::vector<FileFilter>& filters, const wchar_t* file_name,
+std::wstring OpenFileDialog(void* owner,
+                            const std::wstring& title,
+                            const std::vector<FileFilter>& filters,
+                            const wchar_t* file_name,
                             const wchar_t* def_ext);
-std::wstring SaveFileDialog(void* owner, const std::wstring& title,
-                            const std::vector<FileFilter>& filters, const wchar_t* file_name,
+std::wstring SaveFileDialog(void* owner,
+                            const std::wstring& title,
+                            const std::vector<FileFilter>& filters,
+                            const wchar_t* file_name,
                             const wchar_t* def_ext);
 // 移到資源回收筒
 bool MoveToRecycleBin(const std::wstring& path);
@@ -65,28 +72,37 @@ struct ModelFile {
   unsigned long long size = 0;
 };
 std::vector<ModelFile> ListModelFiles();
-// 網址 → 下載網址與檔名；Hugging Face 的頁面網址（/blob/）換成下載網址（/resolve/）
+// 網址 → 下載網址與檔名；Hugging Face
+// 的頁面網址（/blob/）換成下載網址（/resolve/）
 std::wstring NormalizeModelUrl(std::wstring url, std::wstring* file_name);
 // 進度回呼回傳 false 時中止
-using Progress = std::function<bool(unsigned long long done, unsigned long long total)>;
+using Progress =
+    std::function<bool(unsigned long long done, unsigned long long total)>;
 // 以 WinHTTP 下載（自動跟隨轉址，例如 Hugging Face → CDN）
-bool HttpDownload(const std::wstring& url, const fs::path& dest, const Progress& progress,
+bool HttpDownload(const std::wstring& url,
+                  const fs::path& dest,
+                  const Progress& progress,
                   std::wstring* error);
-bool CopyFileWithProgress(const fs::path& src, const fs::path& dest, const Progress& progress,
+bool CopyFileWithProgress(const fs::path& src,
+                          const fs::path& dest,
+                          const Progress& progress,
                           std::wstring* error);
 // 檔案被輸入法載入中時會被鎖住，無法刪除
 bool FileInUse(const std::wstring& path);
 
 // ---------------------------------------------------------------------------
 // OpenAI 相容 API 連線測試：送一個很小的請求，回傳給人看的結果（✓ / ✗ 開頭）
-std::wstring TestApi(const std::wstring& api_url, const std::wstring& api_key,
+std::wstring TestApi(const std::wstring& api_url,
+                     const std::wstring& api_key,
                      const std::wstring& model);
 
 // ---------------------------------------------------------------------------
 // 注音方案的 custom.yaml：只增刪我們自己的標記區塊，保留使用者原有的設定與註解
 
 // 注音排序：注音方案改用 terra_pinyin.personal 詞典（個人詞庫的常用詞影響選字）
-bool ApplyRimeBoost(RimeLeversApi* api, RimeSwitcherSettings* switcher, bool enable,
+bool ApplyRimeBoost(RimeLeversApi* api,
+                    RimeSwitcherSettings* switcher,
+                    bool enable,
                     std::wstring* error);
 // 注音容錯：打開 Rime 的拼寫糾錯
 bool ApplyTypoCorrection(bool enable, std::wstring* error);
@@ -121,7 +137,8 @@ bool ClearChoiceLog();
 // 個人詞庫（經由輸入法讀寫）
 
 fs::path PersonalDir();
-// 1 更新狀態、2 精煉、3 全部重新精煉、4 清除、5 匯出詞彙、6 套用修改、7 產生注音排序詞典、8 清除統計
+// 1 更新狀態、2 精煉、3 全部重新精煉、4 清除、5 匯出詞彙、6 套用修改、7
+// 產生注音排序詞典、8 清除統計
 bool SendPersonalCommand(unsigned long command);
 // 狀態文字（與舊設定視窗顯示的相同）；running 表示精煉中
 std::wstring PersonalStatusText(bool* running);

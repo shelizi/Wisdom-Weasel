@@ -1,5 +1,6 @@
-// 舊的設定視窗（SettingsDialog）用的介面：UTF-16 字串，內部轉給共用的 core/settings
-// 與 Windows 平台功能（WinSettingsPlatform）。網頁版設定直接用 core/settings。
+// 舊的設定視窗（SettingsDialog）用的介面：UTF-16 字串，內部轉給共用的
+// core/settings 與 Windows 平台功能（WinSettingsPlatform）。網頁版設定直接用
+// core/settings。
 #include "stdafx.h"
 #include "SettingsOps.h"
 #include "WinSettingsPlatform.h"
@@ -52,20 +53,24 @@ struct ErrorOut {
 };
 
 core::Progress Wrap(const Progress& progress) {
-  return [progress](uint64_t done, uint64_t total) { return progress(done, total); };
+  return [progress](uint64_t done, uint64_t total) {
+    return progress(done, total);
+  };
 }
 
 }  // namespace
 
 const wchar_t kDefaultApiUrl[] = L"https://api.openai.com/v1/chat/completions";
 const wchar_t kGrammarUrl[] =
-    L"https://raw.githubusercontent.com/lotem/rime-octagram-data/hant/zh-hant-t-essay-bgw.gram";
+    L"https://raw.githubusercontent.com/lotem/rime-octagram-data/hant/"
+    L"zh-hant-t-essay-bgw.gram";
 
 // ---------------------------------------------------------------------------
 // 文字與路徑
 
 std::wstring ToLower(std::wstring s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](wchar_t c) { return (wchar_t)towlower(c); });
   return s;
 }
 
@@ -101,20 +106,26 @@ void OpenFolderAndSelectItem(std::wstring filepath) {
   Platform().Reveal(filepath);
 }
 
-std::wstring OpenFileDialog(void* owner, const std::wstring& title,
-                            const std::vector<FileFilter>& filters, const wchar_t* file_name,
+std::wstring OpenFileDialog(void* owner,
+                            const std::wstring& title,
+                            const std::vector<FileFilter>& filters,
+                            const wchar_t* file_name,
                             const wchar_t* def_ext) {
   return Platform()
-      .OpenFileDialog(owner, U8(title), Filters(filters), file_name ? U8(file_name) : "",
+      .OpenFileDialog(owner, U8(title), Filters(filters),
+                      file_name ? U8(file_name) : "",
                       def_ext ? U8(def_ext) : "")
       .wstring();
 }
 
-std::wstring SaveFileDialog(void* owner, const std::wstring& title,
-                            const std::vector<FileFilter>& filters, const wchar_t* file_name,
+std::wstring SaveFileDialog(void* owner,
+                            const std::wstring& title,
+                            const std::vector<FileFilter>& filters,
+                            const wchar_t* file_name,
                             const wchar_t* def_ext) {
   return Platform()
-      .SaveFileDialog(owner, U8(title), Filters(filters), file_name ? U8(file_name) : "",
+      .SaveFileDialog(owner, U8(title), Filters(filters),
+                      file_name ? U8(file_name) : "",
                       def_ext ? U8(def_ext) : "")
       .wstring();
 }
@@ -156,13 +167,17 @@ std::wstring NormalizeModelUrl(std::wstring url, std::wstring* file_name) {
   return W(result);
 }
 
-bool HttpDownload(const std::wstring& url, const fs::path& dest, const Progress& progress,
+bool HttpDownload(const std::wstring& url,
+                  const fs::path& dest,
+                  const Progress& progress,
                   std::wstring* error) {
   ErrorOut out(error);
   return net::Download(U8(url), dest, Wrap(progress), &out.value);
 }
 
-bool CopyFileWithProgress(const fs::path& src, const fs::path& dest, const Progress& progress,
+bool CopyFileWithProgress(const fs::path& src,
+                          const fs::path& dest,
+                          const Progress& progress,
                           std::wstring* error) {
   ErrorOut out(error);
   return core::CopyFileWithProgress(src, dest, Wrap(progress), &out.value);
@@ -172,11 +187,13 @@ bool FileInUse(const std::wstring& path) {
   return Platform().FileInUse(path);
 }
 
-std::wstring TestApi(const std::wstring& api_url, const std::wstring& api_key,
+std::wstring TestApi(const std::wstring& api_url,
+                     const std::wstring& api_key,
                      const std::wstring& model) {
   std::wstring text = W(core::TestApi(U8(api_url), U8(api_key), U8(model)));
   // 多行編輯框要 \r\n
-  for (size_t pos = 0; (pos = text.find(L'\n', pos)) != std::wstring::npos; pos += 2)
+  for (size_t pos = 0; (pos = text.find(L'\n', pos)) != std::wstring::npos;
+       pos += 2)
     text.insert(pos, 1, L'\r');
   return text;
 }
@@ -184,7 +201,9 @@ std::wstring TestApi(const std::wstring& api_url, const std::wstring& api_key,
 // ---------------------------------------------------------------------------
 // 注音方案的 custom.yaml
 
-bool ApplyRimeBoost(RimeLeversApi* api, RimeSwitcherSettings* switcher, bool enable,
+bool ApplyRimeBoost(RimeLeversApi* api,
+                    RimeSwitcherSettings* switcher,
+                    bool enable,
                     std::wstring* error) {
   ErrorOut out(error);
   return core::ApplyRimeBoost(Platform(), api, switcher, enable, &out.value);
@@ -270,14 +289,16 @@ PersonalWords LoadPersonalWords() {
   for (const auto& [word, score] : data.words)
     result.words.emplace_back(W(word), score);
   for (const auto& r : data.rules)
-    result.rules.push_back({r.kind == core::WordRule::kAdd     ? WordRule::kAdd
-                            : r.kind == core::WordRule::kBlock ? WordRule::kBlock
-                                                               : WordRule::kMerge,
+    result.rules.push_back({r.kind == core::WordRule::kAdd ? WordRule::kAdd
+                            : r.kind == core::WordRule::kBlock
+                                ? WordRule::kBlock
+                                : WordRule::kMerge,
                             W(r.from), W(r.to)});
   return result;
 }
 
-bool SendWordEdits(const std::vector<std::wstring>& lines, std::wstring* error) {
+bool SendWordEdits(const std::vector<std::wstring>& lines,
+                   std::wstring* error) {
   std::vector<std::string> utf8;
   for (const auto& line : lines)
     utf8.push_back(U8(line));

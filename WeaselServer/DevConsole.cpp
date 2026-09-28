@@ -35,7 +35,8 @@ void DevConsole::StartWriter() {
         return;
       std::string batch;
       if (q->dropped) {
-        batch = "[DevConsole] 主控台暫停期間略過 " + std::to_string(q->dropped) + " 段記錄\r\n";
+        batch = "[DevConsole] 主控台暫停期間略過 " +
+                std::to_string(q->dropped) + " 段記錄\r\n";
         q->dropped = 0;
       }
       while (!q->lines.empty()) {
@@ -46,7 +47,8 @@ void DevConsole::StartWriter() {
       const HANDLE output = q->output;
       lock.unlock();
       DWORD written = 0;
-      WriteFile(output, batch.data(), static_cast<DWORD>(batch.size()), &written, NULL);
+      WriteFile(output, batch.data(), static_cast<DWORD>(batch.size()),
+                &written, NULL);
       lock.lock();
     }
   }).detach();
@@ -180,8 +182,7 @@ bool DevConsole::AllocateConsole() {
   m_hConsoleOutput = GetStdHandle(STD_OUTPUT_HANDLE);
   m_hConsoleInput = GetStdHandle(STD_INPUT_HANDLE);
 
-  if (m_hConsoleOutput == INVALID_HANDLE_VALUE ||
-      m_hConsoleOutput == NULL) {
+  if (m_hConsoleOutput == INVALID_HANDLE_VALUE || m_hConsoleOutput == NULL) {
     FreeConsole();
     return false;
   }
@@ -254,4 +255,3 @@ void DevConsole::Close() {
   FreeConsole();
   m_enabled = false;
 }
-

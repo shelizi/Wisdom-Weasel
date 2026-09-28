@@ -80,8 +80,8 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
   options.version = wtou8(WEASEL_BUILD_HASH) + (WEASEL_BUILD_DIRTY ? "*" : "");
   options.build_time = wtou8(WEASEL_BUILD_TIME);
   options.build_subject = wtou8(WEASEL_BUILD_SUBJECT);
-  m_controller = std::make_unique<ime::Controller>(rime_api, static_cast<ime::Frontend*>(this),
-                                                  std::move(options));
+  m_controller = std::make_unique<ime::Controller>(
+      rime_api, static_cast<ime::Frontend*>(this), std::move(options));
   m_pid = GetCurrentProcessId();
   uint16_t msbit = 0;
   for (auto i = 31; i >= 0; i--) {
@@ -185,8 +185,9 @@ void RimeWithWeaselHandler::Initialize() {
                                   &m_show_notifications_time))
       m_show_notifications_time = 1200;
     _LoadAppOptions(&config, m_app_options);
-    
-    // LLM 預測、整句校正、推薦與個人詞庫（控制器讀 llm/*；m_dev_console 此時可能還沒設定）
+
+    // LLM 預測、整句校正、推薦與個人詞庫（控制器讀 llm/*；m_dev_console
+    // 此時可能還沒設定）
     m_controller->LoadConfig(&config);
     rime_api->config_close(&config);
   }
@@ -310,7 +311,6 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   m_ui->style() = get_session_status(m_active_session).style;
 }
 
-
 BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
                                             WeaselSessionId ipc_id,
                                             EatLine eat) {
@@ -319,8 +319,8 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   if (m_disabled)
     return FALSE;
 
-  const ime::KeyResult result =
-      m_controller->ProcessKey(ipc_id, keyEvent.keycode, expand_ibus_modifier(keyEvent.mask));
+  const ime::KeyResult result = m_controller->ProcessKey(
+      ipc_id, keyEvent.keycode, expand_ibus_modifier(keyEvent.mask));
   if (result.respond) {
     _Respond(ipc_id, eat);
     _UpdateUI(ipc_id);
@@ -352,11 +352,13 @@ void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
     WeaselSessionId ipc_id) {
   DLOG(INFO) << "select candidate on current page, ipc_id = " << ipc_id
              << ", index = " << index;
-  LOG(INFO) << "[DEBUG] SelectCandidateOnCurrentPage called: index=" << index 
-            << ", ipc_id=" << ipc_id << ", llm_mode=" << m_controller->PredictionMode();
+  LOG(INFO) << "[DEBUG] SelectCandidateOnCurrentPage called: index=" << index
+            << ", ipc_id=" << ipc_id
+            << ", llm_mode=" << m_controller->PredictionMode();
   if (m_disabled)
     return;
-  // LLM 候選（接在 Rime 候選後面）由控制器送出；送出的文字在下一次回應時交給應用程式
+  // LLM 候選（接在 Rime
+  // 候選後面）由控制器送出；送出的文字在下一次回應時交給應用程式
   if (m_controller->SelectCandidate(ipc_id, index))
     _UpdateUI(ipc_id);
 }
@@ -396,10 +398,10 @@ void RimeWithWeaselHandler::FocusIn(DWORD client_caps, WeaselSessionId ipc_id) {
 
 void RimeWithWeaselHandler::FocusOut(DWORD param, WeaselSessionId ipc_id) {
   DLOG(INFO) << "Focus out: ipc_id = " << ipc_id;
-  
+
   // 退出LLM预测模式（如果处于该模式）
   m_controller->FocusOut(ipc_id);
-  
+
   if (m_ui)
     m_ui->Hide();
   m_active_session = 0;
@@ -506,19 +508,20 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
   // 後台預測執行緒會替換候選，這裡取快照再使用
   const ime::PredictionSet llm_set = m_controller->Predictions();
   const std::vector<std::wstring>& llm_candidates = llm_set.candidates;
-  const size_t correction_count = llm_set.corrections, recommend_count = llm_set.recommends;
+  const size_t correction_count = llm_set.corrections,
+               recommend_count = llm_set.recommends;
   size_t llm_candidate_count = llm_candidates.size();
 
   // 先清空候选词信息，避免重复添加
   cinfo.candies.clear();
   cinfo.comments.clear();
   cinfo.labels.clear();
-  
+
   // 重新设置大小以容纳Rime候选词
   cinfo.candies.resize(ctx.menu.num_candidates);
   cinfo.comments.resize(ctx.menu.num_candidates);
   cinfo.labels.resize(ctx.menu.num_candidates);
-  
+
   // 处理Rime候选词
   for (int i = 0; i < ctx.menu.num_candidates; ++i) {
     cinfo.candies[i].str = escape_string(u8tow(ctx.menu.candidates[i].text));
@@ -538,18 +541,18 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
   cinfo.highlighted = ctx.menu.highlighted_candidate_index;
   cinfo.currentPage = ctx.menu.page_no;
   cinfo.is_last_page = ctx.menu.is_last_page;
-  
+
   // 如果处于LLM预测模式，添加LLM候选词
   if (llm_mode && llm_candidate_count > 0) {
     size_t rime_count = cinfo.candies.size();
-    
+
     if (m_dev_console && m_dev_console->IsEnabled()) {
       std::wstringstream ss;
-      ss << L"[DEBUG] _GetCandidateInfo: Rime候选词数=" << rime_count 
+      ss << L"[DEBUG] _GetCandidateInfo: Rime候选词数=" << rime_count
          << L", LLM候选词数=" << llm_candidate_count;
       m_dev_console->WriteLine(ss.str());
     }
-    
+
     // 将LLM候选词追加到Rime候选词后面
     for (size_t i = 0; i < llm_candidate_count; ++i) {
       Text llm_text;
@@ -557,29 +560,33 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
       // 导致客户端（加载在各应用进程内的 TSF）反序列化抛异常而使宿主应用崩溃
       llm_text.str = escape_string(llm_candidates[i]);
       cinfo.candies.push_back(llm_text);
-      
-      // 标签显示对应按键：Tab 选第一个，Shift+2~5 选其余（数字键在注音中是注音符号）
+
+      // 标签显示对应按键：Tab 选第一个，Shift+2~5
+      // 选其余（数字键在注音中是注音符号）
       Text label;
-      label.str = (i == 0) ? std::wstring(L"Tab") : L"⇧" + std::to_wstring(i + 1);
+      label.str =
+          (i == 0) ? std::wstring(L"Tab") : L"⇧" + std::to_wstring(i + 1);
       cinfo.labels.push_back(label);
-      
+
       // 推荐、整句校正的候选分别标示「推薦」「校正」，其余为空注释
       Text comment;
       comment.str = i < recommend_count                      ? L"推薦"
                     : i < recommend_count + correction_count ? L"校正"
                                                              : L"";
       cinfo.comments.push_back(comment);
-      
+
       if (m_dev_console && m_dev_console->IsEnabled()) {
         std::wstringstream ss;
-        // ss << L"[DEBUG] 添加LLM候选词到UI: " << label_index << L". " << llm_text.str;
+        // ss << L"[DEBUG] 添加LLM候选词到UI: " << label_index << L". " <<
+        // llm_text.str;
         m_dev_console->WriteLine(ss.str());
       }
     }
-    
+
     if (m_dev_console && m_dev_console->IsEnabled()) {
       std::wstringstream ss;
-      ss << L"[DEBUG] _GetCandidateInfo: 添加LLM候选词后，总候选词数=" << cinfo.candies.size();
+      ss << L"[DEBUG] _GetCandidateInfo: 添加LLM候选词后，总候选词数="
+         << cinfo.candies.size();
       m_dev_console->WriteLine(ss.str());
     }
   }
@@ -644,7 +651,7 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   // 准备状态和上下文
   Status& weasel_status = m_ui->status();
   Context weasel_context;
-  
+
   if (ipc_id == 0) {
     weasel_status.disabled = m_disabled;
   }
@@ -657,18 +664,18 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   // - 有LLM候选词时：无论是否TSF，都需要获取，以便在_UI中合并Rime+LLM候选
   bool has_llm_candidates = false;
 
-
   has_llm_candidates = m_controller->ShowingPredictions();
 
   bool need_context = !is_tsf || has_llm_candidates;
-  
+
   if (need_context) {
     _GetContext(weasel_context, session_id);
     // 中英混打：服务端候选窗（非 TSF）的组字前面接上混打内容
     const SessionStatus& mixed_status = get_session_status(ipc_id);
     if (mixed_status.mixed_active()) {
       const int offset = (int)mixed_status.mixed_text.size();
-      weasel_context.preedit.str = mixed_status.mixed_text + weasel_context.preedit.str;
+      weasel_context.preedit.str =
+          mixed_status.mixed_text + weasel_context.preedit.str;
       for (auto& attr : weasel_context.preedit.attributes) {
         attr.range.start += offset;
         attr.range.end += offset;
@@ -689,13 +696,15 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   // 判断是否应该显示UI
   // 条件1：正在输入且非TSF模式
   // 条件2：LLM预测模式且有候选词
-  bool should_show_ui = (weasel_status.composing && !is_tsf) || has_llm_candidates;
-  
+  bool should_show_ui =
+      (weasel_status.composing && !is_tsf) || has_llm_candidates;
+
   if (should_show_ui) {
     // 显示UI
     m_ui->Update(weasel_context, weasel_status);
     m_ui->Show();
-    // TSF 的候选窗由应用进程内的 TSF 绘制；这里弹出的是服务端候选窗（用于显示异步完成的 LLM 结果）
+    // TSF 的候选窗由应用进程内的 TSF
+    // 绘制；这里弹出的是服务端候选窗（用于显示异步完成的 LLM 结果）
     if (is_tsf)
       m_llm_server_ui_shown = true;
   } else {
@@ -704,11 +713,11 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
 
     // 如果没有消息且非TSF模式，隐藏UI
     if (!has_message && !is_tsf) {
-    m_ui->Hide();
-    m_ui->Update(weasel_context, weasel_status);
+      m_ui->Hide();
+      m_ui->Update(weasel_context, weasel_status);
     } else if (!has_message && is_tsf && m_llm_server_ui_shown) {
-      // TSF 下 LLM 候选已清除（继续打字/提交/取消）：收起服务端候选窗，交回 TSF 自己的候选窗，
-      // 否则旧窗会一直盖在 TSF 候选窗上面
+      // TSF 下 LLM 候选已清除（继续打字/提交/取消）：收起服务端候选窗，交回 TSF
+      // 自己的候选窗， 否则旧窗会一直盖在 TSF 候选窗上面
       m_ui->Hide();
       m_llm_server_ui_shown = false;
     }
@@ -723,7 +732,6 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   m_message_label.clear();
   m_option_name.clear();
 }
-
 
 // void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
 //   // if m_ui nullptr, _UpdateUI meaningless
@@ -952,11 +960,13 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
 
   SessionStatus& session_status = get_session_status(ipc_id);
   RimeSessionId session_id = session_status.session_id;
-  
-  // 送出的文字（待送出的 LLM 候選、混打內容、Rime 送出的字）；前文、個人詞庫與統計由控制器記錄
+
+  // 送出的文字（待送出的 LLM 候選、混打內容、Rime
+  // 送出的字）；前文、個人詞庫與統計由控制器記錄
   for (const std::wstring& text : m_controller->TakeCommits(ipc_id)) {
     actions.insert("commit");
-    messages.push_back(std::string("commit=") + escape_string<char>(wtou8(text)) + '\n');
+    messages.push_back(std::string("commit=") +
+                       escape_string<char>(wtou8(text)) + '\n');
   }
 
   bool is_composing = false;
@@ -966,9 +976,10 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     actions.insert("status");
     messages.push_back(std::string("status.ascii_mode=") +
                        std::to_string(status.is_ascii_mode) + '\n');
-    messages.push_back(std::string("status.composing=") +
-                       std::to_string(status.is_composing || session_status.mixed_active()) +
-                       '\n');
+    messages.push_back(
+        std::string("status.composing=") +
+        std::to_string(status.is_composing || session_status.mixed_active()) +
+        '\n');
     messages.push_back(std::string("status.disabled=") +
                        std::to_string(status.is_disabled) + '\n');
     messages.push_back(std::string("status.full_shape=") +
@@ -991,30 +1002,39 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   bool has_preedit = false;
   ime::Preedit preedit;
   auto push_preedit = [&]() {
-    messages.push_back(std::string("ctx.preedit=") + escape_string<char>(wtou8(preedit.text)) + '\n');
+    messages.push_back(std::string("ctx.preedit=") +
+                       escape_string<char>(wtou8(preedit.text)) + '\n');
     if (preedit.cursor >= 0)
-      messages.push_back(std::string("ctx.preedit.cursor=") + std::to_string(preedit.sel_start) + ',' +
-                         std::to_string(preedit.sel_end) + ',' + std::to_string(preedit.cursor) + '\n');
+      messages.push_back(std::string("ctx.preedit.cursor=") +
+                         std::to_string(preedit.sel_start) + ',' +
+                         std::to_string(preedit.sel_end) + ',' +
+                         std::to_string(preedit.cursor) + '\n');
   };
   RIME_STRUCT(RimeContext, ctx);
   const bool has_ctx = !!rime_api->get_context(session_id, &ctx);
   // 預覽快取、換字統計與選字紀錄的預設轉換
-  m_controller->UpdateComposition(ipc_id, is_composing, has_ctx ? &ctx : nullptr);
+  m_controller->UpdateComposition(ipc_id, is_composing,
+                                  has_ctx ? &ctx : nullptr);
   if (has_ctx) {
     if (is_composing) {
       actions.insert("ctx");
-      const char* rime_preedit = ctx.composition.preedit ? ctx.composition.preedit : "";
+      const char* rime_preedit =
+          ctx.composition.preedit ? ctx.composition.preedit : "";
       auto composition_cursor = [&]() {
         if (ctx.composition.sel_start <= ctx.composition.sel_end) {
-          preedit.sel_start = (int)utf8towcslen(rime_preedit, ctx.composition.sel_start);
-          preedit.sel_end = (int)utf8towcslen(rime_preedit, ctx.composition.sel_end);
-          preedit.cursor = (int)utf8towcslen(rime_preedit, ctx.composition.cursor_pos);
+          preedit.sel_start =
+              (int)utf8towcslen(rime_preedit, ctx.composition.sel_start);
+          preedit.sel_end =
+              (int)utf8towcslen(rime_preedit, ctx.composition.sel_end);
+          preedit.cursor =
+              (int)utf8towcslen(rime_preedit, ctx.composition.cursor_pos);
         }
       };
       switch (session_status.style.preedit_type) {
         case UIStyle::PREVIEW:
-          if (m_controller->PreviewPreedit(ipc_id, ctx, !!session_status.status.is_ascii_mode,
-                                           &preedit)) {
+          if (m_controller->PreviewPreedit(
+                  ipc_id, ctx, !!session_status.status.is_ascii_mode,
+                  &preedit)) {
             has_preedit = true;
             break;
           }
@@ -1031,15 +1051,20 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
           for (auto i = 0; i < ctx.menu.num_candidates; i++) {
             std::string label =
                 session_status.style.label_font_point > 0
-                    ? _GetLabelText(cinfo.labels, i, session_status.style.label_text_format.c_str())
+                    ? _GetLabelText(
+                          cinfo.labels, i,
+                          session_status.style.label_text_format.c_str())
                     : "";
-            std::string comment =
-                session_status.style.comment_font_point > 0 ? wtou8(cinfo.comments.at(i).str) : "";
+            std::string comment = session_status.style.comment_font_point > 0
+                                      ? wtou8(cinfo.comments.at(i).str)
+                                      : "";
             std::string mark_text = session_status.style.mark_text.empty()
                                         ? "*"
                                         : wtou8(session_status.style.mark_text);
-            std::string prefix = (i != ctx.menu.highlighted_candidate_index) ? "" : mark_text;
-            text += " " + prefix + label + ctx.menu.candidates[i].text + " " + comment;
+            std::string prefix =
+                (i != ctx.menu.highlighted_candidate_index) ? "" : mark_text;
+            text += " " + prefix + label + ctx.menu.candidates[i].text + " " +
+                    comment;
           }
           preedit.text = u8tow(text + " ]");
           composition_cursor();
@@ -1051,8 +1076,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         push_preedit();
     }
     // 如果有Rime候选词，或者处于LLM预测模式且有LLM候选词，序列化候选词信息
-    if (ctx.menu.num_candidates || 
-        (m_controller->ShowingPredictions())) {
+    if (ctx.menu.num_candidates || (m_controller->ShowingPredictions())) {
       CandidateInfo cinfo;
       std::wstringstream ss;
       boost::archive::text_woarchive oa(ss);
@@ -1070,14 +1094,16 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     boost::archive::text_woarchive oa(ss);
     RimeContext empty_ctx = {0};
     _GetCandidateInfo(cinfo, empty_ctx);
-    
+
     oa << cinfo;
     messages.push_back(std::string("ctx.cand=") + wtou8(ss.str()) + '\n');
   }
 
-  // 中英混打：混打内容显示在组字区最前面，Rime 的组字（含选取范围与光标）接在后面
+  // 中英混打：混打内容显示在组字区最前面，Rime
+  // 的组字（含选取范围与光标）接在后面
   if (session_status.mixed_active()) {
-    preedit = ime::Controller::WithMixedText(session_status, has_preedit ? &preedit : nullptr);
+    preedit = ime::Controller::WithMixedText(session_status,
+                                             has_preedit ? &preedit : nullptr);
     actions.insert("ctx");
     push_preedit();
   }
@@ -1591,15 +1617,16 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
     stat.schema_id = u8tow(status.schema_id);
     stat.ascii_mode = !!status.is_ascii_mode;
     stat.composing = !!status.is_composing || session_status.mixed_active();
-    
+
     // 如果处于LLM预测模式，强制设置composing为true以显示候选栏
     if (m_controller->ShowingPredictions()) {
       stat.composing = true;
       if (m_dev_console && m_dev_console->IsEnabled()) {
-        m_dev_console->WriteLine(L"[_GetStatus] LLM预测模式激活，强制设置 composing=true");
+        m_dev_console->WriteLine(
+            L"[_GetStatus] LLM预测模式激活，强制设置 composing=true");
       }
     }
-    
+
     stat.disabled = !!status.is_disabled;
     stat.full_shape = !!status.is_full_shape;
     if (schema_id != m_last_schema_id) {
@@ -1644,15 +1671,15 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
         weasel_context.preedit.attributes.push_back(attr);
       }
     }
-    
+
     // 获取候选词信息（包括Rime和LLM候选词）
-      CandidateInfo& cinfo(weasel_context.cinfo);
+    CandidateInfo& cinfo(weasel_context.cinfo);
     if (ctx.menu.num_candidates > 0) {
       // 有Rime候选词，调用_GetCandidateInfo会同时添加Rime和LLM候选词
       _GetCandidateInfo(cinfo, ctx);
       if (m_dev_console && m_dev_console->IsEnabled()) {
         std::wstringstream ss;
-        ss << L"[DEBUG] _GetContext: 有Rime候选词(" << ctx.menu.num_candidates 
+        ss << L"[DEBUG] _GetContext: 有Rime候选词(" << ctx.menu.num_candidates
            << L"个)，添加后总候选词数=" << cinfo.candies.size();
         m_dev_console->WriteLine(ss.str());
       }
@@ -1662,7 +1689,8 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
       _GetCandidateInfo(cinfo, ctx);  // 这会添加LLM候选词
       if (m_dev_console && m_dev_console->IsEnabled()) {
         std::wstringstream ss;
-        ss << L"[DEBUG] _GetContext: 无Rime候选词，添加LLM候选词后 cinfo.candies.size()=" 
+        ss << L"[DEBUG] _GetContext: 无Rime候选词，添加LLM候选词后 "
+              L"cinfo.candies.size()="
            << cinfo.candies.size();
         m_dev_console->WriteLine(ss.str());
       }
@@ -1670,7 +1698,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
       // 既没有Rime候选词，也没有LLM候选词，清空候选词信息
       cinfo.clear();
     }
-    
+
     rime_api->free_context(&ctx);
   } else if (m_controller->ShowingPredictions()) {
     // 如果没有Rime上下文但处于LLM预测模式，创建空的候选词信息并添加LLM候选词
@@ -1680,7 +1708,8 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
     _GetCandidateInfo(cinfo, empty_ctx);  // 这会添加LLM候选词
     if (m_dev_console && m_dev_console->IsEnabled()) {
       std::wstringstream ss;
-      ss << L"[DEBUG] _GetContext: 无Rime上下文，添加LLM候选词后 cinfo.candies.size()=" 
+      ss << L"[DEBUG] _GetContext: 无Rime上下文，添加LLM候选词后 "
+            L"cinfo.candies.size()="
          << cinfo.candies.size();
       m_dev_console->WriteLine(ss.str());
     }
@@ -1752,8 +1781,8 @@ std::wstring RimeWithWeaselHandler::ContextKey(uint64_t id) {
   // 应用名（Rime session 的 client_app）
   std::wstring app;
   char app_name[256] = {0};
-  if (rime_api->get_property(to_session_id((WeaselSessionId)id), "client_app", app_name,
-                             sizeof(app_name) - 1))
+  if (rime_api->get_property(to_session_id((WeaselSessionId)id), "client_app",
+                             app_name, sizeof(app_name) - 1))
     app = u8tow(app_name);
 
   // 前景窗口（顶层窗口）与标题：同一应用的不同窗口、浏览器不同分页、不同聊天室各自一份前文。
@@ -1764,11 +1793,14 @@ std::wstring RimeWithWeaselHandler::ContextKey(uint64_t id) {
     if (root)
       hwnd = root;
   }
-  // 不能用 GetWindowTextW：它會對視窗送 WM_GETTEXT 並等回覆，視窗忙碌或正在等輸入法時
-  // 就卡住整個服務（所有應用程式跟著凍結）。InternalGetWindowText 直接讀系統存的標題，不送訊息
+  // 不能用 GetWindowTextW：它會對視窗送 WM_GETTEXT
+  // 並等回覆，視窗忙碌或正在等輸入法時
+  // 就卡住整個服務（所有應用程式跟著凍結）。InternalGetWindowText
+  // 直接讀系統存的標題，不送訊息
   wchar_t title[256] = {0};
   if (hwnd)
-    InternalGetWindowText(hwnd, title, (int)(sizeof(title) / sizeof(title[0])) - 1);
+    InternalGetWindowText(hwnd, title,
+                          (int)(sizeof(title) / sizeof(title[0])) - 1);
   std::wstring title_key;
   for (const wchar_t* p = title; *p; ++p) {
     if (iswdigit(*p) || *p == L'*' || *p == L'●' || *p == L'•')
@@ -1785,7 +1817,8 @@ void RimeWithWeaselHandler::Redeploy() {
   wchar_t exe[MAX_PATH] = {0};
   GetModuleFileNameW(NULL, exe, _countof(exe));
   const std::wstring deployer =
-      (std::filesystem::path(exe).parent_path() / L"WeaselDeployer.exe").wstring();
+      (std::filesystem::path(exe).parent_path() / L"WeaselDeployer.exe")
+          .wstring();
   ShellExecuteW(NULL, NULL, deployer.c_str(), L"/deploy", NULL, SW_SHOWNORMAL);
 }
 

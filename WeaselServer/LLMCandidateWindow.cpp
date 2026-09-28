@@ -23,8 +23,8 @@ bool LLMCandidateWindow::Create(HWND parent) {
   // 创建窗口
   HWND hWnd = CWindowImpl<LLMCandidateWindow>::Create(
       parent, 0, 0, WS_POPUP,
-      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-      0U, 0);
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED, 0U,
+      0);
 
   if (!hWnd)
     return false;
@@ -43,7 +43,7 @@ bool LLMCandidateWindow::Create(HWND parent) {
 
   // 创建背景画刷（浅灰色背景）
   m_hBackgroundBrush = CreateSolidBrush(RGB(240, 240, 240));
-  
+
   // 创建边框画笔（深灰色边框）
   m_hBorderPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
 
@@ -71,7 +71,7 @@ void LLMCandidateWindow::Destroy() {
 void LLMCandidateWindow::Show() {
   if (!IsWindow())
     return;
-  
+
   if (m_candidates.empty()) {
     Hide();
     return;
@@ -91,7 +91,8 @@ void LLMCandidateWindow::Hide() {
   m_shown = false;
 }
 
-void LLMCandidateWindow::SetCandidates(const std::vector<std::wstring>& candidates) {
+void LLMCandidateWindow::SetCandidates(
+    const std::vector<std::wstring>& candidates) {
   m_candidates = candidates;
   CalculateSize();
   if (m_shown && IsWindow()) {
@@ -136,14 +137,15 @@ void LLMCandidateWindow::CalculateSize() {
   }
 
   HFONT hOldFont = (HFONT)SelectObject(hdc, m_hFont);
-  
+
   int maxWidth = 0;
   int lineHeight = 24;
   int padding = 10;
-  
+
   for (const auto& candidate : m_candidates) {
     SIZE textSize = {0, 0};
-    GetTextExtentPoint32(hdc, candidate.c_str(), (int)candidate.length(), &textSize);
+    GetTextExtentPoint32(hdc, candidate.c_str(), (int)candidate.length(),
+                         &textSize);
     int width = textSize.cx + 40;  // 加上标签和边距
     if (width > maxWidth)
       maxWidth = width;
@@ -154,7 +156,7 @@ void LLMCandidateWindow::CalculateSize() {
 
   m_size.cx = maxWidth + padding * 2;
   m_size.cy = lineHeight * (int)m_candidates.size() + padding * 2;
-  
+
   // 设置窗口位置（在输入位置下方）
   if (m_position.bottom > 0) {
     m_position.left = m_position.left;
@@ -162,30 +164,42 @@ void LLMCandidateWindow::CalculateSize() {
   }
 }
 
-LRESULT LLMCandidateWindow::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT LLMCandidateWindow::OnCreate(UINT uMsg,
+                                     WPARAM wParam,
+                                     LPARAM lParam,
+                                     BOOL& bHandled) {
   bHandled = TRUE;
   return 0;
 }
 
-LRESULT LLMCandidateWindow::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT LLMCandidateWindow::OnDestroy(UINT uMsg,
+                                      WPARAM wParam,
+                                      LPARAM lParam,
+                                      BOOL& bHandled) {
   bHandled = TRUE;
   return 0;
 }
 
-LRESULT LLMCandidateWindow::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT LLMCandidateWindow::OnPaint(UINT uMsg,
+                                    WPARAM wParam,
+                                    LPARAM lParam,
+                                    BOOL& bHandled) {
   PAINTSTRUCT ps;
   HDC hdc = BeginPaint(&ps);
-  
+
   if (hdc) {
     DrawCandidates(hdc);
   }
-  
+
   EndPaint(&ps);
   bHandled = TRUE;
   return 0;
 }
 
-LRESULT LLMCandidateWindow::OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT LLMCandidateWindow::OnEraseBkgnd(UINT uMsg,
+                                         WPARAM wParam,
+                                         LPARAM lParam,
+                                         BOOL& bHandled) {
   bHandled = TRUE;
   return 1;  // 已处理，不需要擦除背景
 }
@@ -202,7 +216,8 @@ void LLMCandidateWindow::DrawCandidates(HDC hdc) {
 
   // 绘制边框
   HPEN hOldPen = (HPEN)SelectObject(hdc, m_hBorderPen);
-  Rectangle(hdc, clientRect.left, clientRect.top, clientRect.right, clientRect.bottom);
+  Rectangle(hdc, clientRect.left, clientRect.top, clientRect.right,
+            clientRect.bottom);
   SelectObject(hdc, hOldPen);
 
   // 设置字体
@@ -213,16 +228,15 @@ void LLMCandidateWindow::DrawCandidates(HDC hdc) {
   // 绘制候选词
   int y = 10;
   int lineHeight = 24;
-  
+
   for (size_t i = 0; i < m_candidates.size(); ++i) {
     std::wstringstream ss;
     ss << (i + 1) << L". " << m_candidates[i];
     std::wstring text = ss.str();
-    
+
     TextOut(hdc, 10, y, text.c_str(), (int)text.length());
     y += lineHeight;
   }
 
   SelectObject(hdc, hOldFont);
 }
-

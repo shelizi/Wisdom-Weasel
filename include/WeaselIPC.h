@@ -38,9 +38,11 @@ enum WEASEL_IPC_COMMAND {
   WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE,
   WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE,
   WEASEL_IPC_CHANGE_PAGE,
-  // 设定程式请求用输入法目前载入的 LLM 做预测测试（内容经由用户资料夹中的文件传递）
+  // 设定程式请求用输入法目前载入的 LLM
+  // 做预测测试（内容经由用户资料夹中的文件传递）
   WEASEL_IPC_LLM_TEST,
-  // 设定程式操作个人词库（wParam：1 更新状态 2 精炼 3 重新精炼全部 4 清除 5 导出词汇 6 套用修改），状态写在 personal/status.txt
+  // 设定程式操作个人词库（wParam：1 更新状态 2 精炼 3 重新精炼全部 4 清除 5
+  // 导出词汇 6 套用修改），状态写在 personal/status.txt
   WEASEL_IPC_PERSONAL,
   WEASEL_IPC_LAST_COMMAND
 };

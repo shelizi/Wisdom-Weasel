@@ -58,4 +58,3 @@ class DevConsole : public DevLog {
   // 恢复标准输出
   void RestoreStdout();
 };
-

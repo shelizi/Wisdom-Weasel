@@ -9,9 +9,11 @@ void TryDeserialize(boost::archive::text_wiarchive& ia, T& t) {
   try {
     ia >> t;
   } catch (const boost::archive::archive_exception& e) {
-    // 运行在宿主应用进程内：不弹 MessageBox（会阻塞/打断宿主应用），只记录调试输出
+    // 运行在宿主应用进程内：不弹
+    // MessageBox（会阻塞/打断宿主应用），只记录调试输出
     const std::string msg =
-        std::string("[weasel] boost::archive::archive_exception: ") + e.what() + "\n";
+        std::string("[weasel] boost::archive::archive_exception: ") + e.what() +
+        "\n";
     OutputDebugStringA(msg.c_str());
   }
 }

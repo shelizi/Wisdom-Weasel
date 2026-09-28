@@ -1,5 +1,5 @@
-// 測試用的推理行程：用和 WisdomLLMHost 相同的 llm_ipc::Serve，依請求內容模擬各種狀況。
-// kPredict 的「目前輸入」決定行為：
+// 測試用的推理行程：用和 WisdomLLMHost 相同的
+// llm_ipc::Serve，依請求內容模擬各種狀況。 kPredict 的「目前輸入」決定行為：
 //   echo    回覆前文
 //   wait    一直等到被取消，回覆 "cancelled"
 //   crash   直接當掉

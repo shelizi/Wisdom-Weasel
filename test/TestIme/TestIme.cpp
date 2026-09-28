@@ -1,4 +1,5 @@
-// core/ime 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、選字統計與選字紀錄
+// core/ime
+// 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、選字統計與選字紀錄
 #include "../../core/ime/ZhuyinPreview.h"
 #include "../../core/ime/choice_log.h"
 #include "../../core/ime/choice_stats.h"
@@ -44,11 +45,12 @@ class FakeScorer : public LLMProvider {
   std::vector<std::wstring> predictions;
   std::wstring correction;
   std::atomic<int> predict_calls{0};
-  std::atomic<int> sleep_ms{0};    // 模擬推理時間（期間會檢查取消）
+  std::atomic<int> sleep_ms{0};  // 模擬推理時間（期間會檢查取消）
   std::atomic<bool> cancelled_seen{false};
   std::wstring last_context;
   bool LoadConfig(const std::string&) override { return true; }
-  std::vector<std::wstring> PredictCandidates(const std::wstring& context, const std::wstring&,
+  std::vector<std::wstring> PredictCandidates(const std::wstring& context,
+                                              const std::wstring&,
                                               size_t) override {
     ++predict_calls;
     last_context = context;
@@ -61,11 +63,15 @@ class FakeScorer : public LLMProvider {
     }
     return predictions;
   }
-  std::wstring CorrectSentence(const std::wstring&, const std::wstring&, const std::wstring&,
+  std::wstring CorrectSentence(const std::wstring&,
+                               const std::wstring&,
+                               const std::wstring&,
                                const std::wstring&) override {
     return correction;
   }
-  bool ScoreText(const std::wstring&, const std::wstring& text, double* total,
+  bool ScoreText(const std::wstring&,
+                 const std::wstring& text,
+                 double* total,
                  std::vector<double>* per_char) override {
     ++calls;
     *total = 0;
@@ -92,15 +98,22 @@ static void TestTextRules() {
   CHECK(!ime::HasMeaningfulContent(L""));
 
   // 只留第一行、去掉引號與標點、去重、丟掉空的，接上前綴
-  const Strings cleaned =
-      ime::CleanCandidates({L"「天氣」\n第二行", L"天氣", L"  。", L"\"很好\"！", L"a\x01" L"b"}, L"今天");
+  const Strings cleaned = ime::CleanCandidates(
+      {L"「天氣」\n第二行", L"天氣", L"  。", L"\"很好\"！",
+       L"a\x01"
+       L"b"},
+      L"今天");
   CHECK(cleaned == (Strings{L"今天天氣", L"今天很好", L"今天ab"}));
   CHECK(ime::CleanCandidates({L"…"}, L"").empty());
 
-  CHECK(ime::CleanCorrection(L"校正：今天天氣很好。", L"今天天汽很好") == L"今天天氣很好");
-  CHECK(ime::CleanCorrection(L"今天天汽很好", L"今天天汽很好").empty());   // 和初稿相同
-  CHECK(ime::CleanCorrection(L"今天天氣很好而且適合出門", L"今天天汽很好").empty());  // 差太多
-  CHECK(ime::CleanCorrection(L"「今天天氣好」", L"今天天汽很好") == L"今天天氣好");
+  CHECK(ime::CleanCorrection(L"校正：今天天氣很好。", L"今天天汽很好") ==
+        L"今天天氣很好");
+  CHECK(ime::CleanCorrection(L"今天天汽很好", L"今天天汽很好")
+            .empty());  // 和初稿相同
+  CHECK(ime::CleanCorrection(L"今天天氣很好而且適合出門", L"今天天汽很好")
+            .empty());  // 差太多
+  CHECK(ime::CleanCorrection(L"「今天天氣好」", L"今天天汽很好") ==
+        L"今天天氣好");
 
   CHECK(ime::MergeCandidates({L"a"}, {L"b", L"a", L"c", L"d", L"e", L"f"}) ==
         (Strings{L"a", L"b", L"c", L"d", L"e"}));
@@ -120,22 +133,27 @@ static void TestZhuyin() {
   CHECK(BackspaceKeys(L"ˋ") == 1);
   ZhuyinSpeller sp;
   CHECK(CountSyllables(sp, "5j4u.3") == 2);
-  CHECK(SplitSyllables(sp, "5j4u.3") == (std::vector<std::string>{"5j4", "u.3"}));
+  CHECK(SplitSyllables(sp, "5j4u.3") ==
+        (std::vector<std::string>{"5j4", "u.3"}));
 }
 
 static void TestRescore() {
   FakeScorer scorer;
   // 「天汽」的「汽」分數很低，同音的「氣」較高 → 推薦「天氣」
-  scorer.score = {{L'今', -1}, {L'天', -1}, {L'汽', -8}, {L'氣', -2}, {L'器', -6}};
+  scorer.score = {
+      {L'今', -1}, {L'天', -1}, {L'汽', -8}, {L'氣', -2}, {L'器', -6}};
   const Strings units = {L"今", L"天", L"汽", L"ㄏㄣ"};
-  const std::vector<Strings> homophones = {{L"今"}, {L"天", L"添"}, {L"汽", L"器", L"氣"}, {}};
+  const std::vector<Strings> homophones = {
+      {L"今"}, {L"天", L"添"}, {L"汽", L"器", L"氣"}, {}};
   CHECK(ime::RescoreSentence(&scorer, L"", units, homophones) == L"今天氣ㄏㄣ");
   // 同音字都沒比較好：不推薦
   scorer.score[L'汽'] = -1;
   CHECK(ime::RescoreSentence(&scorer, L"", units, homophones).empty());
   // 不到兩個完整的字：不推薦，也不必評分
   scorer.calls = 0;
-  CHECK(ime::RescoreSentence(&scorer, L"", {L"今", L"ㄊㄧㄢ"}, {{L"今", L"金"}, {}}).empty());
+  CHECK(ime::RescoreSentence(&scorer, L"", {L"今", L"ㄊㄧㄢ"},
+                             {{L"今", L"金"}, {}})
+            .empty());
   CHECK(scorer.calls == 0);
 }
 
@@ -151,12 +169,14 @@ static void TestChoiceStats(const fs::path& dir) {
   {
     std::ofstream out(dir / "weasel_stats.txt", std::ios::binary);
     out << ime::DateString(3) << "\t5\t10\t1\t0\t0\t0\t2\n";
-    out << ime::DateString(200) << "\tdeadbeef\t1\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+    out << ime::DateString(200)
+        << "\tdeadbeef\t1\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
   }
   {
     ime::ChoiceStatsStore store(dir);
     store.AddProfile(key, "abc", "2026-01-01", "subject", "bopomofo｜推薦");
-    store.AddProfile(key, "abc", "2026-01-01", "subject", "bopomofo｜推薦");  // 第二次不重複記
+    store.AddProfile(key, "abc", "2026-01-01", "subject",
+                     "bopomofo｜推薦");  // 第二次不重複記
     ime::ChoiceStats& s = store.Today(key);
     s.commits += 3;
     s.recommend_used = 1;
@@ -164,29 +184,40 @@ static void TestChoiceStats(const fs::path& dir) {
   }
   const auto read = [](const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
   };
   const std::string saved = read(dir / "weasel_stats.txt");
-  CHECK(saved.find(ime::DateString(3) + "\tlegacy\t5\t10\t1\t0\t0\t0\t2\t0\t0\t0\t0\n") != std::string::npos);
-  CHECK(saved.find(ime::DateString(0) + "\t" + key + "\t3\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\n") != std::string::npos);
+  CHECK(saved.find(ime::DateString(3) +
+                   "\tlegacy\t5\t10\t1\t0\t0\t0\t2\t0\t0\t0\t0\n") !=
+        std::string::npos);
+  CHECK(saved.find(ime::DateString(0) + "\t" + key +
+                   "\t3\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\n") != std::string::npos);
   CHECK(saved.find("deadbeef") == std::string::npos);  // 超過 90 天
   const std::string profiles = read(dir / "weasel_stats_profiles.txt");
-  CHECK(profiles == key + "\tabc\t2026-01-01\tsubject\tbopomofo｜推薦\t" + ime::DateString(0) + "\n");
+  CHECK(profiles == key + "\tabc\t2026-01-01\tsubject\tbopomofo｜推薦\t" +
+                        ime::DateString(0) + "\n");
   // 重新讀檔後累加
   {
     ime::ChoiceStatsStore store(dir);
     CHECK(store.Today(key).commits == 3);
     store.Reset();
   }
-  CHECK(!fs::exists(dir / "weasel_stats.txt") && !fs::exists(dir / "weasel_stats_profiles.txt"));
+  CHECK(!fs::exists(dir / "weasel_stats.txt") &&
+        !fs::exists(dir / "weasel_stats_profiles.txt"));
 }
 
 static void TestChoiceLog(const fs::path& dir) {
-  CHECK(std::string(ime::ChoiceMethod(false, false, false, false, false)) == "direct");
-  CHECK(std::string(ime::ChoiceMethod(false, false, false, true, true)) == "focus");
-  CHECK(std::string(ime::ChoiceMethod(false, false, false, true, false)) == "direct");
-  CHECK(std::string(ime::ChoiceMethod(true, true, true, true, true)) == "mixed");
-  CHECK(std::string(ime::ChoiceMethod(false, false, true, false, true)) == "llm");
+  CHECK(std::string(ime::ChoiceMethod(false, false, false, false, false)) ==
+        "direct");
+  CHECK(std::string(ime::ChoiceMethod(false, false, false, true, true)) ==
+        "focus");
+  CHECK(std::string(ime::ChoiceMethod(false, false, false, true, false)) ==
+        "direct");
+  CHECK(std::string(ime::ChoiceMethod(true, true, true, true, true)) ==
+        "mixed");
+  CHECK(std::string(ime::ChoiceMethod(false, false, true, false, true)) ==
+        "llm");
   // 前文裡已經有這次送出的文字就去掉，最多 max 字
   CHECK(ime::ChoiceContext(L"前文今天", L"今天") == L"前文");
   CHECK(ime::ChoiceContext(L"abcdef", L"x", 3) == L"def");
@@ -200,14 +231,16 @@ static void TestChoiceLog(const fs::path& dir) {
   r.default_text = L"金天";
   r.text = L"今天\n";
   const std::string plain = ime::FormatChoiceRecord(r);
-  CHECK(plain == "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 ");
+  CHECK(plain ==
+        "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 ");
 
   // 加密附加兩筆，讀回來逐筆解開
   const fs::path personal = dir / "personal";
   CHECK(ime::AppendChoiceRecord(personal, r));
   CHECK(ime::AppendChoiceRecord(personal, r));
   std::ifstream in(personal / "choice_log.dat", std::ios::binary);
-  const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::string data((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
   size_t pos = 0, count = 0;
   while (pos + 4 <= data.size()) {
     uint32_t len = 0;
@@ -217,7 +250,8 @@ static void TestChoiceLog(const fs::path& dir) {
     CHECK(pos + len <= data.size());
     CHECK(personal_crypto::Unprotect(data.substr(pos, len), &decoded));
     CHECK(decoded == plain);
-    CHECK(data.substr(pos, len).find("notepad") == std::string::npos);  // 真的有加密
+    CHECK(data.substr(pos, len).find("notepad") ==
+          std::string::npos);  // 真的有加密
     pos += len;
     ++count;
   }
@@ -249,14 +283,15 @@ static void TestPredictionEngine() {
     m.predict = m.typo = m.rescore = &model;
     return m;
   };
-  hooks.rescore_input = [&](uint64_t, uint64_t, std::vector<std::wstring>* units,
-                            std::vector<std::vector<std::wstring>>* homophones) {
-    if (!offer_rescore)
-      return false;
-    *units = {L"今", L"天", L"汽"};
-    *homophones = {{L"今"}, {L"天"}, {L"汽", L"氣"}};
-    return true;
-  };
+  hooks.rescore_input =
+      [&](uint64_t, uint64_t, std::vector<std::wstring>* units,
+          std::vector<std::vector<std::wstring>>* homophones) {
+        if (!offer_rescore)
+          return false;
+        *units = {L"今", L"天", L"汽"};
+        *homophones = {{L"今"}, {L"天"}, {L"汽", L"氣"}};
+        return true;
+      };
   hooks.on_update = [&](uint64_t tag, uint64_t, const ime::PredictionSet& set) {
     std::lock_guard<std::mutex> lock(updates_mutex);
     updates.emplace_back(tag, set);
@@ -283,8 +318,10 @@ static void TestPredictionEngine() {
     std::lock_guard<std::mutex> lock(updates_mutex);
     CHECK(updates[0].first == 7);
     CHECK(updates[0].second.candidates == (Strings{L"很好", L"不錯"}));
-    CHECK(updates[1].second.candidates == (Strings{L"很好", L"不錯", L"天氣很好"}));
-    CHECK(updates[1].second.recommends == 0 && updates[1].second.corrections == 0);
+    CHECK(updates[1].second.candidates ==
+          (Strings{L"很好", L"不錯", L"天氣很好"}));
+    CHECK(updates[1].second.recommends == 0 &&
+          updates[1].second.corrections == 0);
   }
   CHECK(model.last_context == L"前文");
 
@@ -300,9 +337,11 @@ static void TestPredictionEngine() {
   CHECK(WaitFor([&] { return update_count() == 4; }));
   const ime::PredictionSet final_set = engine.Snapshot();
   CHECK(final_set.candidates ==
-        (Strings{L"今天氣", L"今天天氣", L"今天汽車", L"今天天氣天氣很好", L"今天天氣很好"}));
+        (Strings{L"今天氣", L"今天天氣", L"今天汽車", L"今天天氣天氣很好",
+                 L"今天天氣很好"}));
   CHECK(final_set.recommends == 1 && final_set.corrections == 1);
-  CHECK(final_set.IsRecommend(0) && final_set.IsCorrection(1) && !final_set.IsCorrection(2));
+  CHECK(final_set.IsRecommend(0) && final_set.IsCorrection(1) &&
+        !final_set.IsCorrection(2));
   CHECK(model.last_context == L"前文今天天氣");  // 續寫接在校正結果後面
 
   // 取出候選：知道是推薦還是校正，取出後候選清空
@@ -340,7 +379,8 @@ static void TestPredictionEngine() {
   std::this_thread::sleep_for(std::chrono::milliseconds(400));
   CHECK(update_count() == 2);
   CHECK(model.predict_calls == 1);  // 防抖中的舊請求沒有推理
-  CHECK(engine.Snapshot().candidates == (Strings{L"新的", L"天氣很好", L"很好"}));
+  CHECK(engine.Snapshot().candidates ==
+        (Strings{L"新的", L"天氣很好", L"很好"}));
 
   clear_updates();
   model.sleep_ms = 1000;
@@ -350,7 +390,8 @@ static void TestPredictionEngine() {
   engine.Request(long_one);
   CHECK(WaitFor([&] { return model.predict_calls >= 2; }));
   engine.Cancel();
-  CHECK(WaitFor([&] { return model.cancelled_seen.load(); }));  // 本機模型立即停止
+  CHECK(WaitFor(
+      [&] { return model.cancelled_seen.load(); }));  // 本機模型立即停止
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   CHECK(update_count() == 0 && !engine.HasCandidates());
   model.sleep_ms = 0;

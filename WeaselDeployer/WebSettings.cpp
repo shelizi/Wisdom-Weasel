@@ -35,8 +35,10 @@ struct BackendHolder {
 
 const wchar_t kHost[] = L"settings.wisdom-weasel";
 const wchar_t kClassName[] = L"WisdomWebSettings";
-constexpr UINT WM_APP_POST = WM_APP + 100;    // lParam：要送給網頁的 JSON（std::string*）
-constexpr UINT WM_APP_RUN_UI = WM_APP + 101;  // lParam：要在視窗執行緒執行的工作（std::function*）
+constexpr UINT WM_APP_POST =
+    WM_APP + 100;  // lParam：要送給網頁的 JSON（std::string*）
+constexpr UINT WM_APP_RUN_UI =
+    WM_APP + 101;  // lParam：要在視窗執行緒執行的工作（std::function*）
 constexpr UINT_PTR kTimerScreenshot = 1;
 constexpr UINT_PTR kTimerSelftestLimit = 2;
 
@@ -92,7 +94,8 @@ bool DarkTheme(int pref) {
 
 class WebSettingsWindow {
  public:
-  WebSettingsWindow(Configurator* configurator, const WebSettingsOptions& options)
+  WebSettingsWindow(Configurator* configurator,
+                    const WebSettingsOptions& options)
       : configurator_(configurator), options_(options) {}
 
   int Run() {
@@ -105,8 +108,11 @@ class WebSettingsWindow {
     }
     std::error_code ec;
     if (!fs::exists(fs::path(web_dir_) / L"index.html", ec)) {
-      MessageBoxW(nullptr, (L"找不到設定網頁：" + web_dir_ + L"\n\n將改開原本的設定視窗。").c_str(), L"小狼毫設定",
-                  MB_OK | MB_ICONERROR);
+      MessageBoxW(
+          nullptr,
+          (L"找不到設定網頁：" + web_dir_ + L"\n\n將改開原本的設定視窗。")
+              .c_str(),
+          L"小狼毫設定", MB_OK | MB_ICONERROR);
       return -1;
     }
     try {
@@ -116,16 +122,18 @@ class WebSettingsWindow {
       Backend::Options backend_options;
       backend_options.correct_instruction = wtou8(kLLMCorrectInstruction);
       backend_->backend = std::make_unique<Backend>(
-          backend_->platform, backend_options, [target](const std::string& event, const json& data) {
+          backend_->platform, backend_options,
+          [target](const std::string& event, const json& data) {
             PostToPage(target->load(), {{"event", event}, {"data", data}});
           });
     } catch (const std::exception& e) {
-      MessageBoxW(nullptr, Widen(e.what()).c_str(), L"小狼毫設定", MB_OK | MB_ICONERROR);
+      MessageBoxW(nullptr, Widen(e.what()).c_str(), L"小狼毫設定",
+                  MB_OK | MB_ICONERROR);
       return 1;
     }
     DWORD pref = 0, size = sizeof(pref);
-    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel", L"SettingsTheme", RRF_RT_REG_DWORD,
-                 NULL, &pref, &size);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel", L"SettingsTheme",
+                 RRF_RT_REG_DWORD, NULL, &pref, &size);
     theme_ = options_.theme ? options_.theme : (int)pref;
 
     WNDCLASSEXW wc = {sizeof(wc)};
@@ -134,7 +142,8 @@ class WebSettingsWindow {
     wc.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(IDI_WEASELDEPLOYER));
     wc.hIconSm = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(IDI_SMALL));
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(DarkTheme(theme_) ? RGB(32, 32, 32) : RGB(243, 243, 243));
+    wc.hbrBackground = CreateSolidBrush(DarkTheme(theme_) ? RGB(32, 32, 32)
+                                                          : RGB(243, 243, 243));
     wc.lpszClassName = kClassName;
     RegisterClassExW(&wc);
 
@@ -144,8 +153,9 @@ class WebSettingsWindow {
     ReleaseDC(nullptr, screen);
     const int width = MulDiv(options_.width ? options_.width : 1080, dpi, 96);
     const int height = MulDiv(options_.height ? options_.height : 760, dpi, 96);
-    hwnd_ = CreateWindowExW(0, kClassName, L"小狼毫設定", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
-                            CW_USEDEFAULT, width, height, nullptr, nullptr, wc.hInstance, this);
+    hwnd_ = CreateWindowExW(0, kClassName, L"小狼毫設定", WS_OVERLAPPEDWINDOW,
+                            CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+                            nullptr, nullptr, wc.hInstance, this);
     if (!hwnd_)
       return 1;
     *target_ = hwnd_;
@@ -155,13 +165,16 @@ class WebSettingsWindow {
       RECT rc, work;
       GetWindowRect(hwnd_, &rc);
       SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-      SetWindowPos(hwnd_, nullptr, work.left + (work.right - work.left - (rc.right - rc.left)) / 2,
-                   work.top + (work.bottom - work.top - (rc.bottom - rc.top)) / 2, 0, 0,
-                   SWP_NOSIZE | SWP_NOZORDER);
+      SetWindowPos(
+          hwnd_, nullptr,
+          work.left + (work.right - work.left - (rc.right - rc.left)) / 2,
+          work.top + (work.bottom - work.top - (rc.bottom - rc.top)) / 2, 0, 0,
+          SWP_NOSIZE | SWP_NOZORDER);
       ShowWindow(hwnd_, SW_SHOW);
     } else {
       // 截圖、自我測試：放在畫面外，不打擾使用者
-      SetWindowPos(hwnd_, nullptr, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+      SetWindowPos(hwnd_, nullptr, -32000, -32000, 0, 0,
+                   SWP_NOSIZE | SWP_NOZORDER);
       ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
     }
     if (!options_.selftest.empty())
@@ -201,7 +214,8 @@ class WebSettingsWindow {
 
   bool CreateWebView() {
     wchar_t local[MAX_PATH] = {0};
-    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Wisdom-Weasel\\WebView2", local, MAX_PATH);
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Wisdom-Weasel\\WebView2", local,
+                              MAX_PATH);
     const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
         nullptr, local, nullptr,
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
@@ -212,16 +226,19 @@ class WebSettingsWindow {
               }
               env_ = env;
               return env->CreateCoreWebView2Controller(
-                  hwnd_, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                             [this](HRESULT result, ICoreWebView2Controller* controller) {
-                               if (FAILED(result) || !controller) {
-                                 FailWebView(result);
-                                 return S_OK;
-                               }
-                               OnControllerCreated(controller);
-                               return S_OK;
-                             })
-                             .Get());
+                  hwnd_,
+                  Callback<
+                      ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                      [this](HRESULT result,
+                             ICoreWebView2Controller* controller) {
+                        if (FAILED(result) || !controller) {
+                          FailWebView(result);
+                          return S_OK;
+                        }
+                        OnControllerCreated(controller);
+                        return S_OK;
+                      })
+                      .Get());
             })
             .Get());
     if (FAILED(hr)) {
@@ -234,7 +251,8 @@ class WebSettingsWindow {
   void FailWebView(HRESULT hr) {
     wchar_t text[256];
     swprintf_s(text,
-               L"無法開啟網頁版設定（WebView2 錯誤 0x%08X），將改開原本的設定視窗。\n\n"
+               L"無法開啟網頁版設定（WebView2 錯誤 "
+               L"0x%08X），將改開原本的設定視窗。\n\n"
                L"要使用網頁版，請安裝 Microsoft Edge WebView2 Runtime。",
                (unsigned)hr);
     MessageBoxW(hwnd_, text, L"小狼毫設定", MB_OK | MB_ICONERROR);
@@ -256,7 +274,8 @@ class WebSettingsWindow {
     ComPtr<ICoreWebView2Settings> settings;
     webview_->get_Settings(&settings);
     wchar_t devtools[8] = {0};
-    const bool dev = GetEnvironmentVariableW(L"WISDOM_SETTINGS_DEVTOOLS", devtools, 8) > 0;
+    const bool dev =
+        GetEnvironmentVariableW(L"WISDOM_SETTINGS_DEVTOOLS", devtools, 8) > 0;
     settings->put_AreDevToolsEnabled(dev);
     settings->put_AreDefaultContextMenusEnabled(dev);
     settings->put_IsStatusBarEnabled(FALSE);
@@ -270,13 +289,15 @@ class WebSettingsWindow {
       FailWebView(E_NOINTERFACE);
       return;
     }
-    webview3->SetVirtualHostNameToFolderMapping(kHost, web_dir_.c_str(),
-                                                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
+    webview3->SetVirtualHostNameToFolderMapping(
+        kHost, web_dir_.c_str(),
+        COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
 
     EventRegistrationToken token;
     webview_->add_WebMessageReceived(
         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-            [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+            [this](ICoreWebView2*,
+                   ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
               LPWSTR text = nullptr;
               if (SUCCEEDED(args->get_WebMessageAsJson(&text)) && text) {
                 OnPageMessage(wtou8(text));
@@ -289,15 +310,18 @@ class WebSettingsWindow {
     // 設定網頁以外的網址（說明連結）交給預設瀏覽器
     webview_->add_NavigationStarting(
         Callback<ICoreWebView2NavigationStartingEventHandler>(
-            [](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+            [](ICoreWebView2*,
+               ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
               LPWSTR uri = nullptr;
               args->get_Uri(&uri);
               const std::wstring url = uri ? uri : L"";
               CoTaskMemFree(uri);
               if (url.rfind(std::wstring(L"https://") + kHost + L"/", 0) != 0) {
                 args->put_Cancel(TRUE);
-                if (url.rfind(L"https://", 0) == 0 || url.rfind(L"http://", 0) == 0)
-                  ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if (url.rfind(L"https://", 0) == 0 ||
+                    url.rfind(L"http://", 0) == 0)
+                  ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr,
+                                SW_SHOWNORMAL);
               }
               return S_OK;
             })
@@ -305,11 +329,14 @@ class WebSettingsWindow {
         &token);
     webview_->add_NewWindowRequested(
         Callback<ICoreWebView2NewWindowRequestedEventHandler>(
-            [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+            [](ICoreWebView2*,
+               ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
               LPWSTR uri = nullptr;
               args->get_Uri(&uri);
-              if (uri && (wcsncmp(uri, L"https://", 8) == 0 || wcsncmp(uri, L"http://", 7) == 0))
-                ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL);
+              if (uri && (wcsncmp(uri, L"https://", 8) == 0 ||
+                          wcsncmp(uri, L"http://", 7) == 0))
+                ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr,
+                              SW_SHOWNORMAL);
               CoTaskMemFree(uri);
               args->put_Handled(TRUE);
               return S_OK;
@@ -321,7 +348,8 @@ class WebSettingsWindow {
     if (!options_.screenshot.empty()) {
       webview_->add_NavigationCompleted(
           Callback<ICoreWebView2NavigationCompletedEventHandler>(
-              [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+              [this](ICoreWebView2*,
+                     ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
                 SetTimer(hwnd_, kTimerScreenshot, 4000, nullptr);
                 return S_OK;
               })
@@ -330,7 +358,8 @@ class WebSettingsWindow {
     }
 
     Resize();
-    std::wstring url = std::wstring(L"https://") + kHost + L"/index.html?page=" +
+    std::wstring url = std::wstring(L"https://") + kHost +
+                       L"/index.html?page=" +
                        std::to_wstring(options_.start_page);
     if (options_.theme)
       url += L"&theme=" + std::to_wstring(options_.theme);
@@ -420,22 +449,24 @@ class WebSettingsWindow {
   void Screenshot() {
     KillTimer(hwnd_, kTimerScreenshot);
     ComPtr<IStream> stream;
-    if (FAILED(SHCreateStreamOnFileEx(options_.screenshot.c_str(),
-                                      STGM_READWRITE | STGM_CREATE | STGM_SHARE_EXCLUSIVE,
-                                      FILE_ATTRIBUTE_NORMAL, TRUE, nullptr, &stream))) {
+    if (FAILED(SHCreateStreamOnFileEx(
+            options_.screenshot.c_str(),
+            STGM_READWRITE | STGM_CREATE | STGM_SHARE_EXCLUSIVE,
+            FILE_ATTRIBUTE_NORMAL, TRUE, nullptr, &stream))) {
       allow_close_ = true;
       PostMessageW(hwnd_, WM_CLOSE, 0, 0);
       return;
     }
-    webview_->CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream.Get(),
-                             Callback<ICoreWebView2CapturePreviewCompletedHandler>(
-                                 [this, stream](HRESULT) -> HRESULT {
-                                   stream->Commit(STGC_DEFAULT);
-                                   allow_close_ = true;
-                                   PostMessageW(hwnd_, WM_CLOSE, 0, 0);
-                                   return S_OK;
-                                 })
-                                 .Get());
+    webview_->CapturePreview(
+        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream.Get(),
+        Callback<ICoreWebView2CapturePreviewCompletedHandler>([this,
+                                                               stream](HRESULT)
+                                                                  -> HRESULT {
+          stream->Commit(STGC_DEFAULT);
+          allow_close_ = true;
+          PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+          return S_OK;
+        }).Get());
   }
 
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -502,7 +533,8 @@ class WebSettingsWindow {
   Configurator* configurator_;
   WebSettingsOptions options_;
   HWND hwnd_ = nullptr;
-  std::shared_ptr<std::atomic<HWND>> target_ = std::make_shared<std::atomic<HWND>>(nullptr);
+  std::shared_ptr<std::atomic<HWND>> target_ =
+      std::make_shared<std::atomic<HWND>>(nullptr);
   std::wstring web_dir_;
   int theme_ = 0;
   int result_ = 0;
@@ -516,7 +548,8 @@ class WebSettingsWindow {
 
 }  // namespace
 
-int RunWebSettings(Configurator* configurator, const WebSettingsOptions& options) {
+int RunWebSettings(Configurator* configurator,
+                   const WebSettingsOptions& options) {
   WebSettingsWindow window(configurator, options);
   return window.Run();
 }

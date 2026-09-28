@@ -31,15 +31,21 @@ namespace fs = std::filesystem;
 namespace {
 
 // 顏色參考 Windows 11 設定 App 的淺色／深色外觀
-//                                   bg                  nav                 nav_selected        accent              text                subtle              input               separator
-const SettingsDialog::Palette kLight{RGB(255, 255, 255), RGB(243, 243, 243), RGB(224, 234, 246), RGB(0, 95, 184),    RGB(27, 27, 27),    RGB(96, 96, 96),    RGB(255, 255, 255), RGB(229, 229, 229)};
-const SettingsDialog::Palette kDark{RGB(39, 39, 39),     RGB(32, 32, 32),    RGB(45, 55, 66),    RGB(76, 194, 255),  RGB(255, 255, 255), RGB(200, 200, 200), RGB(29, 29, 29),    RGB(58, 58, 58)};
+//                                   bg                  nav nav_selected accent
+//                                   text                subtle input separator
+const SettingsDialog::Palette kLight{RGB(255, 255, 255), RGB(243, 243, 243),
+                                     RGB(224, 234, 246), RGB(0, 95, 184),
+                                     RGB(27, 27, 27),    RGB(96, 96, 96),
+                                     RGB(255, 255, 255), RGB(229, 229, 229)};
+const SettingsDialog::Palette kDark{
+    RGB(39, 39, 39),    RGB(32, 32, 32),    RGB(45, 55, 66), RGB(76, 194, 255),
+    RGB(255, 255, 255), RGB(200, 200, 200), RGB(29, 29, 29), RGB(58, 58, 58)};
 
 const wchar_t kThemeRegKey[] = L"Software\\Rime\\Weasel";
 const wchar_t kThemeRegValue[] = L"SettingsTheme";
 
 struct PageInfo {
-  int id_base;          // 這頁控制項的 ID 範圍（id_base ~ id_base + 99）
+  int id_base;  // 這頁控制項的 ID 範圍（id_base ~ id_base + 99）
   const wchar_t* nav;
   const wchar_t* icon;  // Segoe Fluent Icons / Segoe MDL2 Assets
   const wchar_t* title;
@@ -47,14 +53,16 @@ struct PageInfo {
 };
 // 順序要與 SettingsDialog::Page 一致
 const PageInfo kPages[] = {
-    {3100, L"輸入方案", L"\uE765", L"輸入方案", L"選擇要使用的輸入方案，並查看各方案的說明。"},
+    {3100, L"輸入方案", L"\uE765", L"輸入方案",
+     L"選擇要使用的輸入方案，並查看各方案的說明。"},
     {3200, L"外觀", L"\uE790", L"外觀", L"候選視窗的配色與字體。"},
     {3300, L"智慧預測", L"\uE82F", L"LLM 智慧預測",
      L"用語言模型預測你接下來要打的詞。"},
     {3700, L"注音校正", L"\uE70F", L"注音校正",
      L"注音打錯字時的處理：Rime 容錯選字，或請語言模型依前文校正整句。"},
     {3800, L"選字策略", L"", L"選字策略",
-     L"用統計語言模型改善整句選字，並記錄選字的準確度，方便比較調整前後的效果。"},
+     L"用統計語言模型改善整句選字，並記錄選字的準確度，方便比較調整前後的效果"
+     L"。"},
     {3500, L"語言模型", L"\uE950", L"語言模型",
      L"本機（llama.cpp）或 OpenAI 相容 API 的模型設定，可以設定多組。"},
     {3400, L"個人詞庫", L"\uE8F1", L"個人詞庫",
@@ -109,14 +117,17 @@ bool IsSubtleText(int id) {
   return false;
 }
 
-// 語言模型頁的「本機模型」與「OpenAI 相容 API」兩組控制項疊在同一塊位置，依選擇顯示其一
+// 語言模型頁的「本機模型」與「OpenAI 相容
+// API」兩組控制項疊在同一塊位置，依選擇顯示其一
 bool IsLocalOnly(int id) {
-  return id == IDC_P5_MODEL_LABEL || id == IDC_P5_MODEL || id == IDC_P5_BROWSE ||
-         id == IDC_P5_TYPE_LABEL || id == IDC_P5_TYPE || id == IDC_P5_LOCAL_HINT;
+  return id == IDC_P5_MODEL_LABEL || id == IDC_P5_MODEL ||
+         id == IDC_P5_BROWSE || id == IDC_P5_TYPE_LABEL || id == IDC_P5_TYPE ||
+         id == IDC_P5_LOCAL_HINT;
 }
 bool IsRemoteOnly(int id) {
-  return id == IDC_P5_API_URL_LABEL || id == IDC_P5_API_URL || id == IDC_P5_API_KEY_LABEL ||
-         id == IDC_P5_API_KEY || id == IDC_P5_API_MODEL_LABEL || id == IDC_P5_API_MODEL ||
+  return id == IDC_P5_API_URL_LABEL || id == IDC_P5_API_URL ||
+         id == IDC_P5_API_KEY_LABEL || id == IDC_P5_API_KEY ||
+         id == IDC_P5_API_MODEL_LABEL || id == IDC_P5_API_MODEL ||
          id == IDC_P5_REMOTE_HINT || id == IDC_P5_API_TEST;
 }
 
@@ -170,7 +181,8 @@ SettingsDialog::SettingsDialog(RimeSwitcherSettings* switcher_settings,
 void SettingsDialog::ApplyTheme() {
   dark_ = theme_pref_ == 2 || (theme_pref_ == 0 && IsUserDarkMode());
   pal_ = dark_ ? &kDark : &kLight;
-  for (HBRUSH* b : {&bg_brush_, &nav_brush_, &input_brush_, &separator_brush_}) {
+  for (HBRUSH* b :
+       {&bg_brush_, &nav_brush_, &input_brush_, &separator_brush_}) {
     if (*b)
       ::DeleteObject(*b);
   }
@@ -184,48 +196,64 @@ void SettingsDialog::ApplyTheme() {
   if (FAILED(::DwmSetWindowAttribute(m_hWnd, 20, &dark, sizeof(dark))))
     ::DwmSetWindowAttribute(m_hWnd, 19, &dark, sizeof(dark));
 
-  // 控制項的系統主題：按鈕、核取方塊、捲軸、清單用 DarkMode_Explorer；下拉選單與輸入框用 DarkMode_CFD
+  // 控制項的系統主題：按鈕、核取方塊、捲軸、清單用
+  // DarkMode_Explorer；下拉選單與輸入框用 DarkMode_CFD
   for (HWND child = ::GetWindow(m_hWnd, GW_CHILD); child;
        child = ::GetWindow(child, GW_HWNDNEXT)) {
     wchar_t cls[32] = {0};
     ::GetClassNameW(child, cls, _countof(cls));
     // 深色時清單不畫邊框（系統邊框在深色背景上是刺眼的白線），靠較深的底色區隔；淺色恢復原本的邊框。
-    // 對話框會把 WS_BORDER 轉成 WS_EX_CLIENTEDGE，所以兩者都要處理，並記住原始樣式以便切回。
-    if ((!_wcsicmp(cls, L"ListBox") && child != nav_.m_hWnd) || !_wcsicmp(cls, WC_LISTVIEWW)) {
+    // 對話框會把 WS_BORDER 轉成
+    // WS_EX_CLIENTEDGE，所以兩者都要處理，並記住原始樣式以便切回。
+    if ((!_wcsicmp(cls, L"ListBox") && child != nav_.m_hWnd) ||
+        !_wcsicmp(cls, WC_LISTVIEWW)) {
       auto original = original_frames_.find(child);
       if (original == original_frames_.end())
-        original = original_frames_
-                       .emplace(child, std::make_pair(::GetWindowLongW(child, GWL_STYLE),
-                                                      ::GetWindowLongW(child, GWL_EXSTYLE)))
-                       .first;
-      // 只改邊框相關的位元，其餘（例如 WS_VISIBLE：別頁的控制項是隱藏的）保持目前狀態
-      const LONG frame = WS_BORDER, ex_frame = WS_EX_CLIENTEDGE | WS_EX_STATICEDGE;
+        original =
+            original_frames_
+                .emplace(child,
+                         std::make_pair(::GetWindowLongW(child, GWL_STYLE),
+                                        ::GetWindowLongW(child, GWL_EXSTYLE)))
+                .first;
+      // 只改邊框相關的位元，其餘（例如
+      // WS_VISIBLE：別頁的控制項是隱藏的）保持目前狀態
+      const LONG frame = WS_BORDER,
+                 ex_frame = WS_EX_CLIENTEDGE | WS_EX_STATICEDGE;
       const LONG current = ::GetWindowLongW(child, GWL_STYLE) & ~frame;
       const LONG current_ex = ::GetWindowLongW(child, GWL_EXSTYLE) & ~ex_frame;
-      const LONG style = dark_ ? current : current | (original->second.first & frame);
-      const LONG ex_style = dark_ ? current_ex : current_ex | (original->second.second & ex_frame);
+      const LONG style =
+          dark_ ? current : current | (original->second.first & frame);
+      const LONG ex_style =
+          dark_ ? current_ex
+                : current_ex | (original->second.second & ex_frame);
       ::SetWindowLongW(child, GWL_STYLE, style);
       ::SetWindowLongW(child, GWL_EXSTYLE, ex_style);
       ::SetWindowPos(child, nullptr, 0, 0, 0, 0,
-                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                         SWP_NOACTIVATE);
     }
     if (!_wcsicmp(cls, L"Button") || !_wcsicmp(cls, L"ListBox")) {
-      ::SetWindowTheme(child, dark_ ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+      ::SetWindowTheme(child, dark_ ? L"DarkMode_Explorer" : L"Explorer",
+                       nullptr);
     } else if (!_wcsicmp(cls, L"ComboBox") || !_wcsicmp(cls, L"Edit")) {
       ::SetWindowTheme(child, dark_ ? L"DarkMode_CFD" : nullptr, nullptr);
     } else if (!_wcsicmp(cls, WC_LISTVIEWW)) {
-      ::SetWindowTheme(child, dark_ ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+      ::SetWindowTheme(child, dark_ ? L"DarkMode_Explorer" : L"Explorer",
+                       nullptr);
       ListView_SetBkColor(child, pal_->input);
       ListView_SetTextBkColor(child, pal_->input);
       ListView_SetTextColor(child, pal_->text);
       if (HWND header = ListView_GetHeader(child)) {
-        ::SetWindowTheme(header, dark_ ? L"DarkMode_ItemsView" : L"ItemsView", nullptr);
-        ::SetWindowSubclass(child, HeaderTextSubclass, 0, reinterpret_cast<DWORD_PTR>(this));
+        ::SetWindowTheme(header, dark_ ? L"DarkMode_ItemsView" : L"ItemsView",
+                         nullptr);
+        ::SetWindowSubclass(child, HeaderTextSubclass, 0,
+                            reinterpret_cast<DWORD_PTR>(this));
       }
     }
     ::SendMessageW(child, WM_THEMECHANGED, 0, 0);
   }
-  RedrawWindow(NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+  RedrawWindow(NULL, NULL,
+               RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
 }
 
 LRESULT SettingsDialog::OnThemeChange(WORD, WORD, HWND, BOOL&) {
@@ -234,15 +262,19 @@ LRESULT SettingsDialog::OnThemeChange(WORD, WORD, HWND, BOOL&) {
     return 0;
   theme_pref_ = (DWORD)sel;
   // 設定視窗自己的偏好，不是輸入法設定，直接存登錄檔、不用重新部署
-  RegSetKeyValueW(HKEY_CURRENT_USER, kThemeRegKey, kThemeRegValue, REG_DWORD, &theme_pref_,
-                  sizeof(theme_pref_));
+  RegSetKeyValueW(HKEY_CURRENT_USER, kThemeRegKey, kThemeRegValue, REG_DWORD,
+                  &theme_pref_, sizeof(theme_pref_));
   ApplyTheme();
   return 0;
 }
 
-LRESULT SettingsDialog::OnSettingChange(UINT, WPARAM, LPARAM lParam, BOOL& handled) {
+LRESULT SettingsDialog::OnSettingChange(UINT,
+                                        WPARAM,
+                                        LPARAM lParam,
+                                        BOOL& handled) {
   // 系統切換淺色／深色時會廣播 ImmersiveColorSet
-  if (theme_pref_ == 0 && lParam && !wcscmp((LPCWSTR)lParam, L"ImmersiveColorSet"))
+  if (theme_pref_ == 0 && lParam &&
+      !wcscmp((LPCWSTR)lParam, L"ImmersiveColorSet"))
     ApplyTheme();
   handled = FALSE;
   return 0;
@@ -262,7 +294,9 @@ int SettingsDialog::Scale(int px) const {
   UINT dpi_x = 96, dpi_y = 96;
   if (m_hWnd) {
     HMONITOR monitor = ::MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
-    if (FAILED(::GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)) || !dpi_x)
+    if (FAILED(
+            ::GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)) ||
+        !dpi_x)
       dpi_x = 96;
   }
   return MulDiv(px, dpi_x, 96);
@@ -273,8 +307,8 @@ int SettingsDialog::Scale(int px) const {
 
 LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   DWORD pref = 0, size = sizeof(pref);
-  if (RegGetValueW(HKEY_CURRENT_USER, kThemeRegKey, kThemeRegValue, RRF_RT_REG_DWORD, NULL,
-                   &pref, &size) == ERROR_SUCCESS &&
+  if (RegGetValueW(HKEY_CURRENT_USER, kThemeRegKey, kThemeRegValue,
+                   RRF_RT_REG_DWORD, NULL, &pref, &size) == ERROR_SUCCESS &&
       pref <= 2)
     theme_pref_ = pref;
   CComboBox theme(GetDlgItem(IDC_THEME));
@@ -288,7 +322,8 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
     nav_.AddString(p.nav);
 
   schema_list_.SubclassWindow(GetDlgItem(IDC_P1_SCHEMA_LIST));
-  schema_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
+  schema_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT,
+                                        LVS_EX_FULLROWSELECT);
   schema_list_.AddColumn(L"輸入方案", 0);
 
   color_schemes_.Attach(GetDlgItem(IDC_P2_COLOR_SCHEME));
@@ -305,21 +340,25 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   refine_profile_.Attach(GetDlgItem(IDC_P4_PROFILE));
   test_result_.Attach(GetDlgItem(IDC_P3_TEST_RESULT));
   words_list_.Attach(GetDlgItem(IDC_P6_WORDS));
-  words_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
+  words_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT,
+                                       LVS_EX_FULLROWSELECT);
   words_list_.AddColumn(L"詞", 0);
   words_list_.AddColumn(L"分數", 1);
   rules_list_.Attach(GetDlgItem(IDC_P6_RULES));
-  rules_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
+  rules_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT,
+                                       LVS_EX_FULLROWSELECT);
   rules_list_.AddColumn(L"規則", 0);
   stats_list_.Attach(GetDlgItem(IDC_P8_STATS));
-  stats_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
+  stats_list_.SetExtendedListViewStyle(LVS_EX_FULLROWSELECT,
+                                       LVS_EX_FULLROWSELECT);
   {
     // 欄寬按清單寬度的比例分配（跟著 DPI 縮放）
     static const struct {
       const wchar_t* title;
       int weight;
-    } kColumns[] = {{L"版本", 12}, {L"設定", 25}, {L"送出", 8},  {L"第一候選", 11},
-                    {L"送出後刪", 11}, {L"換字", 8}, {L"推薦套用", 12}, {L"LLM 採用", 12}};
+    } kColumns[] = {{L"版本", 12},     {L"設定", 25},     {L"送出", 8},
+                    {L"第一候選", 11}, {L"送出後刪", 11}, {L"換字", 8},
+                    {L"推薦套用", 12}, {L"LLM 採用", 12}};
     CRect rc;
     stats_list_.GetClientRect(&rc);
     const int width = rc.Width() - ::GetSystemMetrics(SM_CXVSCROLL);
@@ -349,7 +388,8 @@ LRESULT SettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   ApplyFonts();
   ApplyTheme();
 
-  const int start = start_page_ >= 0 && start_page_ < kPageCount ? start_page_ : 0;
+  const int start =
+      start_page_ >= 0 && start_page_ < kPageCount ? start_page_ : 0;
   nav_.SetCurSel(start);
   ShowPage(start);
 
@@ -383,7 +423,8 @@ LRESULT SettingsDialog::OnDestroy(UINT, WPARAM, LPARAM, BOOL& handled) {
 }
 
 LRESULT SettingsDialog::OnDpiChangedPre(UINT, WPARAM, LPARAM, BOOL& handled) {
-  // 讓 CDialogDpiAware 先縮放（它會把所有控制項字型換成對話框字型），之後再套自訂字型
+  // 讓 CDialogDpiAware
+  // 先縮放（它會把所有控制項字型換成對話框字型），之後再套自訂字型
   PostMessage(WM_APP_REFONT);
   handled = FALSE;
   return 0;
@@ -429,14 +470,17 @@ void SettingsDialog::ApplyFonts() {
   icon.lfWeight = FW_NORMAL;
   // 不能沿用對話框字型的中文字元集，否則 GDI 會改挑中文字型、畫不出圖示
   icon.lfCharSet = DEFAULT_CHARSET;
-  wcscpy_s(icon.lfFaceName,
-           FontExists(L"Segoe Fluent Icons") ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets");
+  wcscpy_s(icon.lfFaceName, FontExists(L"Segoe Fluent Icons")
+                                ? L"Segoe Fluent Icons"
+                                : L"Segoe MDL2 Assets");
   icon_font_ = ::CreateFontIndirectW(&icon);
 
   GetDlgItem(IDC_PAGE_TITLE).SetFont(title_font_);
-  for (int id : {IDC_P7_TYPO_LABEL, IDC_P8_GRAMMAR_LABEL, IDC_P8_STATS_LABEL, IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL, IDC_P3_TEST_LABEL,
-                 IDC_P3_PREFIX_LABEL, IDC_P3_ENABLED, IDC_P4_ENABLED, IDC_P4_REFINE_LABEL,
-                 IDC_P4_DATA_LABEL, IDC_P6_WORDS_LABEL, IDC_P6_DICT_LABEL, IDC_P5_FILES_LABEL})
+  for (int id : {IDC_P7_TYPO_LABEL, IDC_P8_GRAMMAR_LABEL, IDC_P8_STATS_LABEL,
+                 IDC_P2_SCHEME_LABEL, IDC_P2_FONT_LABEL, IDC_P3_MODEL_LABEL,
+                 IDC_P3_TEST_LABEL, IDC_P3_PREFIX_LABEL, IDC_P3_ENABLED,
+                 IDC_P4_ENABLED, IDC_P4_REFINE_LABEL, IDC_P4_DATA_LABEL,
+                 IDC_P6_WORDS_LABEL, IDC_P6_DICT_LABEL, IDC_P5_FILES_LABEL})
     GetDlgItem(id).SetFont(section_font_);
 
   nav_.SetItemHeight(0, Scale(40));
@@ -447,7 +491,8 @@ void SettingsDialog::ApplyFonts() {
   schema_list_.SetColumnWidth(0, rc.Width() - 2);
   words_list_.GetClientRect(&rc);
   const int score_width = Scale(56);
-  words_list_.SetColumnWidth(0, rc.Width() - score_width - ::GetSystemMetrics(SM_CXVSCROLL));
+  words_list_.SetColumnWidth(
+      0, rc.Width() - score_width - ::GetSystemMetrics(SM_CXVSCROLL));
   words_list_.SetColumnWidth(1, score_width);
   rules_list_.GetClientRect(&rc);
   rules_list_.SetColumnWidth(0, rc.Width() - ::GetSystemMetrics(SM_CXVSCROLL));
@@ -477,7 +522,9 @@ void SettingsDialog::ShowPage(int page) {
   if (page == kPageModels) {
     UpdateProfileUsage();
     if (!file_busy_)
-      PopulateModelFiles(model_files_.GetCurSel() >= 0 ? model_file_paths_[model_files_.GetCurSel()] : L"");
+      PopulateModelFiles(model_files_.GetCurSel() >= 0
+                             ? model_file_paths_[model_files_.GetCurSel()]
+                             : L"");
   }
   if (page == kPageChoice) {
     RefreshGrammarStatus();
@@ -502,7 +549,8 @@ void SettingsDialog::ShowPage(int page) {
 }
 
 bool SettingsDialog::IsRemoteProvider() const {
-  return profile_sel_ >= 0 && profile_sel_ < (int)profiles_.size() && profiles_[profile_sel_].remote;
+  return profile_sel_ >= 0 && profile_sel_ < (int)profiles_.size() &&
+         profiles_[profile_sel_].remote;
 }
 
 void SettingsDialog::GoToPage(int page) {
@@ -529,7 +577,10 @@ LRESULT SettingsDialog::OnProviderChange(WORD, WORD, HWND, BOOL&) {
 }
 
 // 選項按鈕的文字另做成可點的標籤（深色主題不會把選項按鈕的文字畫成淺色）
-LRESULT SettingsDialog::OnProviderLabelClick(WORD, WORD id, HWND, BOOL& handled) {
+LRESULT SettingsDialog::OnProviderLabelClick(WORD,
+                                             WORD id,
+                                             HWND,
+                                             BOOL& handled) {
   if (!GetDlgItem(IDC_P5_LOCAL).IsWindowEnabled())
     return 0;
   CheckRadioButton(IDC_P5_LOCAL, IDC_P5_REMOTE,
@@ -562,7 +613,10 @@ LRESULT SettingsDialog::OnCtlColorDlg(UINT, WPARAM wParam, LPARAM, BOOL&) {
   return (LRESULT)bg_brush_;
 }
 
-LRESULT SettingsDialog::OnCtlColorStatic(UINT, WPARAM wParam, LPARAM lParam, BOOL&) {
+LRESULT SettingsDialog::OnCtlColorStatic(UINT,
+                                         WPARAM wParam,
+                                         LPARAM lParam,
+                                         BOOL&) {
   HDC dc = (HDC)wParam;
   const int id = ::GetDlgCtrlID((HWND)lParam);
   if (id == IDC_SEPARATOR) {
@@ -586,7 +640,10 @@ LRESULT SettingsDialog::OnCtlColorEdit(UINT, WPARAM wParam, LPARAM, BOOL&) {
   return (LRESULT)input_brush_;
 }
 
-LRESULT SettingsDialog::OnCtlColorListBox(UINT, WPARAM wParam, LPARAM lParam, BOOL&) {
+LRESULT SettingsDialog::OnCtlColorListBox(UINT,
+                                          WPARAM wParam,
+                                          LPARAM lParam,
+                                          BOOL&) {
   // 導覽欄用 nav 色；其他清單（含下拉選單展開的清單）用輸入框底色
   const bool nav = (HWND)lParam == nav_.m_hWnd;
   ::SetBkColor((HDC)wParam, nav ? pal_->nav : pal_->input);
@@ -594,7 +651,10 @@ LRESULT SettingsDialog::OnCtlColorListBox(UINT, WPARAM wParam, LPARAM lParam, BO
   return (LRESULT)(nav ? nav_brush_ : input_brush_);
 }
 
-LRESULT SettingsDialog::OnMeasureItem(UINT, WPARAM, LPARAM lParam, BOOL& handled) {
+LRESULT SettingsDialog::OnMeasureItem(UINT,
+                                      WPARAM,
+                                      LPARAM lParam,
+                                      BOOL& handled) {
   auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
   if (mis->CtlID != IDC_NAV) {
     handled = FALSE;
@@ -623,11 +683,13 @@ LRESULT SettingsDialog::OnDrawItem(UINT, WPARAM, LPARAM lParam, BOOL& handled) {
     HBRUSH sel = ::CreateSolidBrush(pal_->nav_selected);
     HBRUSH old_brush = dc.SelectBrush(sel);
     HPEN old_pen = dc.SelectPen((HPEN)::GetStockObject(NULL_PEN));
-    dc.RoundRect(pill.left, pill.top, pill.right, pill.bottom, Scale(8), Scale(8));
+    dc.RoundRect(pill.left, pill.top, pill.right, pill.bottom, Scale(8),
+                 Scale(8));
     dc.SelectPen(old_pen);
     dc.SelectBrush(old_brush);
     ::DeleteObject(sel);
-    CRect bar(pill.left, pill.top + Scale(9), pill.left + Scale(3), pill.bottom - Scale(9));
+    CRect bar(pill.left, pill.top + Scale(9), pill.left + Scale(3),
+              pill.bottom - Scale(9));
     HBRUSH accent = ::CreateSolidBrush(pal_->accent);
     dc.FillRect(&bar, accent);
     ::DeleteObject(accent);
@@ -643,8 +705,9 @@ LRESULT SettingsDialog::OnDrawItem(UINT, WPARAM, LPARAM lParam, BOOL& handled) {
     dc.SelectFont(nav_font_);
     dc.SetTextColor(pal_->text);
     CRect text_rc(rc.left + Scale(44), rc.top, rc.right - Scale(6), rc.bottom);
-    dc.DrawText(kPages[d->itemID].nav, -1, &text_rc,
-                DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+    dc.DrawText(
+        kPages[d->itemID].nav, -1, &text_rc,
+        DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
     dc.SelectFont(old_font);
   }
   return TRUE;
@@ -672,7 +735,8 @@ void SettingsDialog::PopulateSchemas() {
     for (size_t j = 0; j < available.size; ++j) {
       RimeSchemaListItem& item(available.list[j]);
       RimeSchemaInfo* info = (RimeSchemaInfo*)item.reserved;
-      if (!strcmp(item.schema_id, schema_id) && recruited.find(info) == recruited.end()) {
+      if (!strcmp(item.schema_id, schema_id) &&
+          recruited.find(info) == recruited.end()) {
         recruited.insert(info);
         schema_list_.AddItem(k, 0, u8tow(item.name).c_str());
         schema_list_.SetItemData(k, (DWORD_PTR)info);
@@ -716,11 +780,14 @@ void SettingsDialog::ShowSchemaDetails(RimeSchemaInfo* info) {
 
 LRESULT SettingsDialog::OnSchemaListItemChanged(int, LPNMHDR p, BOOL&) {
   LPNMLISTVIEW lv = reinterpret_cast<LPNMLISTVIEW>(p);
-  if (!loaded_ || !lv || lv->iItem < 0 || lv->iItem >= schema_list_.GetItemCount())
+  if (!loaded_ || !lv || lv->iItem < 0 ||
+      lv->iItem >= schema_list_.GetItemCount())
     return 0;
-  if ((lv->uNewState & LVIS_STATEIMAGEMASK) != (lv->uOldState & LVIS_STATEIMAGEMASK)) {
+  if ((lv->uNewState & LVIS_STATEIMAGEMASK) !=
+      (lv->uOldState & LVIS_STATEIMAGEMASK)) {
     schemas_modified_ = true;
-  } else if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED)) {
+  } else if ((lv->uNewState & LVIS_SELECTED) &&
+             !(lv->uOldState & LVIS_SELECTED)) {
     ShowSchemaDetails((RimeSchemaInfo*)(schema_list_.GetItemData(lv->iItem)));
   }
   return 0;
@@ -728,8 +795,8 @@ LRESULT SettingsDialog::OnSchemaListItemChanged(int, LPNMHDR p, BOOL&) {
 
 LRESULT SettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
   HKEY hKey;
-  std::wstring hPath =
-      is_wow64() ? L"Software\\WOW6432Node\\Rime\\Weasel" : L"Software\\Rime\\Weasel";
+  std::wstring hPath = is_wow64() ? L"Software\\WOW6432Node\\Rime\\Weasel"
+                                  : L"Software\\Rime\\Weasel";
   if (RegOpenKey(HKEY_LOCAL_MACHINE, hPath.c_str(), &hKey) != ERROR_SUCCESS)
     return 0;
   WCHAR value[MAX_PATH];
@@ -738,7 +805,8 @@ LRESULT SettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
   if (RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type, (LPBYTE)value, &len) ==
           ERROR_SUCCESS &&
       type == REG_SZ) {
-    std::wstring parameters = std::wstring(L"/k \"") + value + L"\\rime-install.bat\"";
+    std::wstring parameters =
+        std::wstring(L"/k \"") + value + L"\\rime-install.bat\"";
     SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO)};
     cmd.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
     cmd.hwnd = hWndCtl;
@@ -750,7 +818,8 @@ LRESULT SettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
       WaitForSingleObject(cmd.hProcess, INFINITE);
       CloseHandle(cmd.hProcess);
     }
-    api_->load_settings(reinterpret_cast<RimeCustomSettings*>(switcher_settings_));
+    api_->load_settings(
+        reinterpret_cast<RimeCustomSettings*>(switcher_settings_));
     PopulateSchemas();
   }
   RegCloseKey(hKey);
@@ -781,11 +850,13 @@ void SettingsDialog::PopulateColorSchemes() {
 void SettingsDialog::PreviewColorScheme(int index) {
   if (index < 0 || index >= (int)preset_.size())
     return;
-  const std::string file_path(ui_settings_->GetColorSchemePreview(preset_[index].color_scheme_id));
+  const std::string file_path(
+      ui_settings_->GetColorSchemePreview(preset_[index].color_scheme_id));
   if (file_path.empty())
     return;
   preview_image_.Destroy();
-  preview_image_.Load(acptow(file_path).c_str());  // 路徑是 ANSI 編碼，不是 UTF-8
+  preview_image_.Load(
+      acptow(file_path).c_str());  // 路徑是 ANSI 編碼，不是 UTF-8
   if (!preview_image_.IsNull())
     preview_.SetBitmap(preview_image_);
 }
@@ -802,12 +873,16 @@ LRESULT SettingsDialog::OnColorSchemeChange(WORD, WORD, HWND, BOOL&) {
 
 void SettingsDialog::UpdateFontSummary() {
   auto describe = [](const std::wstring& face, int point) {
-    std::wstring name = face.empty() ? L"預設字體" : face.substr(0, face.find(L','));
+    std::wstring name =
+        face.empty() ? L"預設字體" : face.substr(0, face.find(L','));
     return name + L"，" + std::to_wstring(point) + L" pt";
   };
-  std::wstring text = L"候選字：" + describe(ui_settings_->font_face, ui_settings_->font_point) +
-                      L"　標籤：" + std::to_wstring(ui_settings_->label_font_point) +
-                      L" pt　註解：" + std::to_wstring(ui_settings_->comment_font_point) + L" pt";
+  std::wstring text =
+      L"候選字：" +
+      describe(ui_settings_->font_face, ui_settings_->font_point) +
+      L"　標籤：" + std::to_wstring(ui_settings_->label_font_point) +
+      L" pt　註解：" + std::to_wstring(ui_settings_->comment_font_point) +
+      L" pt";
   GetDlgItem(IDC_P2_FONT_SUMMARY).SetWindowTextW(text.c_str());
 }
 
@@ -815,11 +890,15 @@ LRESULT SettingsDialog::OnSelectFont(WORD, WORD, HWND, BOOL&) {
   FontSettingDialog dialog(ui_settings_, m_hWnd);
   if (dialog.ShowDialog() == IDOK) {
     ui_settings_->SetFontFace("style/font_face", wtou8(dialog.m_font_face));
-    ui_settings_->SetFontFace("style/label_font_face", wtou8(dialog.m_label_font_face));
-    ui_settings_->SetFontFace("style/comment_font_face", wtou8(dialog.m_comment_font_face));
+    ui_settings_->SetFontFace("style/label_font_face",
+                              wtou8(dialog.m_label_font_face));
+    ui_settings_->SetFontFace("style/comment_font_face",
+                              wtou8(dialog.m_comment_font_face));
     ui_settings_->SetFontPoint("style/font_point", dialog.m_font_point);
-    ui_settings_->SetFontPoint("style/label_font_point", dialog.m_label_font_point);
-    ui_settings_->SetFontPoint("style/comment_font_point", dialog.m_comment_font_point);
+    ui_settings_->SetFontPoint("style/label_font_point",
+                               dialog.m_label_font_point);
+    ui_settings_->SetFontPoint("style/comment_font_point",
+                               dialog.m_comment_font_point);
     ui_settings_->font_face = dialog.m_font_face;
     ui_settings_->label_font_face = dialog.m_label_font_face;
     ui_settings_->comment_font_face = dialog.m_comment_font_face;
@@ -845,22 +924,29 @@ void SettingsDialog::LoadLLMSettings() {
   };
   auto get_string = [&](const char* key) {
     char buffer[2048] = {0};
-    return rime->config_get_string(&config, key, buffer, sizeof(buffer) - 1) ? u8tow(buffer)
-                                                                             : std::wstring();
+    return rime->config_get_string(&config, key, buffer, sizeof(buffer) - 1)
+               ? u8tow(buffer)
+               : std::wstring();
   };
-  CheckDlgButton(IDC_P3_ENABLED, get_bool("llm/enabled", false) ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P3_AFTER_COMMIT,
-                 get_bool("llm/predict_after_commit", true) ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P3_WHILE_TYPING,
-                 get_bool("llm/predict_while_typing", true) ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P8_LOG, get_bool("llm/choice/log", false) ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P8_RESCORE,
-                 get_bool("llm/choice/rescore", false) ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P3_ENABLED,
+                 get_bool("llm/enabled", false) ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P3_AFTER_COMMIT, get_bool("llm/predict_after_commit", true)
+                                          ? BST_CHECKED
+                                          : BST_UNCHECKED);
+  CheckDlgButton(IDC_P3_WHILE_TYPING, get_bool("llm/predict_while_typing", true)
+                                          ? BST_CHECKED
+                                          : BST_UNCHECKED);
+  CheckDlgButton(IDC_P8_LOG, get_bool("llm/choice/log", false) ? BST_CHECKED
+                                                               : BST_UNCHECKED);
+  CheckDlgButton(IDC_P8_RESCORE, get_bool("llm/choice/rescore", false)
+                                     ? BST_CHECKED
+                                     : BST_UNCHECKED);
 
   LoadProfiles(&config);
 
-  // 提示詞（Base 與 Instruct 共用）：llm/prompt，沒有時讀舊的 llm/llamacpp/prompt_prefix。
-  // 設定裡用 \n 換行，編輯框要 \r\n；結尾的空行只是和前文隔開，不顯示
+  // 提示詞（Base 與 Instruct 共用）：llm/prompt，沒有時讀舊的
+  // llm/llamacpp/prompt_prefix。 設定裡用 \n 換行，編輯框要
+  // \r\n；結尾的空行只是和前文隔開，不顯示
   std::wstring prefix = get_string("llm/prompt");
   if (prefix.empty())
     prefix = get_string("llm/llamacpp/prompt_prefix");
@@ -877,15 +963,20 @@ void SettingsDialog::LoadLLMSettings() {
   UpdateLLMEnableState();
   LoadPersonalSettings(&config);
 
-  // 注音容錯：兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
+  // 注音容錯：兩個開關各自獨立；舊設定 llm/typo_correction（off / rime /
+  // llm，llm 含 Rime 容錯）
   const std::wstring legacy = get_string("llm/typo_correction");
-  typo_rime_loaded_ = get_bool("llm/typo/rime", legacy == L"rime" || legacy == L"llm");
-  CheckDlgButton(IDC_P7_TYPO_RIME, typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P7_TYPO_LLM,
-                 get_bool("llm/typo/llm", legacy == L"llm") ? BST_CHECKED : BST_UNCHECKED);
+  typo_rime_loaded_ =
+      get_bool("llm/typo/rime", legacy == L"rime" || legacy == L"llm");
+  CheckDlgButton(IDC_P7_TYPO_RIME,
+                 typo_rime_loaded_ ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P7_TYPO_LLM, get_bool("llm/typo/llm", legacy == L"llm")
+                                      ? BST_CHECKED
+                                      : BST_UNCHECKED);
   // 校正提示詞：沒有自訂時顯示預設指令，方便在上面修改
   const std::wstring typo_prompt = get_string("llm/typo/prompt");
-  SetMultilineText(IDC_P7_TYPO_PROMPT, typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
+  SetMultilineText(IDC_P7_TYPO_PROMPT,
+                   typo_prompt.empty() ? kLLMCorrectInstruction : typo_prompt);
   UpdateTypoState();
   // 語言模型：注音方案裡有我們加的區塊就是已啟用
   grammar_loaded_ = settings_ops::GrammarEnabled();
@@ -896,8 +987,9 @@ void SettingsDialog::LoadLLMSettings() {
 
 void SettingsDialog::UpdateTypoState() {
   const bool llm = IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED;
-  for (int id : {IDC_P7_TYPO_PROFILE_LABEL, IDC_P7_TYPO_PROFILE, IDC_P7_TYPO_PROMPT_LABEL,
-                 IDC_P7_TYPO_PROMPT, IDC_P7_TYPO_PROMPT_RESET})
+  for (int id :
+       {IDC_P7_TYPO_PROFILE_LABEL, IDC_P7_TYPO_PROFILE,
+        IDC_P7_TYPO_PROMPT_LABEL, IDC_P7_TYPO_PROMPT, IDC_P7_TYPO_PROMPT_RESET})
     GetDlgItem(id).EnableWindow(llm);
 }
 
@@ -961,12 +1053,15 @@ void SettingsDialog::PopulateModels(const std::wstring& current) {
   for (const auto& dir : dirs) {
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(dir, ec)) {
-      if (entry.is_regular_file(ec) && ToLower(entry.path().extension().wstring()) == L".gguf")
+      if (entry.is_regular_file(ec) &&
+          ToLower(entry.path().extension().wstring()) == L".gguf")
         found.push_back(entry.path().wstring());
     }
   }
   std::sort(found.begin(), found.end(),
-            [](const std::wstring& a, const std::wstring& b) { return ToLower(FileNameOf(a)) < ToLower(FileNameOf(b)); });
+            [](const std::wstring& a, const std::wstring& b) {
+              return ToLower(FileNameOf(a)) < ToLower(FileNameOf(b));
+            });
   for (const auto& path : found)
     AddModel(path);
   if (!current.empty())
@@ -975,8 +1070,8 @@ void SettingsDialog::PopulateModels(const std::wstring& current) {
 
 void SettingsDialog::UpdateLLMEnableState() {
   const bool enabled = IsDlgButtonChecked(IDC_P3_ENABLED) == BST_CHECKED;
-  for (int id : {IDC_P3_AFTER_COMMIT, IDC_P3_WHILE_TYPING, IDC_P3_MODEL_LABEL, IDC_P3_PROFILE,
-                 IDC_P3_PREFIX_LABEL, IDC_P3_PREFIX})
+  for (int id : {IDC_P3_AFTER_COMMIT, IDC_P3_WHILE_TYPING, IDC_P3_MODEL_LABEL,
+                 IDC_P3_PROFILE, IDC_P3_PREFIX_LABEL, IDC_P3_PREFIX})
     GetDlgItem(id).EnableWindow(enabled);
 }
 
@@ -1007,8 +1102,9 @@ LRESULT SettingsDialog::OnModelChange(WORD, WORD, HWND, BOOL&) {
 }
 
 LRESULT SettingsDialog::OnBrowseModel(WORD, WORD, HWND, BOOL&) {
-  CFileDialog dialog(TRUE, L"gguf", NULL, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER,
-                     L"GGUF 模型 (*.gguf)\0*.gguf\0所有檔案 (*.*)\0*.*\0", m_hWnd);
+  CFileDialog dialog(
+      TRUE, L"gguf", NULL, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER,
+      L"GGUF 模型 (*.gguf)\0*.gguf\0所有檔案 (*.*)\0*.*\0", m_hWnd);
   if (dialog.DoModal() == IDOK) {
     models_.SetCurSel(AddModel(dialog.m_szFileName));
     BOOL handled = TRUE;
@@ -1021,16 +1117,19 @@ bool SettingsDialog::SaveLLMSettings() {
   RimeApi* rime = rime_get_api();
   RimeConfig config = {0};
   api_->settings_get_config(ui_settings_->settings(), &config);
-  // 以目前的 llm 設定為底（保留 prompt_prefix、n_ctx 等介面上沒有的項目），只改介面上的值
+  // 以目前的 llm 設定為底（保留 prompt_prefix、n_ctx
+  // 等介面上沒有的項目），只改介面上的值
   RimeConfig llm = {0};
   if (!rime->config_get_item(&config, "llm", &llm))
     rime->config_init(&llm);
-  rime->config_set_bool(&llm, "enabled", IsDlgButtonChecked(IDC_P3_ENABLED) == BST_CHECKED);
+  rime->config_set_bool(&llm, "enabled",
+                        IsDlgButtonChecked(IDC_P3_ENABLED) == BST_CHECKED);
   rime->config_set_bool(&llm, "predict_after_commit",
                         IsDlgButtonChecked(IDC_P3_AFTER_COMMIT) == BST_CHECKED);
   rime->config_set_bool(&llm, "predict_while_typing",
                         IsDlgButtonChecked(IDC_P3_WHILE_TYPING) == BST_CHECKED);
-  rime->config_set_bool(&llm, "choice/log", IsDlgButtonChecked(IDC_P8_LOG) == BST_CHECKED);
+  rime->config_set_bool(&llm, "choice/log",
+                        IsDlgButtonChecked(IDC_P8_LOG) == BST_CHECKED);
   rime->config_set_bool(&llm, "choice/rescore",
                         IsDlgButtonChecked(IDC_P8_RESCORE) == BST_CHECKED);
   auto get_text = [&](int id) {
@@ -1040,7 +1139,8 @@ bool SettingsDialog::SaveLLMSettings() {
   };
   SaveProfiles(&llm);
 
-  // 提示詞（兩種模式共用）：統一換行為 \n；改存 llm/prompt，移除舊的 llamacpp/prompt_prefix
+  // 提示詞（兩種模式共用）：統一換行為 \n；改存 llm/prompt，移除舊的
+  // llamacpp/prompt_prefix
   CString text;
   GetDlgItem(IDC_P3_PREFIX).GetWindowTextW(text);
   std::wstring prefix;
@@ -1050,13 +1150,16 @@ bool SettingsDialog::SaveLLMSettings() {
   }
   rime->config_set_string(&llm, "prompt", wtou8(LLMTrim(prefix)).c_str());
   rime->config_clear(&llm, "llamacpp/prompt_prefix");
-  rime->config_set_bool(&llm, "typo/rime", IsDlgButtonChecked(IDC_P7_TYPO_RIME) == BST_CHECKED);
-  rime->config_set_bool(&llm, "typo/llm", IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED);
+  rime->config_set_bool(&llm, "typo/rime",
+                        IsDlgButtonChecked(IDC_P7_TYPO_RIME) == BST_CHECKED);
+  rime->config_set_bool(&llm, "typo/llm",
+                        IsDlgButtonChecked(IDC_P7_TYPO_LLM) == BST_CHECKED);
   // 和預設相同（或清空）就不存，之後改了預設指令也會跟著更新
   const std::wstring typo_prompt = GetMultilineText(IDC_P7_TYPO_PROMPT);
-  rime->config_set_string(
-      &llm, "typo/prompt",
-      typo_prompt == LLMTrim(kLLMCorrectInstruction) ? "" : wtou8(typo_prompt).c_str());
+  rime->config_set_string(&llm, "typo/prompt",
+                          typo_prompt == LLMTrim(kLLMCorrectInstruction)
+                              ? ""
+                              : wtou8(typo_prompt).c_str());
   rime->config_clear(&llm, "typo_correction");
   SavePersonalSettings(&llm);
   const bool ok = !!api_->customize_item(ui_settings_->settings(), "llm", &llm);
@@ -1073,7 +1176,8 @@ void SettingsDialog::SendLLMRequest(const std::wstring& context, bool is_test) {
   if (!settings_ops::SendLLMTestRequest(request_id_, context)) {
     GetDlgItem(IDC_P3_LOADED).SetWindowTextW(L"無法連線到輸入法服務。");
     if (is_test)
-      GetDlgItem(IDC_P3_TEST_STATUS).SetWindowTextW(L"無法連線到輸入法服務，請確認小狼毫正在執行。");
+      GetDlgItem(IDC_P3_TEST_STATUS)
+          .SetWindowTextW(L"無法連線到輸入法服務，請確認小狼毫正在執行。");
     return;
   }
   request_started_ = GetTickCount64();
@@ -1096,17 +1200,20 @@ bool SettingsDialog::PollLLMResponse() {
   KillTimer(kTimerTestPoll);
   const std::wstring model_name = LoadedModelDisplay(response->model);
   GetDlgItem(IDC_P3_LOADED)
-      .SetWindowTextW(status == "disabled"
-                          ? L"輸入法目前沒有載入 LLM 模型（LLM 智慧預測已關閉）。"
-                          : (L"輸入法目前載入：" + model_name).c_str());
+      .SetWindowTextW(
+          status == "disabled"
+              ? L"輸入法目前沒有載入 LLM 模型（LLM 智慧預測已關閉）。"
+              : (L"輸入法目前載入：" + model_name).c_str());
   if (request_is_test_) {
     GetDlgItem(IDC_P3_TEST_RUN).EnableWindow(TRUE);
     if (status == "disabled") {
       GetDlgItem(IDC_P3_TEST_STATUS)
-          .SetWindowTextW(L"LLM 智慧預測目前關閉，無法測試。請先啟用並按「套用」。");
+          .SetWindowTextW(
+              L"LLM 智慧預測目前關閉，無法測試。請先啟用並按「套用」。");
     } else {
       for (size_t i = 0; i < candidates.size(); ++i)
-        test_result_.AddString((std::to_wstring(i + 1) + L".  " + candidates[i]).c_str());
+        test_result_.AddString(
+            (std::to_wstring(i + 1) + L".  " + candidates[i]).c_str());
       std::wstring summary = candidates.empty() ? L"沒有產生候選。" : L"";
       summary += L"耗時 " + u8tow(ms) + L" ms（" + model_name + L"）";
       GetDlgItem(IDC_P3_TEST_STATUS).SetWindowTextW(summary.c_str());
@@ -1133,7 +1240,8 @@ LRESULT SettingsDialog::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& handled) {
       KillTimer(kTimerTestPoll);
       GetDlgItem(IDC_P3_TEST_RUN).EnableWindow(TRUE);
       const wchar_t* msg = L"輸入法沒有回應（可能正在載入模型），請稍後再試。";
-      GetDlgItem(request_is_test_ ? IDC_P3_TEST_STATUS : IDC_P3_LOADED).SetWindowTextW(msg);
+      GetDlgItem(request_is_test_ ? IDC_P3_TEST_STATUS : IDC_P3_LOADED)
+          .SetWindowTextW(msg);
     }
     return 0;
   }
@@ -1171,16 +1279,19 @@ bool SettingsDialog::Save() {
     if (selection.empty()) {
       nav_.SetCurSel(0);
       ShowPage(0);
-      MSG_BY_IDS(IDS_STR_ERR_AT_LEAST_ONE_SEL, IDS_STR_NOT_REGULAR, MB_OK | MB_ICONEXCLAMATION);
+      MSG_BY_IDS(IDS_STR_ERR_AT_LEAST_ONE_SEL, IDS_STR_NOT_REGULAR,
+                 MB_OK | MB_ICONEXCLAMATION);
       return false;
     }
-    api_->select_schemas(switcher_settings_, selection.data(), (int)selection.size());
+    api_->select_schemas(switcher_settings_, selection.data(),
+                         (int)selection.size());
     api_->save_settings((RimeCustomSettings*)switcher_settings_);
     schemas_modified_ = false;
     saved = true;
   }
   CommitProfileEditor();
-  if ((llm_modified_ || personal_modified_ || typo_modified_) && !ValidateProfiles())
+  if ((llm_modified_ || personal_modified_ || typo_modified_) &&
+      !ValidateProfiles())
     return false;
   if (personal_modified_ || typo_modified_)
     llm_modified_ = true;  // 個人詞庫與注音容錯的設定也在 llm 之下，一起儲存
@@ -1203,12 +1314,14 @@ bool SettingsDialog::Save() {
   if (typo_modified_ && typo_rime != typo_rime_loaded_) {
     std::wstring typo_error;
     if (!ApplyTypoCorrection(typo_rime, &typo_error))
-      boost_error += (boost_error.empty() ? L"" : L"；") + (L"Rime 容錯：" + typo_error);
+      boost_error +=
+          (boost_error.empty() ? L"" : L"；") + (L"Rime 容錯：" + typo_error);
   }
   typo_rime_loaded_ = typo_rime;
   if (style_modified_ || llm_modified_) {
     api_->save_settings(ui_settings_->settings());
-    style_modified_ = llm_modified_ = personal_modified_ = typo_modified_ = false;
+    style_modified_ = llm_modified_ = personal_modified_ = typo_modified_ =
+        false;
     saved = true;
   }
   // 語言模型：開關有變才改方案（開啟前已確認模型檔存在）
@@ -1216,7 +1329,8 @@ bool SettingsDialog::Save() {
     const bool grammar = IsDlgButtonChecked(IDC_P8_GRAMMAR) == BST_CHECKED;
     std::wstring grammar_error;
     if (!ApplyGrammar(grammar, &grammar_error))
-      boost_error += (boost_error.empty() ? L"" : L"；") + (L"語言模型：" + grammar_error);
+      boost_error +=
+          (boost_error.empty() ? L"" : L"；") + (L"語言模型：" + grammar_error);
     grammar_loaded_ = grammar;
     grammar_modified_ = false;
     saved = true;
@@ -1249,23 +1363,29 @@ void SettingsDialog::LoadPersonalSettings(RimeConfig* config) {
   };
   auto get_string = [&](const char* key) {
     char buffer[2048] = {0};
-    return rime->config_get_string(config, key, buffer, sizeof(buffer) - 1) ? u8tow(buffer)
-                                                                            : std::wstring();
+    return rime->config_get_string(config, key, buffer, sizeof(buffer) - 1)
+               ? u8tow(buffer)
+               : std::wstring();
   };
   auto get_int = [&](const char* key, int fallback) {
     int value = fallback;
     return rime->config_get_int(config, key, &value) ? value : fallback;
   };
-  CheckDlgButton(IDC_P4_ENABLED,
-                 get_bool("llm/personal/enabled", true) ? BST_CHECKED : BST_UNCHECKED);
-  CheckDlgButton(IDC_P4_KEEP_LOG,
-                 get_bool("llm/personal/keep_raw_log", true) ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P4_ENABLED, get_bool("llm/personal/enabled", true)
+                                     ? BST_CHECKED
+                                     : BST_UNCHECKED);
+  CheckDlgButton(IDC_P4_KEEP_LOG, get_bool("llm/personal/keep_raw_log", true)
+                                      ? BST_CHECKED
+                                      : BST_UNCHECKED);
   rime_boost_loaded_ = get_bool("llm/personal/rime_boost", false);
-  CheckDlgButton(IDC_P4_RIME_BOOST, rime_boost_loaded_ ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(IDC_P4_RIME_BOOST,
+                 rime_boost_loaded_ ? BST_CHECKED : BST_UNCHECKED);
   const int max = get_int("llm/personal/max_candidates", 3);
-  CComboBox(GetDlgItem(IDC_P4_MAX)).SetCurSel((std::max)(0, (std::min)(max, 5)));
+  CComboBox(GetDlgItem(IDC_P4_MAX))
+      .SetCurSel((std::max)(0, (std::min)(max, 5)));
   const int half_life = get_int("llm/personal/half_life_days", 30);
-  GetDlgItem(IDC_P4_HALFLIFE).SetWindowTextW(std::to_wstring(half_life > 0 ? half_life : 30).c_str());
+  GetDlgItem(IDC_P4_HALFLIFE)
+      .SetWindowTextW(std::to_wstring(half_life > 0 ? half_life : 30).c_str());
   std::wstring interval = get_string("llm/personal/refine/interval_days");
   if (interval.empty())
     interval = L"1";
@@ -1285,25 +1405,29 @@ void SettingsDialog::SavePersonalSettings(RimeConfig* llm) {
     const std::wstring text = get_text(id);
     return text.empty() ? fallback : _wtoi(text.c_str());
   };
-  rime->config_set_bool(llm, "personal/enabled", IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED);
+  rime->config_set_bool(llm, "personal/enabled",
+                        IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED);
   rime->config_set_bool(llm, "personal/keep_raw_log",
                         IsDlgButtonChecked(IDC_P4_KEEP_LOG) == BST_CHECKED);
-  rime->config_set_bool(llm, "personal/rime_boost",
-                        IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED &&
-                            IsDlgButtonChecked(IDC_P4_RIME_BOOST) == BST_CHECKED);
+  rime->config_set_bool(
+      llm, "personal/rime_boost",
+      IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED &&
+          IsDlgButtonChecked(IDC_P4_RIME_BOOST) == BST_CHECKED);
   const int max = CComboBox(GetDlgItem(IDC_P4_MAX)).GetCurSel();
   rime->config_set_int(llm, "personal/max_candidates", max < 0 ? 3 : max);
   const int half_life = get_number(IDC_P4_HALFLIFE, 30);
-  rime->config_set_int(llm, "personal/half_life_days", half_life > 0 ? half_life : 30);
+  rime->config_set_int(llm, "personal/half_life_days",
+                       half_life > 0 ? half_life : 30);
   rime->config_set_int(llm, "personal/refine/interval_days",
                        (std::max)(0, get_number(IDC_P4_INTERVAL, 1)));
 }
 
 void SettingsDialog::UpdatePersonalEnableState() {
   const bool enabled = IsDlgButtonChecked(IDC_P4_ENABLED) == BST_CHECKED;
-  for (int id : {IDC_P4_MAX_LABEL, IDC_P4_MAX, IDC_P4_HALFLIFE_LABEL, IDC_P4_HALFLIFE,
-                 IDC_P4_KEEP_LOG, IDC_P4_RIME_BOOST, IDC_P4_INTERVAL_LABEL, IDC_P4_INTERVAL, IDC_P4_PROFILE_LABEL,
-                 IDC_P4_PROFILE})
+  for (int id :
+       {IDC_P4_MAX_LABEL, IDC_P4_MAX, IDC_P4_HALFLIFE_LABEL, IDC_P4_HALFLIFE,
+        IDC_P4_KEEP_LOG, IDC_P4_RIME_BOOST, IDC_P4_INTERVAL_LABEL,
+        IDC_P4_INTERVAL, IDC_P4_PROFILE_LABEL, IDC_P4_PROFILE})
     GetDlgItem(id).EnableWindow(enabled);
   // 精煉按鈕要輸入法那邊的個人詞庫開著；清除永遠可以
   GetDlgItem(IDC_P4_REFINE).EnableWindow(enabled && !personal_running_);
@@ -1328,7 +1452,8 @@ bool SettingsDialog::SendPersonalCommand(DWORD command) {
 }
 
 void SettingsDialog::RefreshPersonalStatus() {
-  const std::wstring next = settings_ops::PersonalStatusText(&personal_running_);
+  const std::wstring next =
+      settings_ops::PersonalStatusText(&personal_running_);
   CString current;
   GetDlgItem(IDC_P4_STATUS).GetWindowTextW(current);
   // 內容沒變就不重設，避免每秒閃爍
@@ -1346,19 +1471,24 @@ void SettingsDialog::RefreshPersonalStatus() {
 
 LRESULT SettingsDialog::OnPersonalCommand(WORD, WORD id, HWND, BOOL&) {
   if (id == IDC_P4_CLEAR) {
-    if (MessageBoxW(L"確定要清除個人詞庫的所有資料嗎？\n\n包含學到的詞、原始輸入紀錄與所有封存，清除後無法復原。",
-                    L"清除個人詞庫", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+    if (MessageBoxW(L"確定要清除個人詞庫的所有資料嗎？\n\n包含學到的詞、原始輸"
+                    L"入紀錄與所有封存，清除後無法復原。",
+                    L"清除個人詞庫",
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
       return 0;
   } else if (personal_modified_) {
     SetStatus(L"個人詞庫的設定有變更，請先按「套用」再精煉。");
     return 0;
   }
-  const DWORD command = id == IDC_P4_REFINE ? 2 : id == IDC_P4_REFINE_ALL ? 3 : 4;
+  const DWORD command = id == IDC_P4_REFINE       ? 2
+                        : id == IDC_P4_REFINE_ALL ? 3
+                                                  : 4;
   if (!SendPersonalCommand(command)) {
     SetStatus(L"無法連線到輸入法服務。");
     return 0;
   }
-  SetStatus(command == 4 ? L"已清除個人詞庫。" : L"已開始精煉，完成後會顯示結果。");
+  SetStatus(command == 4 ? L"已清除個人詞庫。"
+                         : L"已開始精煉，完成後會顯示結果。");
   words_loaded_ = false;  // 詞庫管理頁下次顯示時重新讀取
   // 輸入法回覆前先停用按鈕，避免連按
   if (command != 4)
@@ -1372,10 +1502,12 @@ LRESULT SettingsDialog::OnPersonalCommand(WORD, WORD id, HWND, BOOL&) {
 // ---------------------------------------------------------------------------
 // 語言模型（多組設定）
 //
-// 設定存在 llm/profiles/pNN/{name,type,model_path,model_type,api_url,api_key,model}；
+// 設定存在
+// llm/profiles/pNN/{name,type,model_path,model_type,api_url,api_key,model}；
 // llm/predict_profile 與 llm/personal/refine/profile 記住各自選用的 pNN。
 // 為了讓輸入法不必理解多組設定，儲存時也把選到的那組展開到原本的欄位
-// （llm/provider_type、llm/llamacpp/*、llm/openai/*，以及 llm/personal/refine/*）。
+// （llm/provider_type、llm/llamacpp/*、llm/openai/*，以及
+// llm/personal/refine/*）。
 
 std::wstring SettingsDialog::ProfileLabel(const ModelProfile& p) {
   return (p.name.empty() ? std::wstring(L"（未命名）") : p.name) +
@@ -1386,7 +1518,8 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
   RimeApi* rime = rime_get_api();
   auto get = [&](const std::string& key) {
     char buffer[2048] = {0};
-    return rime->config_get_string(config, key.c_str(), buffer, sizeof(buffer) - 1)
+    return rime->config_get_string(config, key.c_str(), buffer,
+                                   sizeof(buffer) - 1)
                ? u8tow(buffer)
                : std::wstring();
   };
@@ -1410,7 +1543,9 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
     p.name = get(base + "name");
     p.remote = ToLower(get(base + "type")) == L"openai";
     p.model_path = to_windows_path(get(base + "model_path"));
-    p.model_type = ToLower(get(base + "model_type")) == L"instruct" ? L"Instruct" : L"Base";
+    p.model_type = ToLower(get(base + "model_type")) == L"instruct"
+                       ? L"Instruct"
+                       : L"Base";
     p.api_url = get(base + "api_url");
     p.api_key = get(base + "api_key");
     p.model = get(base + "model");
@@ -1431,7 +1566,9 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
       p.name = fs::path(path).stem().wstring();
       p.model_path = path;
       // 未設定時 LlamaCppProvider 預設 Instruct
-      p.model_type = ToLower(get("llm/llamacpp/model_type")) == L"base" ? L"Base" : L"Instruct";
+      p.model_type = ToLower(get("llm/llamacpp/model_type")) == L"base"
+                         ? L"Base"
+                         : L"Instruct";
       if (provider != L"openai")
         predict = (int)profiles_.size();
       profiles_.push_back(p);
@@ -1458,7 +1595,8 @@ void SettingsDialog::LoadProfiles(RimeConfig* config) {
       p.name = L"精煉用 " + (p.model.empty() ? std::wstring(L"API") : p.model);
       for (size_t i = 0; i < profiles_.size(); ++i) {
         const auto& q = profiles_[i];
-        if (q.remote && q.api_url == p.api_url && q.api_key == p.api_key && q.model == p.model)
+        if (q.remote && q.api_url == p.api_url && q.api_key == p.api_key &&
+            q.model == p.model)
           refine = (int)i;
       }
       if (refine < 0) {
@@ -1534,21 +1672,27 @@ void SettingsDialog::SaveProfiles(RimeConfig* llm) {
   const ModelProfile none;
   const ModelProfile& r = refine >= 0 ? profiles_[refine] : none;
   set("personal/refine/profile", refine >= 0 ? u8tow(key_of(refine)) : L"");
-  set("personal/refine/type", refine < 0 ? L"" : r.remote ? L"openai" : L"llamacpp");
+  set("personal/refine/type", refine < 0 ? L""
+                              : r.remote ? L"openai"
+                                         : L"llamacpp");
   set("personal/refine/name", refine >= 0 ? r.name : L"");
-  set("personal/refine/model_path", refine >= 0 && !r.remote ? yaml_path(r.model_path) : L"");
-  set("personal/refine/model_type", refine >= 0 && !r.remote ? r.model_type : L"");
+  set("personal/refine/model_path",
+      refine >= 0 && !r.remote ? yaml_path(r.model_path) : L"");
+  set("personal/refine/model_type",
+      refine >= 0 && !r.remote ? r.model_type : L"");
   set("personal/refine/api_url", refine >= 0 && r.remote ? r.api_url : L"");
   set("personal/refine/api_key", refine >= 0 && r.remote ? r.api_key : L"");
   set("personal/refine/model", refine >= 0 && r.remote ? r.model : L"");
-  rime->config_set_bool(llm, "personal/refine/disable_thinking", refine >= 0 && r.no_think);
+  rime->config_set_bool(llm, "personal/refine/disable_thinking",
+                        refine >= 0 && r.no_think);
   rime->config_set_int(llm, "personal/refine/think_tokens", r.think_tokens);
   // 注音校正
   const int typo = ComboProfile(IDC_P7_TYPO_PROFILE);
   const ModelProfile& c = typo >= 0 ? profiles_[typo] : none;
   set("typo/profile", typo >= 0 ? u8tow(key_of(typo)) : L"");
   set("typo/type", typo < 0 ? L"" : c.remote ? L"openai" : L"llamacpp");
-  set("typo/model_path", typo >= 0 && !c.remote ? yaml_path(c.model_path) : L"");
+  set("typo/model_path",
+      typo >= 0 && !c.remote ? yaml_path(c.model_path) : L"");
   set("typo/model_type", typo >= 0 && !c.remote ? c.model_type : L"");
   set("typo/api_url", typo >= 0 && c.remote ? c.api_url : L"");
   set("typo/api_key", typo >= 0 && c.remote ? c.api_key : L"");
@@ -1614,14 +1758,16 @@ void SettingsDialog::SelectProfile(int index) {
   const ModelProfile& p = has ? profiles_[index] : empty;
   profile_list_.SetCurSel(index);
   GetDlgItem(IDC_P5_NAME).SetWindowTextW(p.name.c_str());
-  CheckRadioButton(IDC_P5_LOCAL, IDC_P5_REMOTE, p.remote ? IDC_P5_REMOTE : IDC_P5_LOCAL);
+  CheckRadioButton(IDC_P5_LOCAL, IDC_P5_REMOTE,
+                   p.remote ? IDC_P5_REMOTE : IDC_P5_LOCAL);
   PopulateModels(p.model_path);
   model_type_.SetCurSel(p.model_type == L"Instruct" ? 1 : 0);
   GetDlgItem(IDC_P5_API_URL).SetWindowTextW(p.api_url.c_str());
   GetDlgItem(IDC_P5_API_KEY).SetWindowTextW(p.api_key.c_str());
   GetDlgItem(IDC_P5_API_MODEL).SetWindowTextW(p.model.c_str());
   CheckDlgButton(IDC_P5_NO_THINK, p.no_think ? BST_CHECKED : BST_UNCHECKED);
-  GetDlgItem(IDC_P5_THINK_TOKENS).SetWindowTextW(std::to_wstring(p.think_tokens).c_str());
+  GetDlgItem(IDC_P5_THINK_TOKENS)
+      .SetWindowTextW(std::to_wstring(p.think_tokens).c_str());
   for (int id = IDC_P5_NAME_LABEL; id <= IDC_P5_REMOTE_HINT; ++id)
     GetDlgItem(id).EnableWindow(has);
   GetDlgItem(IDC_P5_NO_THINK).EnableWindow(has);
@@ -1631,15 +1777,18 @@ void SettingsDialog::SelectProfile(int index) {
   GetDlgItem(IDC_P5_API_TEST).EnableWindow(has && !api_busy_);
   // 說明文字（測試結果會暫時寫在這裡）
   GetDlgItem(IDC_P5_REMOTE_HINT)
-      .SetWindowTextW(L"例如 https://api.openai.com/v1/chat/completions，或 Ollama 的 "
-                      L"http://localhost:11434/v1/chat/completions。金鑰以明碼存在 weasel.custom.yaml。");
+      .SetWindowTextW(
+          L"例如 https://api.openai.com/v1/chat/completions，或 Ollama 的 "
+          L"http://localhost:11434/v1/chat/completions。金鑰以明碼存在 "
+          L"weasel.custom.yaml。");
   loading_profile_ = false;
   if (page_ == kPageModels)
     ShowPage(page_);  // 依本機 / API 切換顯示的欄位
 }
 
 void SettingsDialog::CommitProfileEditor() {
-  if (loading_profile_ || profile_sel_ < 0 || profile_sel_ >= (int)profiles_.size())
+  if (loading_profile_ || profile_sel_ < 0 ||
+      profile_sel_ >= (int)profiles_.size())
     return;
   auto get_text = [&](int id) {
     CString text;
@@ -1668,14 +1817,17 @@ void SettingsDialog::CommitProfileEditor() {
 }
 
 void SettingsDialog::UpdateThinkState() {
-  const bool on = profile_sel_ >= 0 && IsDlgButtonChecked(IDC_P5_NO_THINK) != BST_CHECKED;
+  const bool on =
+      profile_sel_ >= 0 && IsDlgButtonChecked(IDC_P5_NO_THINK) != BST_CHECKED;
   for (int id : {IDC_P5_THINK_LABEL, IDC_P5_THINK_TOKENS, IDC_P5_THINK_HINT})
     GetDlgItem(id).EnableWindow(on);
 }
 
 int SettingsDialog::ComboProfile(int combo_id) const {
-  const int sel = (int)::SendMessageW(::GetDlgItem(m_hWnd, combo_id), CB_GETCURSEL, 0, 0);
-  const int index = combo_id == IDC_P4_PROFILE ? sel - 1 : sel;  // 精煉的第一項是「不使用」
+  const int sel =
+      (int)::SendMessageW(::GetDlgItem(m_hWnd, combo_id), CB_GETCURSEL, 0, 0);
+  const int index =
+      combo_id == IDC_P4_PROFILE ? sel - 1 : sel;  // 精煉的第一項是「不使用」
   return index >= 0 && index < (int)profiles_.size() ? index : -1;
 }
 
@@ -1695,9 +1847,12 @@ void SettingsDialog::RefreshProfileCombos(int predict, int refine, int typo) {
     refine_profile_.AddString(ProfileLabel(p).c_str());
     typo_profile_.AddString(ProfileLabel(p).c_str());
   }
-  predict_profile_.SetCurSel(predict >= 0 && predict < (int)profiles_.size() ? predict : -1);
-  typo_profile_.SetCurSel(typo >= 0 && typo < (int)profiles_.size() ? typo : -1);
-  refine_profile_.SetCurSel(refine >= 0 && refine < (int)profiles_.size() ? refine + 1 : 0);
+  predict_profile_.SetCurSel(
+      predict >= 0 && predict < (int)profiles_.size() ? predict : -1);
+  typo_profile_.SetCurSel(typo >= 0 && typo < (int)profiles_.size() ? typo
+                                                                    : -1);
+  refine_profile_.SetCurSel(
+      refine >= 0 && refine < (int)profiles_.size() ? refine + 1 : 0);
   UpdateProfileUsage();
 }
 
@@ -1713,13 +1868,16 @@ void SettingsDialog::UpdateProfileUsage() {
         ComboProfile(IDC_P7_TYPO_PROFILE) == profile_sel_)
       uses.push_back(L"注音校正");
     if (uses.empty()) {
-      text = L"目前沒有被使用。可在「智慧預測」、「個人詞庫」或「輸入方案」頁選用。";
+      text =
+          L"目前沒有被使用。可在「智慧預測」、「個人詞庫」或「輸入方案」頁選用"
+          L"。";
     } else {
       text = L"用於：";
       for (size_t i = 0; i < uses.size(); ++i)
         text += (i ? L"、" : L"") + uses[i];
       const ModelProfile& p = profiles_[profile_sel_];
-      if (!p.remote && p.model_type == L"Base" && ComboProfile(IDC_P4_PROFILE) == profile_sel_)
+      if (!p.remote && p.model_type == L"Base" &&
+          ComboProfile(IDC_P4_PROFILE) == profile_sel_)
         text += L"\r\n注意：Base 模型不會照指示回答，精煉效果可能很差。";
     }
   } else {
@@ -1760,12 +1918,14 @@ LRESULT SettingsDialog::OnProfileDelete(WORD, WORD, HWND, BOOL&) {
     return 0;
   CommitProfileEditor();
   const int index = profile_sel_;
-  int predict = ComboProfile(IDC_P3_PROFILE), refine = ComboProfile(IDC_P4_PROFILE),
+  int predict = ComboProfile(IDC_P3_PROFILE),
+      refine = ComboProfile(IDC_P4_PROFILE),
       typo = ComboProfile(IDC_P7_TYPO_PROFILE);
   std::wstring message = L"確定要刪除「" + profiles_[index].name + L"」嗎？";
   if (predict == index || refine == index || typo == index)
     message += L"\n\n這組設定正在使用中，刪除後請另外選擇模型。";
-  if (MessageBoxW(message.c_str(), L"刪除模型設定", MB_YESNO | MB_ICONQUESTION) != IDYES)
+  if (MessageBoxW(message.c_str(), L"刪除模型設定",
+                  MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   auto shift = [&](int i) { return i == index ? -1 : i > index ? i - 1 : i; };
   predict = shift(predict);
@@ -1798,7 +1958,8 @@ LRESULT SettingsDialog::OnProfileChoice(WORD, WORD, HWND, BOOL&) {
 }
 
 LRESULT SettingsDialog::OnGoModels(WORD, WORD id, HWND, BOOL&) {
-  const int index = ComboProfile(id == IDC_P3_MANAGE ? IDC_P3_PROFILE : IDC_P4_PROFILE);
+  const int index =
+      ComboProfile(id == IDC_P3_MANAGE ? IDC_P3_PROFILE : IDC_P4_PROFILE);
   CommitProfileEditor();
   GoToPage(kPageModels);
   if (index >= 0)
@@ -1823,7 +1984,8 @@ void SettingsDialog::PopulateModelFiles(const std::wstring& select) {
   int selected = -1;
   for (const auto& model : settings_ops::ListModelFiles()) {
     const fs::path file = model.path;
-    std::wstring text = file.filename().wstring() + L"　" + FormatSize(model.size);
+    std::wstring text =
+        file.filename().wstring() + L"　" + FormatSize(model.size);
     int uses = 0;
     for (const auto& p : profiles_) {
       if (!p.remote && ToLower(p.model_path) == ToLower(file.wstring()))
@@ -1843,7 +2005,8 @@ void SettingsDialog::PopulateModelFiles(const std::wstring& select) {
 void SettingsDialog::UpdateModelFileButtons() {
   const bool busy = file_busy_;
   GetDlgItem(IDC_P5_FILE_ADD).EnableWindow(!busy);
-  GetDlgItem(IDC_P5_FILE_DELETE).EnableWindow(!busy && model_files_.GetCurSel() >= 0);
+  GetDlgItem(IDC_P5_FILE_DELETE)
+      .EnableWindow(!busy && model_files_.GetCurSel() >= 0);
   GetDlgItem(IDC_P5_URL).EnableWindow(!busy);
   GetDlgItem(IDC_P5_DOWNLOAD).SetWindowTextW(busy ? L"取消" : L"下載");
 }
@@ -1864,15 +2027,17 @@ LRESULT SettingsDialog::OnModelFileOpen(WORD, WORD, HWND, BOOL&) {
   if (sel >= 0 && sel < (int)model_file_paths_.size())
     OpenFolderAndSelectItem(model_file_paths_[sel]);
   else
-    ShellExecuteW(m_hWnd, L"open", ModelsDir().c_str(), NULL, NULL, SW_SHOWNORMAL);
+    ShellExecuteW(m_hWnd, L"open", ModelsDir().c_str(), NULL, NULL,
+                  SW_SHOWNORMAL);
   return 0;
 }
 
 LRESULT SettingsDialog::OnModelFileAdd(WORD, WORD, HWND, BOOL&) {
   if (file_busy_)
     return 0;
-  CFileDialog dialog(TRUE, L"gguf", NULL, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER,
-                     L"GGUF 模型 (*.gguf)\0*.gguf\0所有檔案 (*.*)\0*.*\0", m_hWnd);
+  CFileDialog dialog(
+      TRUE, L"gguf", NULL, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER,
+      L"GGUF 模型 (*.gguf)\0*.gguf\0所有檔案 (*.*)\0*.*\0", m_hWnd);
   if (dialog.DoModal() != IDOK)
     return 0;
   const fs::path src = dialog.m_szFileName;
@@ -1887,8 +2052,10 @@ LRESULT SettingsDialog::OnModelFileAdd(WORD, WORD, HWND, BOOL&) {
     return 0;
   }
   if (fs::exists(dest, ec) &&
-      MessageBoxW((L"模型資料夾已有「" + src.filename().wstring() + L"」，要取代嗎？").c_str(),
-                  L"加入模型檔", MB_YESNO | MB_ICONQUESTION) != IDYES)
+      MessageBoxW(
+          (L"模型資料夾已有「" + src.filename().wstring() + L"」，要取代嗎？")
+              .c_str(),
+          L"加入模型檔", MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   StartModelFileJob(src.wstring(), dest.wstring(), false);
   return 0;
@@ -1902,7 +2069,8 @@ LRESULT SettingsDialog::OnModelDownload(WORD, WORD, HWND, BOOL&) {
   CString text;
   GetDlgItem(IDC_P5_URL).GetWindowTextW(text);
   std::wstring name;
-  const std::wstring url = settings_ops::NormalizeModelUrl((LPCWSTR)text, &name);
+  const std::wstring url =
+      settings_ops::NormalizeModelUrl((LPCWSTR)text, &name);
   if (url.rfind(L"http://", 0) != 0 && url.rfind(L"https://", 0) != 0) {
     SetFileStatus(L"請貼上以 https:// 開頭的下載網址。");
     GetDlgItem(IDC_P5_URL).SetFocus();
@@ -1916,14 +2084,16 @@ LRESULT SettingsDialog::OnModelDownload(WORD, WORD, HWND, BOOL&) {
   const fs::path dest = ModelsDir() / name;
   std::error_code ec;
   if (fs::exists(dest, ec) &&
-      MessageBoxW((L"模型資料夾已有「" + name + L"」，要重新下載並取代嗎？").c_str(), L"下載模型",
-                  MB_YESNO | MB_ICONQUESTION) != IDYES)
+      MessageBoxW(
+          (L"模型資料夾已有「" + name + L"」，要重新下載並取代嗎？").c_str(),
+          L"下載模型", MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   StartModelFileJob(url, dest.wstring(), true);
   return 0;
 }
 
-void SettingsDialog::StartModelFileJob(const std::wstring& src, const std::wstring& dest,
+void SettingsDialog::StartModelFileJob(const std::wstring& src,
+                                       const std::wstring& dest,
                                        bool download) {
   if (file_worker_.joinable())
     file_worker_.join();
@@ -1942,7 +2112,8 @@ void SettingsDialog::StartModelFileJob(const std::wstring& src, const std::wstri
       const ULONGLONG now = GetTickCount64();
       if (now - last_tick >= 300) {
         last_tick = now;
-        std::wstring text = (download ? L"下載中 " : L"複製中 ") + FormatSize(done);
+        std::wstring text =
+            (download ? L"下載中 " : L"複製中 ") + FormatSize(done);
         if (total) {
           wchar_t pct[16];
           swprintf_s(pct, L"%.0f%%", done * 100.0 / total);
@@ -1967,7 +2138,8 @@ void SettingsDialog::StartModelFileJob(const std::wstring& src, const std::wstri
       ok = false;
       error = L"下載的內容不是 GGUF 模型檔（網址可能指向網頁）";
     }
-    if (ok && !MoveFileExW(part.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (ok &&
+        !MoveFileExW(part.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING)) {
       ok = false;
       error = L"無法取代原本的檔案（可能正在使用中）";
     }
@@ -1975,7 +2147,8 @@ void SettingsDialog::StartModelFileJob(const std::wstring& src, const std::wstri
       fs::remove(part, ec2);
     {
       std::lock_guard<std::mutex> lock(file_mutex_);
-      file_message_ = ok ? (download ? L"下載完成：" : L"已加入：") + fs::path(dest).filename().wstring()
+      file_message_ = ok ? (download ? L"下載完成：" : L"已加入：") +
+                               fs::path(dest).filename().wstring()
                          : (download ? L"下載失敗：" : L"加入失敗：") + error;
       file_result_ = ok ? dest : L"";
     }
@@ -2001,7 +2174,8 @@ LRESULT SettingsDialog::OnFileProgress(UINT, WPARAM state, LPARAM, BOOL&) {
     PopulateModelFiles(result);
     // 模型檔下拉選單也更新（目前編輯的模型設定維持原本的選擇）
     loading_profile_ = true;
-    PopulateModels(profile_sel_ >= 0 ? profiles_[profile_sel_].model_path : L"");
+    PopulateModels(profile_sel_ >= 0 ? profiles_[profile_sel_].model_path
+                                     : L"");
     loading_profile_ = false;
   }
   UpdateModelFileButtons();
@@ -2018,14 +2192,18 @@ LRESULT SettingsDialog::OnModelFileDelete(WORD, WORD, HWND, BOOL&) {
     if (!p.remote && ToLower(p.model_path) == ToLower(path))
       users += (users.empty() ? L"" : L"、") + p.name;
   }
-  std::wstring message = L"要把「" + fs::path(path).filename().wstring() + L"」移到資源回收筒嗎？";
+  std::wstring message =
+      L"要把「" + fs::path(path).filename().wstring() + L"」移到資源回收筒嗎？";
   if (!users.empty())
-    message += L"\n\n這個檔案正被模型設定「" + users + L"」使用，移除後請改選其他模型檔。";
-  if (MessageBoxW(message.c_str(), L"移除模型檔", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+    message += L"\n\n這個檔案正被模型設定「" + users +
+               L"」使用，移除後請改選其他模型檔。";
+  if (MessageBoxW(message.c_str(), L"移除模型檔",
+                  MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
     return 0;
   // 輸入法載入中的模型檔會被鎖住：先試著獨占開啟，打不開就說明原因
   if (settings_ops::FileInUse(path)) {
-    SetFileStatus(L"檔案正在使用中（輸入法已載入這個模型）。請先改用其他模型並套用。");
+    SetFileStatus(
+        L"檔案正在使用中（輸入法已載入這個模型）。請先改用其他模型並套用。");
     return 0;
   }
   if (!settings_ops::MoveToRecycleBin(path)) {
@@ -2041,7 +2219,8 @@ LRESULT SettingsDialog::OnModelFileDelete(WORD, WORD, HWND, BOOL&) {
 }
 
 // ---------------------------------------------------------------------------
-// API 連線測試：直接用畫面上的網址、金鑰、模型名稱送一個很小的請求（不必先套用）
+// API
+// 連線測試：直接用畫面上的網址、金鑰、模型名稱送一個很小的請求（不必先套用）
 
 LRESULT SettingsDialog::OnApiTest(WORD, WORD, HWND, BOOL&) {
   if (api_busy_ || profile_sel_ < 0)
@@ -2060,7 +2239,8 @@ LRESULT SettingsDialog::OnApiTest(WORD, WORD, HWND, BOOL&) {
   GetDlgItem(IDC_P5_REMOTE_HINT).SetWindowTextW(L"測試中…");
   HWND hwnd = m_hWnd;
   api_worker_ = std::thread([this, hwnd, p]() {
-    const std::wstring result = settings_ops::TestApi(p.api_url, p.api_key, p.model);
+    const std::wstring result =
+        settings_ops::TestApi(p.api_url, p.api_key, p.model);
     {
       std::lock_guard<std::mutex> lock(file_mutex_);
       api_result_ = result;
@@ -2089,9 +2269,10 @@ LRESULT SettingsDialog::OnApiTestDone(UINT, WPARAM, LPARAM, BOOL&) {
 // ---------------------------------------------------------------------------
 // 注音排序：讓個人詞庫的常用詞影響 Rime 的選字
 //
-// 注音方案（bopomofo 系列）改用 terra_pinyin.personal 詞典：它匯入原本的 terra_pinyin，
-// 再加上輸入法產生的常用詞（權重較高）。使用者詞典仍是 terra_pinyin.userdb，學到的排序不受影響。
-// 方案的 custom.yaml 只增刪我們自己的標記區塊，保留使用者原有的設定與註解。
+// 注音方案（bopomofo 系列）改用 terra_pinyin.personal 詞典：它匯入原本的
+// terra_pinyin， 再加上輸入法產生的常用詞（權重較高）。使用者詞典仍是
+// terra_pinyin.userdb，學到的排序不受影響。 方案的 custom.yaml
+// 只增刪我們自己的標記區塊，保留使用者原有的設定與註解。
 
 bool SettingsDialog::ApplyRimeBoost(bool enable, std::wstring* error) {
   return settings_ops::ApplyRimeBoost(api_, switcher_settings_, enable, error);
@@ -2113,25 +2294,35 @@ void SettingsDialog::RefreshGrammarStatus() {
     text = L"下載中…";
   } else if (GrammarReady()) {
     std::error_code ec;
-    text = L"模型檔已下載（" + std::to_wstring(fs::file_size(GrammarPath(), ec) >> 20) + L" MB）";
+    text = L"模型檔已下載（" +
+           std::to_wstring(fs::file_size(GrammarPath(), ec) >> 20) + L" MB）";
   } else {
     text = L"尚未下載模型檔";
   }
   GetDlgItem(IDC_P8_GRAMMAR_STATUS).SetWindowTextW(text.c_str());
   GetDlgItem(IDC_P8_GRAMMAR_DOWNLOAD)
-      .SetWindowTextW(grammar_downloading_ ? L"取消下載" : GrammarReady() ? L"重新下載" : L"下載模型");
+      .SetWindowTextW(grammar_downloading_ ? L"取消下載"
+                      : GrammarReady()     ? L"重新下載"
+                                           : L"下載模型");
 }
 
-// 深色主題的欄位標題預設是深灰字：標題的自訂繪製通知送給 ListView，在這裡改成目前主題的文字色
-LRESULT CALLBACK SettingsDialog::HeaderTextSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                                    UINT_PTR, DWORD_PTR ref) {
+// 深色主題的欄位標題預設是深灰字：標題的自訂繪製通知送給
+// ListView，在這裡改成目前主題的文字色
+LRESULT CALLBACK SettingsDialog::HeaderTextSubclass(HWND hwnd,
+                                                    UINT msg,
+                                                    WPARAM wp,
+                                                    LPARAM lp,
+                                                    UINT_PTR,
+                                                    DWORD_PTR ref) {
   if (msg == WM_NOTIFY) {
     auto* nm = reinterpret_cast<NMCUSTOMDRAW*>(lp);
-    if (nm->hdr.code == NM_CUSTOMDRAW && nm->hdr.hwndFrom == ListView_GetHeader(hwnd)) {
+    if (nm->hdr.code == NM_CUSTOMDRAW &&
+        nm->hdr.hwndFrom == ListView_GetHeader(hwnd)) {
       if (nm->dwDrawStage == CDDS_PREPAINT)
         return CDRF_NOTIFYITEMDRAW;
       if (nm->dwDrawStage == CDDS_ITEMPREPAINT) {
-        ::SetTextColor(nm->hdc, reinterpret_cast<SettingsDialog*>(ref)->pal_->text);
+        ::SetTextColor(nm->hdc,
+                       reinterpret_cast<SettingsDialog*>(ref)->pal_->text);
         return CDRF_DODEFAULT;
       }
     }
@@ -2153,7 +2344,9 @@ void SettingsDialog::RefreshChoiceStats() {
     const int row = stats_list_.GetItemCount();
     stats_list_.InsertItem(row, r.version.c_str());
     int col = 1;
-    auto set = [&](const std::wstring& text) { stats_list_.SetItemText(row, col++, text.c_str()); };
+    auto set = [&](const std::wstring& text) {
+      stats_list_.SetItemText(row, col++, text.c_str());
+    };
     set(r.settings);
     set(std::to_wstring(r.commits));
     set(r.first_ok);
@@ -2173,9 +2366,10 @@ void SettingsDialog::RefreshChoiceStats() {
 
 LRESULT SettingsDialog::OnStatsSelChanged(int, LPNMHDR hdr, BOOL&) {
   const auto* nm = reinterpret_cast<const NMLISTVIEW*>(hdr);
-  if ((nm->uChanged & LVIF_STATE) && (nm->uNewState & LVIS_SELECTED) && nm->iItem >= 0 &&
-      nm->iItem < (int)stats_details_.size())
-    GetDlgItem(IDC_P8_STATS_DETAIL).SetWindowTextW(stats_details_[nm->iItem].c_str());
+  if ((nm->uChanged & LVIF_STATE) && (nm->uNewState & LVIS_SELECTED) &&
+      nm->iItem >= 0 && nm->iItem < (int)stats_details_.size())
+    GetDlgItem(IDC_P8_STATS_DETAIL)
+        .SetWindowTextW(stats_details_[nm->iItem].c_str());
   return 0;
 }
 
@@ -2188,16 +2382,17 @@ void SettingsDialog::RefreshChoiceLogStatus() {
   const settings_ops::ChoiceLogInfo info = settings_ops::ChoiceLogStatus();
   const size_t records = info.records;
   const auto bytes = info.bytes;
-  std::wstring text = records ? L"已記錄 " + std::to_wstring(records) + L" 筆（" +
-                                    std::to_wstring((bytes + 1023) / 1024) + L" KB）"
-                              : L"還沒有紀錄";
+  std::wstring text =
+      records ? L"已記錄 " + std::to_wstring(records) + L" 筆（" +
+                    std::to_wstring((bytes + 1023) / 1024) + L" KB）"
+              : L"還沒有紀錄";
   GetDlgItem(IDC_P8_LOG_STATUS).SetWindowTextW(text.c_str());
   GetDlgItem(IDC_P8_LOG_CLEAR).EnableWindow(records > 0);
 }
 
 LRESULT SettingsDialog::OnChoiceLogClear(WORD, WORD, HWND, BOOL&) {
-  if (MessageBoxW(L"要刪除所有選字紀錄嗎？之後訓練選字模型會少了這些資料。", L"選字紀錄",
-                  MB_YESNO | MB_ICONQUESTION) != IDYES)
+  if (MessageBoxW(L"要刪除所有選字紀錄嗎？之後訓練選字模型會少了這些資料。",
+                  L"選字紀錄", MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   const bool ok = settings_ops::ClearChoiceLog();
   RefreshChoiceLogStatus();
@@ -2212,7 +2407,8 @@ LRESULT SettingsDialog::OnGrammarChange(WORD, WORD, HWND, BOOL&) {
     return 0;
   }
   if (loaded_)
-    grammar_modified_ = (IsDlgButtonChecked(IDC_P8_GRAMMAR) == BST_CHECKED) != grammar_loaded_;
+    grammar_modified_ =
+        (IsDlgButtonChecked(IDC_P8_GRAMMAR) == BST_CHECKED) != grammar_loaded_;
   return 0;
 }
 
@@ -2227,7 +2423,8 @@ LRESULT SettingsDialog::OnGrammarDownload(WORD, WORD, HWND, BOOL&) {
   grammar_error_ = std::make_shared<std::wstring>();
   RefreshGrammarStatus();
   // 下載執行緒只用視窗代碼與共用的旗標，對話框關掉也不會碰到已釋放的成員
-  std::thread([hwnd = m_hWnd, cancel = grammar_cancel_, error = grammar_error_]() {
+  std::thread([hwnd = m_hWnd, cancel = grammar_cancel_,
+               error = grammar_error_]() {
     const fs::path dest = GrammarPath();
     fs::path part = dest;
     part += L".part";
@@ -2251,15 +2448,20 @@ LRESULT SettingsDialog::OnGrammarDownload(WORD, WORD, HWND, BOOL&) {
     } else {
       fs::remove(part, ec);
     }
-    ::PostMessage(hwnd, WM_APP_GRAMMAR_PROGRESS, ok && error->empty() ? 1 : 2, 0);
+    ::PostMessage(hwnd, WM_APP_GRAMMAR_PROGRESS, ok && error->empty() ? 1 : 2,
+                  0);
   }).detach();
   return 0;
 }
 
-LRESULT SettingsDialog::OnGrammarProgress(UINT, WPARAM state, LPARAM percent, BOOL&) {
+LRESULT SettingsDialog::OnGrammarProgress(UINT,
+                                          WPARAM state,
+                                          LPARAM percent,
+                                          BOOL&) {
   if (state == 0) {
     GetDlgItem(IDC_P8_GRAMMAR_STATUS)
-        .SetWindowTextW((L"下載中… " + std::to_wstring((int)percent) + L"%").c_str());
+        .SetWindowTextW(
+            (L"下載中… " + std::to_wstring((int)percent) + L"%").c_str());
     return 0;
   }
   grammar_downloading_ = false;
@@ -2267,12 +2469,14 @@ LRESULT SettingsDialog::OnGrammarProgress(UINT, WPARAM state, LPARAM percent, BO
   if (state == 1)
     SetStatus(L"語言模型已下載，勾選「用語言模型改善整句選字」後按套用。");
   else
-    SetStatus(L"語言模型下載失敗：" + (grammar_error_ ? *grammar_error_ : std::wstring()));
+    SetStatus(L"語言模型下載失敗：" +
+              (grammar_error_ ? *grammar_error_ : std::wstring()));
   return 0;
 }
 
 LRESULT SettingsDialog::OnStatsReset(WORD, WORD, HWND, BOOL&) {
-  if (MessageBoxW(L"要清除所有選字統計嗎？", L"選字統計", MB_YESNO | MB_ICONQUESTION) != IDYES)
+  if (MessageBoxW(L"要清除所有選字統計嗎？", L"選字統計",
+                  MB_YESNO | MB_ICONQUESTION) != IDYES)
     return 0;
   settings_ops::ResetChoiceStats();
   RefreshChoiceStats();
@@ -2301,14 +2505,15 @@ void SettingsDialog::LoadPersonalWords() {
     GetDlgItem(IDC_P6_COUNT).SetWindowTextW(data.error.c_str());
   words_ = std::move(data.words);
   for (const auto& r : data.rules) {
-    const WordRule::Kind kind = r.kind == settings_ops::WordRule::kAdd     ? WordRule::kAdd
-                                : r.kind == settings_ops::WordRule::kBlock ? WordRule::kBlock
-                                                                           : WordRule::kMerge;
+    const WordRule::Kind kind =
+        r.kind == settings_ops::WordRule::kAdd     ? WordRule::kAdd
+        : r.kind == settings_ops::WordRule::kBlock ? WordRule::kBlock
+                                                   : WordRule::kMerge;
     rules_.push_back({kind, r.from, r.to});
   }
   // 清單本身不停用（深色主題下停用的清單會變成淺灰底），只停用操作
-  for (int id : {IDC_P6_FILTER, IDC_P6_WORD, IDC_P6_ADD, IDC_P6_MERGE, IDC_P6_DELETE, IDC_P6_BLOCK,
-                 IDC_P6_UNRULE})
+  for (int id : {IDC_P6_FILTER, IDC_P6_WORD, IDC_P6_ADD, IDC_P6_MERGE,
+                 IDC_P6_DELETE, IDC_P6_BLOCK, IDC_P6_UNRULE})
     GetDlgItem(id).EnableWindow(!personal_disabled_);
   PopulateWordList();
   PopulateRuleList();
@@ -2339,9 +2544,11 @@ void SettingsDialog::PopulateWordList() {
   if (personal_disabled_)
     count = L"個人詞庫目前關閉，或輸入法沒有回應。";
   else if (filter.empty())
-    count = L"共 " + std::to_wstring(words_.size()) + L" 個詞（依常用程度排序）";
+    count =
+        L"共 " + std::to_wstring(words_.size()) + L" 個詞（依常用程度排序）";
   else
-    count = L"符合 " + std::to_wstring(matched) + L" 個（共 " + std::to_wstring(words_.size()) + L" 個）";
+    count = L"符合 " + std::to_wstring(matched) + L" 個（共 " +
+            std::to_wstring(words_.size()) + L" 個）";
   if (matched > kMaxShownWords)
     count += L"，顯示前 " + std::to_wstring(kMaxShownWords) + L" 個";
   GetDlgItem(IDC_P6_COUNT).SetWindowTextW(count.c_str());
@@ -2351,9 +2558,10 @@ void SettingsDialog::PopulateRuleList() {
   rules_list_.DeleteAllItems();
   for (size_t i = 0; i < rules_.size(); ++i) {
     const WordRule& r = rules_[i];
-    const std::wstring text = r.kind == WordRule::kMerge ? L"合併　" + r.from + L" → " + r.to
-                              : r.kind == WordRule::kAdd   ? L"加入　" + r.from
-                                                           : L"封鎖　" + r.from;
+    const std::wstring text = r.kind == WordRule::kMerge
+                                  ? L"合併　" + r.from + L" → " + r.to
+                              : r.kind == WordRule::kAdd ? L"加入　" + r.from
+                                                         : L"封鎖　" + r.from;
     const int row = rules_list_.GetItemCount();
     rules_list_.AddItem(row, 0, text.c_str());
     rules_list_.SetItemData(row, (DWORD_PTR)i);
@@ -2399,7 +2607,8 @@ LRESULT SettingsDialog::OnWordEdit(WORD, WORD id, HWND, BOOL&) {
     }
   } else if (id == IDC_P6_BLOCK || id == IDC_P6_DELETE) {
     if (selected.empty()) {
-      SetStatus(id == IDC_P6_BLOCK ? L"請先選取要封鎖的詞（可多選）。" : L"請先選取要刪除的詞（可多選）。");
+      SetStatus(id == IDC_P6_BLOCK ? L"請先選取要封鎖的詞（可多選）。"
+                                   : L"請先選取要刪除的詞（可多選）。");
       return 0;
     }
     for (const auto& w : selected)
@@ -2450,7 +2659,8 @@ LRESULT SettingsDialog::OnWordDblClick(int, LPNMHDR, BOOL&) {
   return 0;
 }
 
-// 在編輯框關閉之後才重新整理清單（在 LVN_ENDLABELEDIT 裡重建清單會讓 ListView 出錯）
+// 在編輯框關閉之後才重新整理清單（在 LVN_ENDLABELEDIT 裡重建清單會讓 ListView
+// 出錯）
 LRESULT SettingsDialog::OnWordRename(UINT, WPARAM, LPARAM, BOOL&) {
   const auto [old_word, new_word] = pending_rename_;
   pending_rename_ = {};
@@ -2516,7 +2726,8 @@ LRESULT SettingsDialog::OnWordEndEdit(int, LPNMHDR pnmh, BOOL&) {
 using settings_ops::ServiceMaintenance;
 
 void SettingsDialog::PopulateDicts() {
-  // 與原本的用戶詞典管理相同：先跑 installation_update（設定同步資料夾），詞典清單才讀得到
+  // 與原本的用戶詞典管理相同：先跑
+  // installation_update（設定同步資料夾），詞典清單才讀得到
   RimeApi* rime = rime_get_api();
   if (!dict_task_ready_ && RIME_API_AVAILABLE(rime, run_task)) {
     rime->run_task("installation_update");
@@ -2560,26 +2771,31 @@ LRESULT SettingsDialog::OnDictCommand(WORD, WORD id, HWND, BOOL&) {
   // 先選檔（不必暫停輸入法），確定要做了才暫停
   std::wstring selected_path;
   if (id == IDC_P6_RESTORE) {
-    const std::wstring snapshot = load(IDS_STR_DICT_SNAPSHOT) + L" (*.userdb.txt)";
-    const std::wstring kcss = load(IDS_STR_KCSS_DICT_SNAPSHOT) + L" (*.userdb.kct.snapshot)";
+    const std::wstring snapshot =
+        load(IDS_STR_DICT_SNAPSHOT) + L" (*.userdb.txt)";
+    const std::wstring kcss =
+        load(IDS_STR_KCSS_DICT_SNAPSHOT) + L" (*.userdb.kct.snapshot)";
     const std::wstring all = load(IDS_STR_ALL_FILES);
-    selected_path = settings_ops::OpenFileDialog(
-        m_hWnd, load(IDS_STR_OPEN),
-        {{snapshot, L"*.userdb.txt"}, {kcss, L"*.userdb.kct.snapshot"}, {all, L"*.*"}}, NULL,
-        L"snapshot");
+    selected_path =
+        settings_ops::OpenFileDialog(m_hWnd, load(IDS_STR_OPEN),
+                                     {{snapshot, L"*.userdb.txt"},
+                                      {kcss, L"*.userdb.kct.snapshot"},
+                                      {all, L"*.*"}},
+                                     NULL, L"snapshot");
     if (selected_path.empty())
       return 0;
   } else if (id == IDC_P6_EXPORT || id == IDC_P6_IMPORT) {
     const std::wstring txt = load(IDS_STR_TXT_FILES) + L" (*.txt)";
     const std::wstring all = load(IDS_STR_ALL_FILES);
-    const std::vector<settings_ops::FileFilter> filter = {{txt, L"*.txt"}, {all, L"*.*"}};
+    const std::vector<settings_ops::FileFilter> filter = {{txt, L"*.txt"},
+                                                          {all, L"*.*"}};
     const std::wstring file_name = dict_name + L"_export.txt";
     if (id == IDC_P6_EXPORT)
-      selected_path = settings_ops::SaveFileDialog(m_hWnd, load(IDS_STR_SAVE_AS), filter,
-                                                   file_name.c_str(), L"txt");
+      selected_path = settings_ops::SaveFileDialog(
+          m_hWnd, load(IDS_STR_SAVE_AS), filter, file_name.c_str(), L"txt");
     else
-      selected_path = settings_ops::OpenFileDialog(m_hWnd, load(IDS_STR_OPEN), filter,
-                                                   file_name.c_str(), L"txt");
+      selected_path = settings_ops::OpenFileDialog(
+          m_hWnd, load(IDS_STR_OPEN), filter, file_name.c_str(), L"txt");
     if (selected_path.empty())
       return 0;
   }
@@ -2604,7 +2820,8 @@ LRESULT SettingsDialog::OnDictCommand(WORD, WORD id, HWND, BOOL&) {
       WCHAR wdir[MAX_PATH] = {0};
       MultiByteToWideChar(CP_ACP, 0, dir, -1, wdir, _countof(wdir));
       std::wstring path = wdir;
-      if (_waccess_s(path.c_str(), 0) != 0 && !CreateDirectoryW(path.c_str(), NULL) &&
+      if (_waccess_s(path.c_str(), 0) != 0 &&
+          !CreateDirectoryW(path.c_str(), NULL) &&
           GetLastError() == ERROR_PATH_NOT_FOUND) {
         error_ids = IDS_STR_ERREXPORT_SYNC_UV;
       } else {
@@ -2622,22 +2839,24 @@ LRESULT SettingsDialog::OnDictCommand(WORD, WORD id, HWND, BOOL&) {
       else
         report = L"已還原詞典快照。";
     } else if (id == IDC_P6_EXPORT) {
-      const int result = api_->export_user_dict(name_u8.c_str(), path_u8.c_str());
+      const int result =
+          api_->export_user_dict(name_u8.c_str(), path_u8.c_str());
       if (result < 0)
         error_ids = IDS_STR_ERR_UNKNOWN;
       else if (_waccess(selected_path.c_str(), 0) != 0)
         error_ids = IDS_STR_ERR_EXPORT_FILE_LOST;
       else
-        open_path = selected_path,
-        report = load(IDS_STR_EXPORTED) + L" " + std::to_wstring(result) + L" " +
-                 load(IDS_STR_RECORD_COUNT);
+        open_path = selected_path, report = load(IDS_STR_EXPORTED) + L" " +
+                                            std::to_wstring(result) + L" " +
+                                            load(IDS_STR_RECORD_COUNT);
     } else if (id == IDC_P6_IMPORT) {
-      const int result = api_->import_user_dict(name_u8.c_str(), path_u8.c_str());
+      const int result =
+          api_->import_user_dict(name_u8.c_str(), path_u8.c_str());
       if (result < 0)
         error_ids = IDS_STR_ERR_UNKNOWN;
       else
-        report = load(IDS_STR_IMPORTED) + L" " + std::to_wstring(result) + L" " +
-                 load(IDS_STR_RECORD_COUNT);
+        report = load(IDS_STR_IMPORTED) + L" " + std::to_wstring(result) +
+                 L" " + load(IDS_STR_RECORD_COUNT);
     }
   }
   if (error_ids) {
@@ -2665,7 +2884,8 @@ LRESULT SettingsDialog::OnApply(WORD, WORD, HWND, BOOL&) {
 bool SettingsDialog::EndWordLabelEdit(bool save) {
   if (!words_list_.m_hWnd || !words_list_.GetEditControl())
     return false;
-  // 編輯框失去焦點時 ListView 會結束編輯（LVN_ENDLABELEDIT）；放棄時先標記，收到通知時忽略內容
+  // 編輯框失去焦點時 ListView
+  // 會結束編輯（LVN_ENDLABELEDIT）；放棄時先標記，收到通知時忽略內容
   // （LVM_CANCELEDITLABEL 在這個視窗裡沒有作用，所以不依賴它）
   word_edit_cancel_ = !save;
   words_list_.SetFocus();
