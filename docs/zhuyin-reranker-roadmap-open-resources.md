@@ -99,7 +99,9 @@ G2P 工具：g2pW（Apache-2.0，BERT 破音字消歧，輸出注音）用 CPP �
 ## 3. 授權注意
 
 - 專案是 **GPL-3.0**。GPL、LGPL、Apache、MIT、BSD 的模型和資料都可以用；模型權重建議讓使用者另外下載，不要打包進安裝檔。
-- **Llama 3.2 條款**：用它的輸出訓練並散布模型時，模型名稱必須以「Llama」開頭，而且要標示「Built with Llama」。所以 teacher 優先用 **Qwen3.5（Apache-2.0）**。Gemma 4 的授權要看 model card 確認；TAIDE 對輸出的條款尚未讀過。
+- **Teacher 用 DeepSeek API**（使用者已經在用，設定裡有 `deepseek-v4-flash`）。[DeepSeek Open Platform Terms of Service](https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html)（2026-04-29 版）把輸出的權利讓渡給使用者，並明文允許「training other models (such as model distillation)」；限制是不得在品牌或行銷上暗示和 DeepSeek 有關係。條款沒寫明會不會拿 API 輸入去訓練，所以**只送公開語料與 Rime 對它產生的候選**，選字紀錄與打字內容一律不送。
+- 其他閉源 API（OpenAI、Anthropic、Google 等）的條款大多禁止用輸出開發競爭模型：只拿來抽查或評估，不產生訓練資料。
+- **Llama 3.2 條款**：用它的輸出訓練並散布模型時，模型名稱必須以「Llama」開頭，而且要標示「Built with Llama」。所以 Llama 系列不當 teacher。要本機或開放權重的 teacher 時，用 Qwen3.5（Apache-2.0）。
 - **ND 授權**（萌典、moda）：讀音可以拿來當標註，但不要把修改後的辭典文字放進 repo。
 - **NC 授權**的資料集不要混進要散布的模型。
 - **使用者的選字紀錄永遠只在本機使用。** 公開題目與開放測試集只能用上表的來源。
@@ -201,7 +203,7 @@ Gate：多字詞與多位置歧義的類別（原方案 §15 B、C）明顯勝�
 | 輸入格式 | `〈左文〉〈注音〉〈輸出〉`（zenz v3）。注音 token 對齊輸出位置（PinyinGPT 的 Concat） |
 | Loss | 只在 Rime 候選或同音字集合上正規化的 softmax，或 pairwise `-log σ(s⁺ − s⁻)`（原方案 §25.5） |
 | 資料 | §2.4 的開放句子 → 萌典讀音 → 打進 Rime → Rime Top-K 當 hard negative（原方案 §25.3）。選字紀錄只在本機、只用來驗證或做個人層 |
-| Teacher | 用 Qwen3.5 系列（Apache-2.0）排序、過濾，並產生對抗性 negative（原方案 §25.10）；多個 teacher 一致才給高權重（原方案 §25.11） |
+| Teacher | **DeepSeek API**（沿用 `llm/personal/refine` 已設定的 `deepseek-v4-flash`，需要更準時才改用推理模式）負責三件事：排序 Rime 候選、依把握度過濾、產生對抗性 negative（原方案 §25.10）。原方案 §25.11 的「多 teacher 一致」改成同一模型在不同提示與候選順序下多次判斷，一致才給高權重；本機的 Qwen3.5 可以當第二意見。只送公開語料 |
 | 工具 | llm.c 或 HF `transformers`；pairwise 用 sentence-transformers CrossEncoder 或 TRL `RewardTrainer` |
 | 部署 | 轉成 GGUF（`gpt2` 架構），在 WisdomLLMHost 裡常駐；走 zenz 式 speculative：Rime 初稿當 draft，LM 只驗證、呼叫次數設上限 |
 
@@ -233,6 +235,7 @@ Gate：在開放測試集與選字紀錄上都贏過 P2.5 選出的通用模型�
 | 4 | P0.5：Rime、octagram bgw/bgc、`max_sentences` 的 oracle@K | 判斷 LM 重排還有多少空間 | 1 天 |
 | 5 | P2：`ScoreBatch`、前文 KV 重用、單次 batch decode | 評分延遲降一個數量級 | 2～3 天 |
 | 6 | P2.5：CKIP、Qwen3-0.6B-Base、Llama-3.2-Taiwan-1B、Gemma-3 的比較 | 預設 scorer 的選擇 | 2 天 |
+| 6b | 用 DeepSeek 對開放測試集的一小批（例如 500 題）做排序：與萌典讀音、Rime 候選對照，量它的正確率與重複判斷的一致率 | 確認 DeepSeek 能不能當 teacher、預估 P7 的成本 | 0.5 天 |
 | 7 | 依 4、6 的結果決定：先做 P1（beam）還是 P3（Top-K 整句） | — | — |
 
 第 1～4 項不需要任何新模型，完全靠開源的 Rime 與資料，就能回答「LM 重排到底還有多少空間」。
@@ -277,4 +280,5 @@ Gate：在開放測試集與選字紀錄上都贏過 P2.5 選出的通用模型�
 - 臺灣主權 AI 訓練語料庫：https://taic.moda.gov.tw
 - SIGHAN CSC：https://github.com/NYCU-NLP/SIGHAN-CSC
 - KenLM：https://github.com/kpu/kenlm
+- DeepSeek Open Platform Terms of Service：https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html
 - TRL：https://github.com/huggingface/trl；PEFT：https://github.com/huggingface/peft；sentence-transformers：https://github.com/huggingface/sentence-transformers
