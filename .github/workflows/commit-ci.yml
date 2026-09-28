@@ -89,7 +89,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
           # get-rime.ps1 exits quietly on errors (e.g. API rate limits): fail here instead of at link time
-          foreach ($f in 'libime.lib', 'lib64ime.lib', 'outputime.dll') {
+          foreach ($f in 'lib/rime.lib', 'lib64/rime.lib', 'output/rime.dll') {
             if (-not (Test-Path $f)) { throw "get-rime.ps1 did not provide $f" }
           }
 
@@ -204,7 +204,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
           # get-rime.ps1 exits quietly on errors (e.g. API rate limits): fail here instead of at link time
-          foreach ($f in 'libime.lib', 'lib64ime.lib', 'outputime.dll') {
+          foreach ($f in 'lib/rime.lib', 'lib64/rime.lib', 'output/rime.dll') {
             if (-not (Test-Path $f)) { throw "get-rime.ps1 did not provide $f" }
           }
 
