@@ -4,7 +4,7 @@
 #   cmake --build build && ctest --test-dir build --output-on-failure
 #
 # 沒有 RIME_ROOT 時用 Homebrew 的 librime（brew install librime）。
-# 沒有 LLAMA_ROOT 時不建推理程式（WisdomLLMHost），其他照常。
+# LLAMA_ROOT 用 mac/get-llama-runtime.sh 下載的 output/llama-mac；沒有時不建推理程式（WisdomLLMHost），其他照常。
 cmake_minimum_required(VERSION 3.20)
 # 與鼠鬚管相同（13.0）；要在 project() 之前設定才有作用，鼠鬚管的 Makefile 會傳入它的版本
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "")
@@ -94,6 +94,10 @@ if(LLAMA_ROOT AND RIME_LIB)
   if(GGML_BASE_LIB)
     target_link_libraries(WisdomLLMHost PRIVATE ${GGML_BASE_LIB})
   endif()
+  # 在 Squirrel.app/Contents/MacOS 裡從 Contents/Frameworks 載入 llama.cpp 與 librime（安裝名稱是 @rpath 時）。
+  # 建置資料夾裡的仍指向 LLAMA_ROOT；cmake --install 換成這個，鼠鬚管打包的是安裝後的版本
+  set_target_properties(WisdomLLMHost PROPERTIES INSTALL_RPATH "@executable_path/../Frameworks")
+  install(TARGETS WisdomLLMHost RUNTIME DESTINATION .)
 endif()
 
 # ---- 測試

@@ -23,11 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install librime and llama.cpp
-        run: brew install librime llama.cpp
+      - name: Install librime
+        run: brew install librime
+
+      - name: Get llama.cpp
+        # 與打包用的相同（官方發行檔，安裝名稱是 @rpath）
+        run: mac/get-llama-runtime.sh
 
       - name: Configure
-        run: cmake -S mac -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_ROOT=$(brew --prefix llama.cpp)
+        run: cmake -S mac -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_ROOT=$PWD/output/llama-mac
 
       - name: Build
         # -k：遇到錯誤繼續編其他檔案，一次看到所有錯誤
