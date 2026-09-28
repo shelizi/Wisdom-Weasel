@@ -3,7 +3,8 @@
 #   1. 還沒建過 Squirrel.app 就建置（librime、Sparkle、llama.cpp 用預先建好的發行檔）
 #   2. 本機 LLM 模型放到 ~/Library/Rime/models（沒有就下載並核對 SHA-256）
 #   3. 安裝到 /Library/Input Methods（這一步要 sudo），註冊並啟用輸入法
-#   4. 把 llm/* 設定合併進 ~/Library/Rime/squirrel.custom.yaml（改之前先備份），重新部署
+#   4. 把 llm/* 設定合併進 ~/Library/Rime/squirrel.custom.yaml（改之前先備份）；
+#      還沒有 default.custom.yaml 時預設輸入方案為注音·快打模式；重新部署
 #
 #   mac/install-squirrel.sh [--rebuild] [--no-model]
 #     --rebuild   已經建過也重新建置
@@ -138,6 +139,8 @@ settings = [
     ("llm/llamacpp/n_ctx", "2048"),
     ("llm/llamacpp/n_gpu_layers", "-1"),
     ("llm/llamacpp/max_tokens", "8"),
+    # 快打模式以 Tab、Shift+數字選字：打字中不顯示 LLM 補全，才不會搶走選字鍵（送出後的預測照常）
+    ("llm/predict_while_typing", "false"),
 ]
 lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
 # 拿掉上次產生的一段
@@ -174,6 +177,18 @@ lines[patch_at + 1:patch_at + 1] = block
 open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 PYEOF
   echo "已寫入 llm/*（模型：${model_path}）"
+fi
+
+# 輸入方案：還沒自訂過（沒有 default.custom.yaml）時預設為注音·快打模式
+if [ ! -f "$rime_dir/default.custom.yaml" ]; then
+  step "輸入方案：注音·快打模式（$rime_dir/default.custom.yaml）"
+  mkdir -p "$rime_dir"
+  cat > "$rime_dir/default.custom.yaml" <<'YAMLEOF'
+# mac/install-squirrel.sh 產生：預設的輸入方案（可在網頁版設定或這裡修改）
+patch:
+  schema_list:
+    - schema: bopomofo_express
+YAMLEOF
 fi
 
 step "重新部署"
