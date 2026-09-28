@@ -87,6 +87,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
 
+      - name: Get WebView2 SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-webview2.ps1
+
       - name: Build data
         shell: pwsh
         run: |
@@ -183,6 +189,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
+
+      - name: Get WebView2 SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-webview2.ps1
 
 
       - name: Build data

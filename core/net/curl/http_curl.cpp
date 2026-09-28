@@ -40,13 +40,36 @@ std::string ErrorText(CURLcode code) {
   }
 }
 
+using Clock = std::chrono::steady_clock;
+
 // 一次請求的狀態（給 libcurl 的回呼）
 struct Transfer {
   CURL* curl = nullptr;
   const OnData* on_data = nullptr;
   Response* response = nullptr;
   bool stopped = false;  // on_data 要求中止
+  // 多久沒收到資料就放棄：libcurl 的 LOW_SPEED 看的是約 5 秒的平均速度，前面收過資料時
+  // 要拖好幾秒才放棄，所以在進度回呼裡自己算（閒置時大約每秒呼叫一次）
+  int idle_ms = 0;
+  curl_off_t received = 0;
+  Clock::time_point last_data = Clock::now();
+  bool idle = false;
 };
+
+int ProgressCallback(void* user, curl_off_t, curl_off_t now, curl_off_t, curl_off_t) {
+  Transfer* t = static_cast<Transfer*>(user);
+  const Clock::time_point current = Clock::now();
+  if (now != t->received) {
+    t->received = now;
+    t->last_data = current;
+    return 0;
+  }
+  if (t->idle_ms > 0 && current - t->last_data > std::chrono::milliseconds(t->idle_ms)) {
+    t->idle = true;
+    return 1;  // libcurl 以 CURLE_ABORTED_BY_CALLBACK 結束
+  }
+  return 0;
+}
 
 size_t WriteCallback(char* data, size_t size, size_t count, void* user) {
   Transfer* t = static_cast<Transfer*>(user);
@@ -74,10 +97,6 @@ bool Perform(CURL* curl, const Request& r, const OnData& on_data, Response* resp
   curl_easy_setopt(curl, CURLOPT_NOPROXY, "localhost,127.0.0.1,::1");
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "Wisdom-Weasel");
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)r.connect_timeout_ms);
-  // 多久沒收到資料就放棄：每秒少於 1 位元組持續這麼久
-  const long idle_s = r.receive_timeout_ms > 0 ? (r.receive_timeout_ms + 999) / 1000 : 0;
-  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, idle_s > 0 ? 1L : 0L);
-  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, idle_s);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)(r.total_timeout_ms > 0 ? r.total_timeout_ms : 0));
   if (r.method == "GET") {
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
@@ -103,10 +122,14 @@ bool Perform(CURL* curl, const Request& r, const OnData& on_data, Response* resp
   t.curl = curl;
   t.on_data = &on_data;
   t.response = response;
+  t.idle_ms = r.receive_timeout_ms;
   response->status = 0;
   response->timed_out = false;
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteCallback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &t);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &ProgressCallback);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &t);
 
   const CURLcode code = curl_easy_perform(curl);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, nullptr);
@@ -118,8 +141,8 @@ bool Perform(CURL* curl, const Request& r, const OnData& on_data, Response* resp
   }
   if (code == CURLE_OK || (code == CURLE_WRITE_ERROR && t.stopped))
     return true;
-  response->timed_out = code == CURLE_OPERATION_TIMEDOUT;
-  *error = ErrorText(code);
+  response->timed_out = code == CURLE_OPERATION_TIMEDOUT || t.idle;
+  *error = t.idle ? "連線逾時" : ErrorText(code);
   return false;
 }
 
