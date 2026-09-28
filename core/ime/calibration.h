@@ -26,11 +26,21 @@ inline bool HasConfidence(double p) {
   return !std::isnan(p);
 }
 
+// 擬合的先驗。預設值由 test/TuneChoice 在選字紀錄上以 5-fold 交叉驗證的 log loss 選出
+// （gemma-4-E2B-it 與 MiniCPM5-2B-Base 都選這組）；樣本數門檻看學習曲線：5～10 筆就比全顯示好
+struct CalibrationPrior {
+  double slope = 0.5;         // 斜率 a 的先驗中心：log 機率差大多高估了把握
+  double slope_weight = 0.1;  // 斜率拉向中心的強度（樣本少或完全分得開時不會衝到無限大）
+  double bias_weight = 0.1;   // 截距拉向 0 的強度
+  size_t min_samples = 10;    // 少於這麼多（或全是同一種結果）不給機率
+};
+
 // 一種建議的樣本與擬合結果（不加鎖，由 CalibrationStore 保護）
 class Calibrator {
  public:
   static constexpr size_t kMaxSamples = 2000;  // 只留最近的樣本
-  static constexpr size_t kMinSamples = 30;    // 少於這麼多（或全是同一種結果）不給機率
+
+  explicit Calibrator(CalibrationPrior prior = CalibrationPrior()) : prior_(prior) {}
 
   // refit = false：之後自己呼叫 Fit（例如讀檔時一次擬合）
   void Add(double gain, bool accepted, bool refit = true);
@@ -51,6 +61,7 @@ class Calibrator {
     double gain;
     bool accepted;
   };
+  CalibrationPrior prior_;
   std::deque<Sample> samples_;
   double a_ = 1.0, b_ = 0.0;
   bool ready_ = false;

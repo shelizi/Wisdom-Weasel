@@ -124,9 +124,10 @@ void Controller::LoadConfig(RimeConfig* config) {
   // 推薦：本機模型比較同音字整句的通順度（預設關閉）
   flag = false;
   rescore_on_ = api_->config_get_bool(config, "llm/choice/rescore", &flag) && flag;
-  // 推薦／校正校準過的採用機率低於這個就不顯示（還沒校準時都顯示）；0 = 都顯示
+  // 推薦／校正校準過的採用機率低於這個就不顯示（還沒校準時都顯示）；0 = 都顯示。
+  // 預設 0.5：比較可能對才顯示（第一候選換成它才划算）
   {
-    double min_confidence = 0.1;
+    double min_confidence = 0.5;
     api_->config_get_double(config, "llm/choice/min_confidence", &min_confidence);
     min_confidence_ = (std::min)(0.9, (std::max)(0.0, min_confidence));
   }

@@ -97,7 +97,7 @@ async function applyPhase(ctx) {
   f.typo.prompt = '自我測試校正指令';
   f.choice.rescore = !f.choice.rescore;
   f.choice.log = !f.choice.log;
-  f.choice.min_confidence = f.choice.min_confidence === '0.25' ? '0.1' : '0.25';
+  f.choice.min_confidence = f.choice.min_confidence === '0.25' ? '0.5' : '0.25';
   f.personal.max = 2;
   f.personal.half_life = '45';
   f.personal.interval = '3';

@@ -153,6 +153,17 @@ static void TestRescore() {
   CHECK(ime::RescoreSentence(&scorer, L"", units, homophones, &gain) ==
         L"今天氣ㄏㄣ");
   CHECK(std::abs(gain - 6) < 1e-9);  // -8 → -2
+  // 門檻比改善大：不推薦；每個位置只試一個同音字：只試到「器」
+  ime::RescoreOptions strict;
+  strict.margin = 7;
+  CHECK(ime::RescoreSentence(&scorer, L"", units, homophones, nullptr, strict)
+            .empty());
+  ime::RescoreOptions one;
+  one.alternatives = 1;
+  one.margin = 0.5;
+  CHECK(ime::RescoreSentence(&scorer, L"", units, homophones, &gain, one) ==
+        L"今天器ㄏㄣ");
+  CHECK(std::abs(gain - 2) < 1e-9);
   // 同音字都沒比較好：不推薦
   scorer.score[L'汽'] = -1;
   CHECK(ime::RescoreSentence(&scorer, L"", units, homophones).empty());
@@ -428,13 +439,20 @@ static double Uniform(uint64_t* state) {
 static void TestCalibration(const fs::path& dir) {
   // 樣本不夠或只有一種結果：不給機率
   ime::Calibrator few;
-  for (int i = 0; i < 29; ++i)
+  for (int i = 0; i < 9; ++i)
     few.Add(i % 2 ? 5 : 0, i % 2 == 1);
   CHECK(!few.Ready() && !ime::HasConfidence(few.Probability(3)));
   ime::Calibrator same;
   for (int i = 0; i < 100; ++i)
     same.Add(i * 0.1, true);
   CHECK(!same.Ready());
+  // 先驗可以調：樣本數門檻
+  ime::CalibrationPrior loose;
+  loose.min_samples = 5;
+  ime::Calibrator early(loose);
+  for (int i = 0; i < 6; ++i)
+    early.Add(i, i >= 3);
+  CHECK(early.Ready() && early.Probability(5) > early.Probability(0));
 
   // 使用者真正的採用機率是 sigmoid(1.5·(gain −
   // 4))：擬合出來要接近，而且是校準的

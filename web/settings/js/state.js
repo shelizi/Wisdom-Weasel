@@ -233,7 +233,7 @@ function loadForm(llm, defaults) {
     choice: {
       log: bool(get(llm, 'choice/log'), false),
       rescore: bool(get(llm, 'choice/rescore'), false),
-      min_confidence: str(get(llm, 'choice/min_confidence')) || '0.1',
+      min_confidence: str(get(llm, 'choice/min_confidence')) || '0.5',
     },
     typo: {
       // 兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
@@ -273,7 +273,7 @@ export function buildLlm() {
   // 0～0.9；空白或不合理時用預設
   const minConfidence = parseFloat(trim(form.choice.min_confidence));
   set(llm, 'choice/min_confidence',
-    Number.isFinite(minConfidence) && minConfidence >= 0 && minConfidence <= 0.9 ? minConfidence : 0.1);
+    Number.isFinite(minConfidence) && minConfidence >= 0 && minConfidence <= 0.9 ? minConfidence : 0.5);
   saveProfiles(llm, profiles, use);
   // 提示詞（兩種模式共用）：統一換行為 \n；改存 llm/prompt，移除舊的 llamacpp/prompt_prefix
   set(llm, 'prompt', trim(form.predict.prompt.replace(/\r/g, '')));

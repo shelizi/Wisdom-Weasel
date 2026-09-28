@@ -175,7 +175,7 @@ class Controller {
   bool while_typing_ = true;       // llm/predict_while_typing：打字停頓時自動補完
   bool typo_on_ = false;           // llm/typo/llm：LLM 整句校正
   bool rescore_on_ = false;        // llm/choice/rescore：推薦
-  double min_confidence_ = 0.1;    // llm/choice/min_confidence：推薦／校正的採用機率低於這個就不顯示
+  double min_confidence_ = 0.5;    // llm/choice/min_confidence：推薦／校正的採用機率低於這個就不顯示
   bool choice_log_ = false;        // llm/choice/log：記錄選字過程（加密）
   size_t context_max_chars_ = 100;      // llm/context/max_chars：給模型的前文最多幾個字
   unsigned context_idle_minutes_ = 10;  // llm/context/idle_minutes：視窗閒置多久後舊前文失效

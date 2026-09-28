@@ -43,25 +43,24 @@ size_t Calibrator::Accepted() const {
   return n;
 }
 
-// 帶先驗的 logistic regression（牛頓法）：斜率的先驗是 a = 1（直接把 log 機率差當 logit），
-// 樣本少或完全分得開時不會衝到無限大；截距幾乎不設限，由資料決定
+// 帶先驗的 logistic regression（牛頓法，見 CalibrationPrior）
 void Calibrator::Fit() {
   const size_t accepted = Accepted();
-  ready_ = samples_.size() >= kMinSamples && accepted > 0 && accepted < samples_.size();
-  const double kPriorA = 1.0, kPriorB = 0.01;
+  ready_ = samples_.size() >= prior_.min_samples && accepted > 0 && accepted < samples_.size();
+  const double kPriorA = prior_.slope_weight, kPriorB = prior_.bias_weight, kSlope = prior_.slope;
   // 目標：log loss 總和 + 先驗
   const auto objective = [&](double a, double b) {
-    double loss = 0.5 * (kPriorA * (a - 1.0) * (a - 1.0) + kPriorB * b * b);
+    double loss = 0.5 * (kPriorA * (a - kSlope) * (a - kSlope) + kPriorB * b * b);
     for (const auto& s : samples_) {
       const double p = Clamp(Sigmoid(a * s.gain + b));
       loss -= std::log(s.accepted ? p : 1.0 - p);
     }
     return loss;
   };
-  double a = 1.0, b = 0.0;
+  double a = kSlope, b = 0.0;
   double current = objective(a, b);
   for (int iter = 0; iter < 50; ++iter) {
-    double ga = kPriorA * (a - 1.0), gb = kPriorB * b;
+    double ga = kPriorA * (a - kSlope), gb = kPriorB * b;
     double haa = kPriorA, hab = 0, hbb = kPriorB;
     for (const auto& s : samples_) {
       const double p = Sigmoid(a * s.gain + b);
@@ -213,7 +212,7 @@ std::string CalibrationStore::Summary(SuggestionKind kind) {
                 c.Samples(), 100.0 * c.Accepted() / c.Samples());
   std::string text = buf;
   if (!c.Ready()) {
-    std::snprintf(buf, sizeof(buf), "未滿 %zu 筆或只有一種結果，還沒用來排序", Calibrator::kMinSamples);
+    std::snprintf(buf, sizeof(buf), "未滿 %zu 筆或只有一種結果，還沒用來排序", CalibrationPrior().min_samples);
     return text + buf;
   }
   std::snprintf(buf, sizeof(buf), "p = sigmoid(%.2f·gain %+.2f)，ECE %.3f、log loss %.3f", c.a(), c.b(), c.Ece(),
