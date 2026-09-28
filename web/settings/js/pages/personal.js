@@ -107,9 +107,15 @@ export default {
           disabled: off,
         }),
         card({
-          title: checkbox(f.filter, '學習前先用本機模型過濾不通順的輸入', (v) => { f.filter = v; changed(); }, { disabled: off }),
-          desc: '亂按、亂湊的字不學（片段每字平均分數低於 llm/personal/filter/min_logprob，預設 -7.5）。需要本機模型（智慧預測或整句校正用 llama.cpp）；沒有時照常學習。常打的詞與重複打了三次的片段不會被擋。',
+          title: checkbox(f.filter, '學習前先用本機模型過濾不通順的輸入', (v) => { f.filter = v; changed(); ctx.rerender(); }, { disabled: off }),
+          desc: '亂按、亂湊的字不學。需要本機模型（智慧預測或整句校正用 llama.cpp）；沒有時照常學習。常打的詞與重複打了三次的片段不會被擋。',
           disabled: off,
+          below: [
+            h('div', { class: 'row' }, h('span', { class: off || !f.filter ? 'muted' : '' }, '門檻'),
+              input(f.filter_min, (v) => { f.filter_min = v; changed(); }, { disabled: off || !f.filter, width: '80px' }),
+              h('span', { class: 'muted' }, '（預設 -7.5）')),
+            h('div', { class: 'note' }, '片段每字平均分數低於門檻就不學，越接近 0 擋得越多。實測通順的句子約 -1.5～-6.5、亂湊的字約 -9～-13；開發終端會印出每個片段的分數，可依此調整。'),
+          ],
         }),
         card({
           title: checkbox(f.rime_boost, '讓常打的詞在注音選字時排前面', (v) => { f.rime_boost = v; changed(); }, { disabled: off }),

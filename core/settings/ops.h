@@ -91,7 +91,7 @@ bool ClearChoiceLog(Platform& platform);
 fs::path PersonalDir(Platform& platform);
 std::string PersonalStatusText(Platform& platform, bool* running);
 struct WordRule {
-  enum Kind { kAdd, kBlock, kMerge } kind;
+  enum Kind { kAdd, kBlock, kMerge, kSplit } kind;
   std::string from, to;
 };
 struct PersonalWords {
@@ -101,7 +101,7 @@ struct PersonalWords {
   std::vector<WordRule> rules;
 };
 PersonalWords LoadPersonalWords(Platform& platform);
-// 修改：A 加入、M 合併、R 封鎖、D 刪除、X/Y/U 移除合併／加入／封鎖規則
+// 修改：A 加入、M 合併、R 封鎖、D 刪除、X/Y/U/Z 移除合併／加入／封鎖／拆解規則
 bool SendWordEdits(Platform& platform, const std::vector<std::string>& lines, std::string* error);
 
 // ---------------------------------------------------------------------------

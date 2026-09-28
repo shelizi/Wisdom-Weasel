@@ -66,6 +66,7 @@ export default {
     const index = state.selectedProfile ?? -1;
     const p = profiles[index];
     const changed = () => ctx.markDirty('llm');
+    const local = state.form.local;
 
     // 左側：設定清單
     const list = listbox(profiles.map((q, i) => ({ key: i, label: profileLabel(q) })), index, (i) => {
@@ -143,7 +144,7 @@ export default {
           changed();
           ctx.rerender();
         })),
-        h('div', { class: 'muted' }, 'Base 模型適合續寫預測；精煉需要能照指示回答的 Instruct（對話）模型。精煉時會另外載入模型，完成後釋放。'),
+        h('div', { class: 'muted' }, 'Base 模型適合續寫預測；精煉需要能照指示回答的 Instruct（對話）模型。精煉用的模型和預測或校正已載入的是同一組（同一個檔、同樣類型）時直接借用，不再載入一份；否則精煉時另外載入一次，完成後釋放。'),
       ];
       const apiNote = note(apiResult && apiResult.index === index ? apiResult.text
         : '例如 https://api.openai.com/v1/chat/completions，或 Ollama 的 http://localhost:11434/v1/chat/completions。金鑰以明碼存在 weasel.custom.yaml。',
@@ -243,6 +244,23 @@ export default {
             buttons(button('新增', () => add(false)), button('複製', () => add(true), { disabled: !p }),
               button('刪除', remove, { disabled: !p }))),
           editor)),
+      section('本機模型的執行設定',
+        card({
+          title: '智慧預測的上下文長度',
+          desc: '預測用的本機模型一次能看的 token 數。調大會多用一些記憶體（KV 快取），但精煉用同一個模型時比較放得下，可以直接借用，不必再載入一份模型（精煉一批要 4096 左右）。整句校正與精煉自己載入時各有固定的長度。',
+          control: select([2048, 4096, 8192, 16384].map((n) => ({ value: n, label: String(n) })),
+            local.n_ctx, (v) => { local.n_ctx = Number(v); changed(); }, { width: '100px' }),
+        }),
+        card({
+          title: 'GPU 層數',
+          desc: '放到顯示卡上執行的層數：-1 = 全部、0 = 只用 CPU。預測、整句校正與精煉的本機模型都用這個設定。',
+          control: input(local.gpu_layers, (v) => { local.gpu_layers = v; changed(); }, { width: '80px' }),
+        }),
+        card({
+          title: 'CPU 執行緒',
+          desc: '用 CPU 計算時的執行緒數。',
+          control: input(local.threads, (v) => { local.threads = v; changed(); }, { width: '80px' }),
+        })),
       section('模型檔案',
         card({
           title: '模型檔案（使用者資料夾的 models）',

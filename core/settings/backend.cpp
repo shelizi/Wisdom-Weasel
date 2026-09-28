@@ -669,6 +669,7 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     for (const auto& r : data.rules)
       rules.push_back({{"kind", r.kind == WordRule::kAdd     ? "add"
                                 : r.kind == WordRule::kBlock ? "block"
+                                : r.kind == WordRule::kSplit ? "split"
                                                              : "merge"},
                        {"from", r.from},
                        {"to", r.to}});

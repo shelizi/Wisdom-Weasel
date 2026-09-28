@@ -47,7 +47,7 @@ export default {
     if (ctx.isCurrent(this)) ctx.rerender();
   },
 
-  // 修改：A 加入、M 合併、R 封鎖、D 刪除、X/Y/U 移除合併／加入／封鎖規則
+  // 修改：A 加入、M 合併、R 封鎖、D 刪除、X/Y/U/Z 移除合併／加入／封鎖／拆解規則
   async edit(ctx, lines, message) {
     if (!lines.length) return;
     try {
@@ -121,7 +121,9 @@ export default {
     };
     renderWords();
     const rules = data ? data.rules : [];
-    const ruleText = (r) => (r.kind === 'merge' ? '合併　' + r.from + ' → ' + r.to : r.kind === 'add' ? '加入　' + r.from : '封鎖　' + r.from);
+    const ruleText = (r) => (r.kind === 'merge' ? '合併　' + r.from + ' → ' + r.to
+      : r.kind === 'split' ? '拆解　' + r.from + ' → ' + r.to.split(' ').join('／')
+        : r.kind === 'add' ? '加入　' + r.from : '封鎖　' + r.from);
     const ruleList = listbox(rules.map((r, i) => ({ key: i, label: ruleText(r) })), selectedRules,
       (keys) => { selectedRules = keys; }, { multiple: true, height: '300px', empty: available ? '還沒有規則。' : '' });
 
@@ -157,7 +159,7 @@ export default {
             h('div', { class: 'spacer' }),
             h('div', { class: 'grid two' },
               wordBox,
-              h('div', {}, h('div', { class: 'field-label' }, '規則（加入／封鎖／合併）'), ruleList)),
+              h('div', {}, h('div', { class: 'field-label' }, '規則（加入／封鎖／合併／拆解）'), ruleList)),
             h('div', { class: 'spacer' }),
             h('div', { class: 'row' },
               wordInput,
@@ -178,9 +180,9 @@ export default {
               button('移除規則', () => {
                 if (!need(selectedRules, '請先選取右方要移除的規則。')) return;
                 this.edit(ctx, selectedRules.map((i) => rules[i]).map((r) =>
-                  (r.kind === 'merge' ? 'X\t' : r.kind === 'add' ? 'Y\t' : 'U\t') + r.from));
+                  (r.kind === 'merge' ? 'X\t' : r.kind === 'split' ? 'Z\t' : r.kind === 'add' ? 'Y\t' : 'U\t') + r.from));
               }, { disabled })),
-            h('div', { class: 'note' }, '雙擊詞彙（或按 F2）可直接修改。「刪除」只移除這次，之後打到還會再學；「封鎖」刪除且不再學習；修改與合併會記成規則，「重新精煉全部」時也會套用。'),
+            h('div', { class: 'note' }, '雙擊詞彙（或按 F2）可直接修改。「刪除」只移除這次，之後打到還會再學；「封鎖」刪除且不再學習；修改與合併會記成規則，「重新精煉全部」時也會套用。「拆解」是精煉時 LLM 把整句拆成詞，之後打到這句會分開學；移除拆解規則後改回整句學習（也可以直接「加入」整句）。'),
           ],
         })),
       section('輸入法使用者詞典（Rime）',

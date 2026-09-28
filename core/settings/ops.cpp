@@ -831,6 +831,8 @@ PersonalWords LoadPersonalWords(Platform& platform) {
         result.rules.push_back({WordRule::kBlock, f[1], ""});
       else if (f.size() == 3 && f[0] == "M")
         result.rules.push_back({WordRule::kMerge, f[1], f[2]});
+      else if (f.size() == 3 && f[0] == "S")
+        result.rules.push_back({WordRule::kSplit, f[1], f[2]});  // 拆出的部分以空格分隔
     }
   }
   fs::remove(file, ec);

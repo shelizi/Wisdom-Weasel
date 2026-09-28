@@ -74,7 +74,7 @@ for key in ('schemas', 'style', 'profiles', 'use'):
     check(state.get(key) == expected.get(key), 'reloaded ' + key,
           json.dumps({'expected': expected.get(key), 'got': state.get(key)}, ensure_ascii=False)[:600])
 exp_form, got_form = expected.get('form', {}), state.get('form', {})
-for section in ('predict', 'typo', 'choice', 'personal'):
+for section in ('predict', 'typo', 'choice', 'personal', 'local'):
     check(got_form.get(section) == exp_form.get(section), 'reloaded form.' + section,
           json.dumps({'expected': exp_form.get(section), 'got': got_form.get(section)}, ensure_ascii=False))
 check(state.get('grammar', {}).get('enabled') == exp_form.get('choice', {}).get('grammar'),
@@ -96,6 +96,15 @@ personal = llm.get('personal') or {}
 check(str(personal.get('max_candidates')) == '2' and str(personal.get('half_life_days')) == '45'
       and str((personal.get('refine') or {}).get('interval_days')) == '3', 'personal numbers saved',
       json.dumps(personal, ensure_ascii=False)[:300])
+filt = personal.get('filter') or {}
+check(str(filt.get('min_logprob')) == '-8'
+      and str(filt.get('enabled')).lower() == str(exp_form['personal']['filter']).lower(),
+      'learn filter saved', json.dumps(filt, ensure_ascii=False))
+llama = llm.get('llamacpp') or {}
+exp_local = exp_form.get('local', {})
+check(str(llama.get('n_ctx')) == str(exp_local.get('n_ctx')) and str(llama.get('n_gpu_layers')) == exp_local.get('gpu_layers')
+      and str(llama.get('n_threads')) == '6', 'local model runtime saved',
+      json.dumps({k: llama.get(k) for k in ('n_ctx', 'n_gpu_layers', 'n_threads')}))
 check(patch_get(weasel, 'style/color_scheme') == expected['style']['active'], 'style/color_scheme saved',
       str(patch_get(weasel, 'style/color_scheme')))
 check(str(patch_get(weasel, 'style/font_point')) == str(expected['style']['fonts']['font_point']),

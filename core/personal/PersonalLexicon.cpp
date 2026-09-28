@@ -943,7 +943,8 @@ void PersonalLexicon::DeleteWords(const std::vector<std::wstring>& words) {
 
 void PersonalLexicon::RemoveRules(const std::vector<std::wstring>& unblock,
                                   const std::vector<std::wstring>& unmerge,
-                                  const std::vector<std::wstring>& unadd) {
+                                  const std::vector<std::wstring>& unadd,
+                                  const std::vector<std::wstring>& unsplit) {
   std::string plain;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -953,6 +954,11 @@ void PersonalLexicon::RemoveRules(const std::vector<std::wstring>& unblock,
       merged_.erase(w);
     for (const auto& w : unadd)
       added_.erase(w);
+    // 取消拆解：之後再打到會整段學（已拆出的部分保留）；也不再請 LLM 拆
+    for (const auto& w : unsplit) {
+      splits_.erase(w);
+      split_checked_.insert(w);
+    }
     SaveRefinementLocked(&plain);
   }
   personal_crypto::WriteProtected(dir_ / L"refine.dat", plain);
@@ -974,7 +980,7 @@ void PersonalLexicon::Rules(std::vector<std::wstring>* removed,
   }
 }
 
-// 匯出（加密）：W 詞 分數 / R 封鎖的詞 / M 原寫法 正確寫法
+// 匯出（加密）：W 詞 分數 / R 封鎖的詞 / M 原寫法 正確寫法 / S 片段 拆出的部分
 bool PersonalLexicon::ExportTo(const fs::path& path, size_t max_words) const {
   std::ostringstream out;
   out << "WWPX1\n";
@@ -991,12 +997,19 @@ bool PersonalLexicon::ExportTo(const fs::path& path, size_t max_words) const {
     out << "R\t" << utf8::FromWide(w) << "\n";
   for (const auto& [from, to] : merged)
     out << "M\t" << utf8::FromWide(from) << "\t" << utf8::FromWide(to) << "\n";
+  // 拆解：S 片段 部分（以空格分隔）
+  for (const auto& [unit, parts] : Splits()) {
+    out << "S\t" << utf8::FromWide(unit) << "\t";
+    for (size_t i = 0; i < parts.size(); ++i)
+      out << (i ? " " : "") << utf8::FromWide(parts[i]);
+    out << "\n";
+  }
   return personal_crypto::WriteProtected(path, out.str());
 }
 
 // 套用設定程式寫的修改（加密）：
 // A 詞（加入）、R 詞（刪除並封鎖）、U 詞（解除封鎖）、M 原寫法 正確寫法（合併）、X 原寫法（解除合併）、
-// Y 詞（取消手動加入的規則）、D 詞（只刪除，不留規則）
+// Y 詞（取消手動加入的規則）、D 詞（只刪除，不留規則）、Z 片段（取消拆解）
 int PersonalLexicon::ApplyEdits(const fs::path& path) {
   std::string plain;
   if (!personal_crypto::ReadProtected(path, &plain))
@@ -1005,7 +1018,7 @@ int PersonalLexicon::ApplyEdits(const fs::path& path) {
   std::string line;
   if (!std::getline(lines, line) || line != "WWPE1")
     return -1;
-  std::vector<std::wstring> add, block, unblock, unmerge, unadd, erase;
+  std::vector<std::wstring> add, block, unblock, unmerge, unadd, erase, unsplit;
   std::vector<std::pair<std::wstring, std::wstring>> merges;
   int count = 0;
   while (std::getline(lines, line)) {
@@ -1025,11 +1038,12 @@ int PersonalLexicon::ApplyEdits(const fs::path& path) {
     else if (f[0] == L"X") unmerge.push_back(f[1]);
     else if (f[0] == L"Y") unadd.push_back(f[1]);
     else if (f[0] == L"D") erase.push_back(f[1]);
+    else if (f[0] == L"Z") unsplit.push_back(f[1]);
     else if (f[0] == L"M" && f.size() >= 3 && !f[2].empty()) merges.emplace_back(f[1], f[2]);
     else --count;
   }
-  if (!unblock.empty() || !unmerge.empty() || !unadd.empty())
-    RemoveRules(unblock, unmerge, unadd);
+  if (!unblock.empty() || !unmerge.empty() || !unadd.empty() || !unsplit.empty())
+    RemoveRules(unblock, unmerge, unadd, unsplit);
   if (!block.empty() || !merges.empty())
     ApplyRefinement(block, merges);
   if (!erase.empty())

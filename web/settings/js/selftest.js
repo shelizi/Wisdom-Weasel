@@ -99,6 +99,11 @@ async function applyPhase(ctx) {
   f.personal.half_life = '45';
   f.personal.interval = '3';
   f.personal.rime_boost = !f.personal.rime_boost;
+  f.personal.filter = !f.personal.filter;
+  f.personal.filter_min = '-8';
+  f.local.n_ctx = f.local.n_ctx === 4096 ? 8192 : 4096;
+  f.local.gpu_layers = f.local.gpu_layers === '-1' ? '0' : '-1';
+  f.local.threads = '6';
   ctx.markDirty('llm');
   if (state.init.grammar.ready || f.choice.grammar) {
     f.choice.grammar = !f.choice.grammar;

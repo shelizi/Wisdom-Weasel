@@ -107,7 +107,8 @@ class PersonalLexicon {
   void DeleteWords(const std::vector<std::wstring>& words);
   void RemoveRules(const std::vector<std::wstring>& unblock,
                    const std::vector<std::wstring>& unmerge,
-                   const std::vector<std::wstring>& unadd = {});
+                   const std::vector<std::wstring>& unadd = {},
+                   const std::vector<std::wstring>& unsplit = {});
   void Rules(std::vector<std::wstring>* removed,
              std::vector<std::pair<std::wstring, std::wstring>>* merged,
              std::vector<std::wstring>* added = nullptr) const;

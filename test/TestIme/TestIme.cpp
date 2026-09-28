@@ -514,6 +514,21 @@ static void TestSplits(const fs::path& dir) {
     lexicon.Rebuild(records);
     CHECK(lexicon.WordScore(L"我明天下午要去台北開會") == 0);
     CHECK(lexicon.WordScore(L"明天下午") > 2.5);
+    // 設定程式的詞庫管理：匯出看得到拆解規則，Z 取消拆解
+    const fs::path exported = dir / "export.dat";
+    CHECK(lexicon.ExportTo(exported, 100));
+    std::string plain;
+    CHECK(personal_crypto::ReadProtected(exported, &plain));
+    CHECK(plain.find(utf8::FromWide(L"S\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n")) !=
+          std::string::npos);
+    const fs::path edits = dir / "edit.dat";
+    CHECK(personal_crypto::WriteProtected(edits, utf8::FromWide(L"WWPE1\nZ\t我明天下午要去台北開會\n")));
+    CHECK(lexicon.ApplyEdits(edits) == 1);
+    CHECK(lexicon.Splits().empty());
+    lexicon.Record(L"w", L"我明天下午要去台北開會");
+    CHECK(lexicon.WordScore(L"我明天下午要去台北開會") > 0);
+    lexicon.ApplySplits({{L"我明天下午要去台北開會", {L"我", L"明天下午", L"要去", L"台北", L"開會"}}});
+    CHECK(lexicon.Splits().size() == 1);
     // 親自加入整個片段：取消拆解
     lexicon.AddWord(L"我明天下午要去台北開會");
     CHECK(lexicon.Splits().empty());

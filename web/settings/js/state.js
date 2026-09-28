@@ -245,10 +245,17 @@ function loadForm(llm, defaults) {
       enabled: bool(get(llm, 'personal/enabled'), true),
       keep_log: bool(get(llm, 'personal/keep_raw_log'), true),
       filter: bool(get(llm, 'personal/filter/enabled'), true),
+      filter_min: str(get(llm, 'personal/filter/min_logprob')) || '-7.5',
       rime_boost: bool(get(llm, 'personal/rime_boost'), false),
       max: Math.max(0, Math.min(max, 5)),
       half_life: String(halfLife > 0 ? halfLife : 30),
       interval: str(get(llm, 'personal/refine/interval_days')) || '1',
+    },
+    // 本機模型（llama.cpp）的執行設定：預測的模型用；GPU 層數與執行緒整句校正與精煉也用
+    local: {
+      n_ctx: int(get(llm, 'llamacpp/n_ctx'), 2048),
+      gpu_layers: String(int(get(llm, 'llamacpp/n_gpu_layers'), 0)),
+      threads: String(int(get(llm, 'llamacpp/n_threads'), 4)),
     },
   };
 }
@@ -277,11 +284,18 @@ export function buildLlm() {
   set(llm, 'personal/enabled', p.enabled);
   set(llm, 'personal/keep_raw_log', p.keep_log);
   set(llm, 'personal/filter/enabled', p.filter);
+  // 門檻要是負數（每字的 log 機率）；空白或不合理時用預設
+  const filterMin = parseFloat(trim(p.filter_min));
+  set(llm, 'personal/filter/min_logprob', Number.isFinite(filterMin) && filterMin < 0 ? filterMin : -7.5);
   set(llm, 'personal/rime_boost', p.enabled && p.rime_boost);
   set(llm, 'personal/max_candidates', p.max < 0 ? 3 : p.max);
   const halfLife = number(p.half_life, 30);
   set(llm, 'personal/half_life_days', halfLife > 0 ? halfLife : 30);
   set(llm, 'personal/refine/interval_days', Math.max(0, number(p.interval, 1)));
+  const local = form.local;
+  set(llm, 'llamacpp/n_ctx', local.n_ctx > 0 ? local.n_ctx : 2048);
+  set(llm, 'llamacpp/n_gpu_layers', Math.max(-1, number(local.gpu_layers, 0)));
+  set(llm, 'llamacpp/n_threads', Math.max(1, number(local.threads, 4)));
   return llm;
 }
 
