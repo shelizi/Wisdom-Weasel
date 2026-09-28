@@ -657,6 +657,22 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
     api_->process_key(session_id, key::kVoidSymbol, 0);
     return true;
   }
+  // 組字中 Shift+字母：像新注音一樣打大寫英文，接在轉好的中文後面，仍留在中文。
+  // 不交給 Rime：注音方案的 alternative_select_keys 是 ABCDEFGHIJ，會被當成選字
+  const bool upper = keycode >= 'A' && keycode <= 'Z' && !other_mods;
+  if (upper && !ss.mixed_english && (composing || ss.mixed_active())) {
+    if (release)
+      return true;
+    if (composing) {
+      ss.mixed_text += TakeComposition(api_, session_id);
+      if (prediction_mode_ || completion_active_)
+        ExitPredictionMode(id);
+    }
+    ss.mixed_text += (wchar_t)keycode;
+    // Rime 只收到 Shift 的按下：重設它記住的 Shift 狀態，放開時才不會切換中英
+    api_->process_key(session_id, key::kVoidSymbol, 0);
+    return true;
+  }
   if (!ss.mixed_active())
     return false;
   // 混打中的 Shift 不交給 Rime，免得 Shift+字母（大寫）之後 Rime 自己切換中英

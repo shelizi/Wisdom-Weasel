@@ -296,6 +296,40 @@ int main(int argc, char** argv) {
     t.commits.clear();
   }
 
+  // 組字中 Shift+字母：打大寫英文接在轉好的中文後面（不是 alternative_select_keys
+  // 的選字），仍留在中文；放開 Shift 不切換中英
+  {
+    t.Type("5j4");
+    const std::wstring first = t.preedit.text;
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.ProcessKey(id, key::kShiftL, 0);
+    }
+    t.Key('A', mod::kShift);
+    t.Key('B', mod::kShift);
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.ProcessKey(id, key::kShiftL, mod::kShift | mod::kRelease);
+    }
+    t.Respond();
+    CHECK(ss.mixed_text == first + L"AB");
+    CHECK(!ss.mixed_english);
+    CHECK(t.preedit.text == first + L"AB");
+    CHECK(t.commits.empty());
+    t.Type("5j4");
+    CHECK(t.Composing());
+    t.Key(key::kReturn);
+    CHECK(t.commits.size() == 1);
+    if (!t.commits.empty()) {
+      const std::wstring& c = t.commits.back();
+      std::printf("  shift+letter -> %s\n", U8(c).c_str());
+      CHECK(c.size() == 4 && c.compare(0, 3, first + L"AB") == 0 &&
+            IsCJK(c[3]));
+    }
+    CHECK(!ss.mixed_active());
+    t.commits.clear();
+  }
+
   // 逐字選字：←/→ 框住音節
   {
     t.Type("rup wu0 ");  // ㄐㄧㄣ ㄊㄧㄢ
