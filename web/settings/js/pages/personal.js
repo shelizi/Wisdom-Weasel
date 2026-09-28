@@ -107,6 +107,11 @@ export default {
           disabled: off,
         }),
         card({
+          title: checkbox(f.filter, '學習前先用本機模型過濾不通順的輸入', (v) => { f.filter = v; changed(); }, { disabled: off }),
+          desc: '亂按、亂湊的字不學（片段每字平均分數低於 llm/personal/filter/min_logprob，預設 -7.5）。需要本機模型（智慧預測或整句校正用 llama.cpp）；沒有時照常學習。常打的詞與重複打了三次的片段不會被擋。',
+          disabled: off,
+        }),
+        card({
           title: checkbox(f.rime_boost, '讓常打的詞在注音選字時排前面', (v) => { f.rime_boost = v; changed(); }, { disabled: off }),
           desc: '產生個人詞表給 Rime；常用詞會以明文存在使用者資料夾。',
           disabled: off,

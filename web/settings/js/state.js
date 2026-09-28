@@ -244,6 +244,7 @@ function loadForm(llm, defaults) {
     personal: {
       enabled: bool(get(llm, 'personal/enabled'), true),
       keep_log: bool(get(llm, 'personal/keep_raw_log'), true),
+      filter: bool(get(llm, 'personal/filter/enabled'), true),
       rime_boost: bool(get(llm, 'personal/rime_boost'), false),
       max: Math.max(0, Math.min(max, 5)),
       half_life: String(halfLife > 0 ? halfLife : 30),
@@ -275,6 +276,7 @@ export function buildLlm() {
   const number = (text, fallback) => (trim(text) === '' ? fallback : int(text, 0));
   set(llm, 'personal/enabled', p.enabled);
   set(llm, 'personal/keep_raw_log', p.keep_log);
+  set(llm, 'personal/filter/enabled', p.filter);
   set(llm, 'personal/rime_boost', p.enabled && p.rime_boost);
   set(llm, 'personal/max_candidates', p.max < 0 ? 3 : p.max);
   const halfLife = number(p.half_life, 30);

@@ -505,6 +505,9 @@
     <ClCompile Include="..\core\personal\PersonalRefiner.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\personal\LearnFilter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\llm\MemoryCompressor.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -533,6 +536,7 @@
     <ClInclude Include="..\core\llm\ContextHistory.h" />
     <ClInclude Include="..\core\personal\PersonalLexicon.h" />
     <ClInclude Include="..\core\personal\PersonalRefiner.h" />
+    <ClInclude Include="..\core\personal\LearnFilter.h" />
     <ClInclude Include="DevConsole.h" />
     <ClInclude Include="..\core\llm\MemoryCompressor.h" />
     <ClInclude Include="resource.h" />

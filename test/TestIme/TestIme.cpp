@@ -1,5 +1,5 @@
 // core/ime
-// 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、選字統計與選字紀錄
+// 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、選字統計與選字紀錄、學習過濾
 #include "../../core/ime/ZhuyinPreview.h"
 #include "../../core/ime/choice_log.h"
 #include "../../core/ime/choice_stats.h"
@@ -7,6 +7,8 @@
 #include "../../core/ime/rescore.h"
 #include "../../core/ime/text_rules.h"
 #include "../../core/llm/LLMProvider.h"
+#include "../../core/personal/LearnFilter.h"
+#include "../../core/personal/PersonalLexicon.h"
 
 #include <PersonalCrypto.h>
 
@@ -407,6 +409,75 @@ static void TestPredictionEngine() {
   CHECK(WaitFor([&] { return update_count() == 1; }));
 }
 
+static void TestLearnFilter(const fs::path& dir) {
+  // 片段的平均分數：逗號切開，低於門檻的不學；分數與文字長度對不上時不擋
+  const std::wstring text = L"今天很好，ㄅㄅㄅ";
+  const std::vector<double> scores = {-2, -2, -2, -2, -1, -10, -10, -10};
+  CHECK(LearnFilter::LowScoreUnits(text, scores, -7) == Strings{L"ㄅㄅㄅ"});
+  CHECK(LearnFilter::LowScoreUnits(text, {-10}, -7).empty());
+
+  PersonalLexicon lexicon(dir);
+  // 假的評分：「亂」「碼」很低，其他 -2；前幾次回報忙碌
+  std::atomic<int> busy{2};
+  std::atomic<bool> available{true};
+  auto scorer = [&](const std::wstring&, const std::wstring& t, std::vector<double>* per_char) {
+    if (busy > 0) {
+      --busy;
+      return LearnFilter::Score::kBusy;
+    }
+    if (!available)
+      return LearnFilter::Score::kUnavailable;
+    per_char->clear();
+    for (wchar_t c : t)
+      per_char->push_back(c == L'亂' || c == L'碼' ? -12.0 : -2.0);
+    return LearnFilter::Score::kOk;
+  };
+  {
+    LearnFilter filter(&lexicon, scorer);
+    LearnFilter::Options options;
+    options.delay_ms = 0;
+    options.busy_retry_ms = 10;
+    filter.SetOptions(options);
+    lexicon.NoteCommit(L"w", L"今天很好，亂碼");
+    filter.Submit(L"w", L"", L"今天很好，亂碼");
+    CHECK(filter.WaitIdle(5000));
+    CHECK(busy == 0);  // 忙碌時等一下再評
+    CHECK(lexicon.WordScore(L"今天很好") > 0);
+    CHECK(lexicon.WordScore(L"亂碼") == 0);
+    // 同一個片段被擋第三次就放行
+    filter.Submit(L"w", L"", L"亂碼");
+    filter.Submit(L"w", L"", L"亂碼");
+    CHECK(filter.WaitIdle(5000));
+    CHECK(lexicon.WordScore(L"亂碼") > 0);
+    // 沒有本機模型：照常學習
+    available = false;
+    filter.Submit(L"w", L"", L"碼亂");
+    CHECK(filter.WaitIdle(5000));
+    CHECK(lexicon.WordScore(L"碼亂") > 0);
+  }
+  // 原始紀錄標記了擋下的片段，重建時一樣不學
+  auto records = PersonalLexicon::ReadRawLog(lexicon.ActiveLogPath());
+  CHECK(records.size() == 4);
+  if (records.size() == 4) {
+    CHECK(records[0].text == L"今天很好，亂碼");
+    CHECK(records[0].rejected == Strings{L"亂碼"});
+    CHECK(records[3].rejected.empty());
+  }
+  records.resize(1);
+  lexicon.Rebuild(records);
+  CHECK(lexicon.WordScore(L"今天很好") > 0);
+  CHECK(lexicon.WordScore(L"亂碼") == 0);
+
+  // 送出當下就記下最後的詞，接續查得到（學習還沒做）
+  lexicon.Record(L"a", L"早安，你好");
+  lexicon.NoteCommit(L"b", L"早安");
+  CHECK(lexicon.NextAfter(L"b", 3) == Strings{L"你好"});
+  lexicon.NoteCommit(L"b", L"，");  // 只有標點：保留
+  CHECK(lexicon.NextAfter(L"b", 3) == Strings{L"你好"});
+  lexicon.NoteCommit(L"b", L"早安。");  // 句尾：重新開始
+  CHECK(lexicon.NextAfter(L"b", 3).empty());
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / L"TestIme-注音";
   std::error_code ec;
@@ -417,6 +488,7 @@ int main() {
   TestPredictionEngine();
   TestChoiceStats(dir / "stats");
   TestChoiceLog(dir / "log");
+  TestLearnFilter(dir / "personal");
   fs::remove_all(dir, ec);
   std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
   return failures ? 1 : 0;

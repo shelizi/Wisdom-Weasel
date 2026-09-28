@@ -17,6 +17,7 @@
 #include "../llm/ContextHistory.h"
 #include "../llm/LLMProvider.h"
 #include "../llm/RemoteLLMProvider.h"
+#include "../personal/LearnFilter.h"
 #include "../personal/PersonalLexicon.h"
 #include "../personal/PersonalRefiner.h"
 #include "ZhuyinPreview.h"
@@ -83,6 +84,7 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
 }
 
 Controller::~Controller() {
+  learn_filter_.reset();  // 評分會用到模型與推理鎖，先停
   prediction_->Cancel();
   WaitRetired();
 }
@@ -214,6 +216,37 @@ void Controller::LoadConfig(RimeConfig* config) {
       } else {
         refiner_->Configure(refine);
         refiner_->WriteStatus();
+      }
+
+      // 學習過濾：送出的文字先用本機模型評分，太不通順的片段不學（預設開啟；沒有本機模型時照常學習）
+      Bool filter = true;
+      if (!api_->config_get_bool(config, "llm/personal/filter/enabled", &filter))
+        filter = true;
+      if (!filter) {
+        learn_filter_.reset();
+      } else if (!learn_filter_) {
+        // 評分在背景執行緒：拿不到推理鎖（正在預測）就等一下再試，不擋預測
+        learn_filter_ = std::make_unique<LearnFilter>(
+            personal_.get(), [this](const std::wstring& context, const std::wstring& text,
+                                    std::vector<double>* per_char) {
+              std::unique_lock<std::mutex> lock(prediction_->InferMutex(), std::try_to_lock);
+              if (!lock.owns_lock())
+                return LearnFilter::Score::kBusy;
+              LLMProvider* scorer = RescoreProvider();
+              double total = 0;
+              return scorer && scorer->ScoreText(context, text, &total, per_char)
+                         ? LearnFilter::Score::kOk
+                         : LearnFilter::Score::kUnavailable;
+            });
+        learn_filter_->SetLogger([](const std::wstring& line) { Log(line); });
+      }
+      if (learn_filter_) {
+        LearnFilter::Options options;
+        double min_logprob = 0;
+        if (api_->config_get_double(config, "llm/personal/filter/min_logprob", &min_logprob) &&
+            min_logprob < 0)
+          options.min_logprob = min_logprob;
+        learn_filter_->SetOptions(options);
       }
     }
   }
@@ -368,6 +401,7 @@ void Controller::LogStatus() const {
 }
 
 void Controller::Retire() {
+  learn_filter_.reset();  // 還沒評分的照常學進 personal_
   if (!refiner_ && !personal_)
     return;
   if (refiner_)
@@ -892,10 +926,21 @@ void Controller::FocusOut(uint64_t id) {
 // 回應：送出的文字與組字區
 
 void Controller::RecordCommit(const std::wstring& text) {
+  const std::wstring window = history_ ? history_->GetActiveKey() : L"";
+  // 學習過濾要的是這次送出之前的前文；沒有本機模型時不過濾，直接學
+  const bool filter = personal_ && learn_filter_ && RescoreProvider();
+  const std::wstring context =
+      filter && history_ ? history_->GetRecentContext(context_max_chars_) : std::wstring();
   if (history_)
     history_->AddText(text, g_dev_console);
-  if (personal_)
-    personal_->Record(history_ ? history_->GetActiveKey() : L"", text);
+  if (!personal_)
+    return;
+  if (filter) {
+    personal_->NoteCommit(window, text);  // 送出後的預測馬上要用「最後的詞」
+    learn_filter_->Submit(window, context, text);
+  } else {
+    personal_->Record(window, text);
+  }
 }
 
 std::vector<std::wstring> Controller::TakeCommits(uint64_t id) {
@@ -1441,6 +1486,8 @@ void Controller::PersonalCommand(int command) {
         refiner_->WriteStatus();
       break;
     case 4:
+      if (learn_filter_)
+        learn_filter_->Discard();  // 還沒評分的也一起清掉
       if (!refiner_->Clear())
         refiner_->WriteStatus();
       break;

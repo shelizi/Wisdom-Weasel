@@ -26,8 +26,19 @@ class PersonalLexicon {
   // 立即存檔（服務結束、清除詞庫時呼叫）
   bool Save();
 
-  // 記錄一次送出。window 用來區分視窗，讓「前一個詞」不會跨視窗接錯
+  // 記錄一次送出（= NoteCommit + Learn）。window 用來區分視窗，讓「前一個詞」不會跨視窗接錯
   void Record(const std::wstring& window, const std::wstring& text);
+  // 學習過濾把一次送出拆成兩步：
+  // NoteCommit：送出當下記下這個視窗最後的詞（NextAfter 馬上用得到），不學
+  void NoteCommit(const std::wstring& window, const std::wstring& text);
+  // Learn：評分後計入統計並寫原始紀錄。rejected 是擋下的片段，不學、也不拿來接續
+  // （原始紀錄照樣保留並標記這些片段）
+  void Learn(const std::wstring& window, const std::wstring& text,
+             const std::vector<std::wstring>& rejected = {});
+  // 學習的單位：依標點切開的片段在 text 裡的起點與長度（太長的片段不含在內）
+  static std::vector<std::pair<size_t, size_t>> UnitSpans(const std::wstring& text);
+  // 詞目前的分數（不在詞庫裡為 0）
+  double WordScore(const std::wstring& word) const;
 
   // 目前視窗最後送出的詞之後，最常接的詞
   std::vector<std::wstring> NextAfter(const std::wstring& window, size_t max_count) const;
@@ -51,6 +62,7 @@ class PersonalLexicon {
     int64_t time = 0;
     std::wstring window;
     std::wstring text;
+    std::vector<std::wstring> rejected;  // 學習過濾擋下的片段（重建時一樣不學）
   };
   const std::filesystem::path& Dir() const { return dir_; }
   std::filesystem::path ActiveLogPath() const { return dir_ / L"input_log.dat"; }
@@ -104,9 +116,13 @@ class PersonalLexicon {
   void Bump(Score& s, int64_t now) const;
   void MaybeSaveAsync();
   bool SaveLocked(std::string* blob) const;  // 在鎖內序列化
-  void AppendRawLog(const std::wstring& window, const std::wstring& text, int64_t now);
-  // 在鎖內把一次送出計入統計（套用精煉結果：略過刪除的詞、合併的寫法換成正確寫法）
-  void RecordLocked(const std::wstring& window, const std::wstring& text, int64_t now);
+  void AppendRawLog(const std::wstring& window, const std::wstring& text,
+                    const std::vector<std::wstring>& rejected, int64_t now);
+  // 在鎖內把一次送出計入統計（套用精煉結果：略過刪除的詞、合併的寫法換成正確寫法；
+  // rejected 的片段也略過）
+  void RecordLocked(const std::wstring& window, const std::wstring& text, int64_t now,
+                    const std::vector<std::wstring>& rejected = {});
+  void NoteLocked(const std::wstring& window, const std::wstring& text);
   bool SaveRefinementLocked(std::string* blob) const;
   void LoadRefinement();
 
@@ -116,7 +132,8 @@ class PersonalLexicon {
   mutable std::mutex mutex_;
   std::unordered_map<std::wstring, Score> words_;                                  // 單詞
   std::unordered_map<std::wstring, std::unordered_map<std::wstring, Score>> next_;  // 前 → 後
-  std::unordered_map<std::wstring, std::wstring> last_word_;                       // 每個視窗最後的詞
+  std::unordered_map<std::wstring, std::wstring> last_word_;   // 每個視窗最後送出的詞（查接續用）
+  std::unordered_map<std::wstring, std::wstring> chain_word_;  // 每個視窗最後學到的詞（學接續用）
   double half_life_days_ = 30;
   bool keep_raw_log_ = true;
   int dirty_ = 0;

@@ -21,6 +21,7 @@
 #include "session_state.h"
 
 class ContextHistory;
+class LearnFilter;
 class LLMProvider;
 class PersonalLexicon;
 class PersonalRefiner;
@@ -183,6 +184,8 @@ class Controller {
 
   std::unique_ptr<PersonalLexicon> personal_;
   std::unique_ptr<PersonalRefiner> refiner_;
+  // 學習過濾（llm/personal/filter/*）：送出的文字先用本機模型評分再學；要比 personal_ 先釋放
+  std::unique_ptr<LearnFilter> learn_filter_;
   // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放
   std::thread retire_thread_;
 

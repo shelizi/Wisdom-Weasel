@@ -22,6 +22,9 @@ const size_t kMaxPairs = 60000;     // 存檔時保留的接續數
 const size_t kMaxUnitLength = 40;   // 太長的片段（多半是貼上的整段文字）不學
 const double kMinScore = 0.05;      // 衰減到這以下的直接淘汰
 const wchar_t kBackoff = L'\x1f';   // 以「前一個詞的最後兩個字」為鍵的退化接續
+// 原始紀錄裡標記過濾擋下的片段：文字 \x1e 片段 \x1f 片段…（打字不會打出這兩個控制字元）
+const wchar_t kRejectedMark = L'\x1e';
+const wchar_t kRejectedSeparator = L'\x1f';
 
 int64_t Now() {
   return std::chrono::duration_cast<std::chrono::seconds>(
@@ -92,40 +95,38 @@ void PersonalLexicon::Bump(Score& s, int64_t now) const {
   s.last = now;
 }
 
+std::vector<std::pair<size_t, size_t>> PersonalLexicon::UnitSpans(const std::wstring& text) {
+  std::vector<std::pair<size_t, size_t>> spans;
+  size_t start = 0;
+  for (size_t i = 0; i <= text.size(); ++i) {
+    if (i < text.size() && !IsSeparator(text[i]))
+      continue;
+    if (i > start && i - start <= kMaxUnitLength)
+      spans.emplace_back(start, i - start);
+    start = i + 1;
+  }
+  return spans;
+}
+
 std::vector<std::wstring> PersonalLexicon::SplitUnits(const std::wstring& text,
                                                       bool* sentence_end) {
   std::vector<std::wstring> units;
-  std::wstring cur;
-  *sentence_end = false;
-  for (wchar_t c : text) {
-    if (IsSeparator(c)) {
-      if (!cur.empty())
-        units.push_back(cur);
-      cur.clear();
-      if (IsSentenceEnd(c))
-        *sentence_end = true;
-    } else {
-      cur += c;
-    }
-  }
-  if (!cur.empty())
-    units.push_back(cur);
-  units.erase(std::remove_if(units.begin(), units.end(),
-                             [](const std::wstring& u) { return u.size() > kMaxUnitLength; }),
-              units.end());
+  for (const auto& [start, length] : UnitSpans(text))
+    units.push_back(text.substr(start, length));
+  *sentence_end = std::any_of(text.begin(), text.end(), IsSentenceEnd);
   return units;
 }
 
 void PersonalLexicon::RecordLocked(const std::wstring& window, const std::wstring& text,
-                                   int64_t now) {
+                                   int64_t now, const std::vector<std::wstring>& rejected) {
   bool sentence_end = false;
   const std::vector<std::wstring> units = SplitUnits(text, &sentence_end);
-  std::wstring prev = last_word_[window];
+  std::wstring prev = chain_word_[window];
   for (const auto& raw : units) {
-    // 精煉結果：合併的寫法算到正確寫法；刪除的詞不學，也不拿來接續
+    // 精煉結果：合併的寫法算到正確寫法；刪除的詞不學，也不拿來接續。過濾擋下的片段一樣
     auto m = merged_.find(raw);
     const std::wstring& unit = m != merged_.end() ? m->second : raw;
-    if (removed_.count(unit)) {
+    if (removed_.count(unit) || std::find(rejected.begin(), rejected.end(), raw) != rejected.end()) {
       prev.clear();
       continue;
     }
@@ -137,25 +138,65 @@ void PersonalLexicon::RecordLocked(const std::wstring& window, const std::wstrin
     prev = unit;
   }
   // 句尾標點之後重新開始，不把上一句的最後一個詞接到下一句
-  last_word_[window] = sentence_end ? std::wstring() : prev;
+  chain_word_[window] = sentence_end ? std::wstring() : prev;
   if (!units.empty())
     ++dirty_;
 }
 
+void PersonalLexicon::NoteLocked(const std::wstring& window, const std::wstring& text) {
+  bool sentence_end = false;
+  const std::vector<std::wstring> units = SplitUnits(text, &sentence_end);
+  std::wstring& last = last_word_[window];
+  // 只有標點（例如單獨送出的逗號）時保留原本的詞；句尾標點之後重新開始
+  if (!units.empty()) {
+    auto m = merged_.find(units.back());
+    last = m != merged_.end() ? m->second : units.back();
+    if (removed_.count(last))
+      last.clear();
+  }
+  if (sentence_end)
+    last.clear();
+}
+
 void PersonalLexicon::Record(const std::wstring& window, const std::wstring& text) {
+  if (text.empty())
+    return;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    NoteLocked(window, text);
+  }
+  Learn(window, text);
+}
+
+void PersonalLexicon::NoteCommit(const std::wstring& window, const std::wstring& text) {
+  if (text.empty())
+    return;
+  last_activity_ = Now();
+  std::lock_guard<std::mutex> lock(mutex_);
+  NoteLocked(window, text);
+}
+
+void PersonalLexicon::Learn(const std::wstring& window, const std::wstring& text,
+                            const std::vector<std::wstring>& rejected) {
   if (text.empty())
     return;
   const int64_t now = Now();
   last_activity_ = now;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    RecordLocked(window, text, now);
+    RecordLocked(window, text, now, rejected);
     if (rebuilding_)
-      pending_.push_back({now, window, text});
+      pending_.push_back({now, window, text, rejected});
   }
   if (keep_raw_log_)
-    AppendRawLog(window, text, now);
+    AppendRawLog(window, text, rejected, now);
   MaybeSaveAsync();
+}
+
+double PersonalLexicon::WordScore(const std::wstring& word) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = words_.find(word);
+  return it == words_.end() ? 0 : Decayed(it->second, Now());
 }
 
 std::vector<std::wstring> PersonalLexicon::NextAfter(const std::wstring& window,
@@ -604,7 +645,8 @@ std::vector<PersonalLexicon::RawRecord> PersonalLexicon::ReadRawLog(const fs::pa
       break;
     if (!Unprotect(cipher, &plain))
       continue;
-    // 格式：時間 \t 視窗 \t 文字（文字本身可能含 tab，只切前兩個）
+    // 格式：時間 \t 視窗 \t 文字（文字本身可能含 tab，只切前兩個）；
+    // 過濾擋下的片段接在文字後面：\x1e 片段 \x1f 片段…
     const size_t t1 = plain.find('\t');
     const size_t t2 = t1 == std::string::npos ? std::string::npos : plain.find('\t', t1 + 1);
     if (t2 == std::string::npos)
@@ -613,6 +655,19 @@ std::vector<PersonalLexicon::RawRecord> PersonalLexicon::ReadRawLog(const fs::pa
     r.time = std::atoll(plain.substr(0, t1).c_str());
     r.window = utf8::ToWide(plain.substr(t1 + 1, t2 - t1 - 1));
     r.text = utf8::ToWide(plain.substr(t2 + 1));
+    const size_t mark = r.text.find(kRejectedMark);
+    if (mark != std::wstring::npos) {
+      std::wstring rest = r.text.substr(mark + 1);
+      r.text.resize(mark);
+      for (size_t start = 0; start <= rest.size();) {
+        size_t end = rest.find(kRejectedSeparator, start);
+        if (end == std::wstring::npos)
+          end = rest.size();
+        if (end > start)
+          r.rejected.push_back(rest.substr(start, end - start));
+        start = end + 1;
+      }
+    }
     records.push_back(std::move(r));
   }
   return records;
@@ -636,15 +691,15 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
     scratch.half_life_days_ = half_life_days_;
   }
   for (const auto& r : records)
-    scratch.RecordLocked(r.window, r.text, r.time);
+    scratch.RecordLocked(r.window, r.text, r.time, r.rejected);
   {
     std::lock_guard<std::mutex> lock(mutex_);
     words_ = std::move(scratch.words_);
     next_ = std::move(scratch.next_);
-    last_word_.clear();
+    chain_word_.clear();
     // 重建期間送出的文字補上
     for (const auto& r : pending_)
-      RecordLocked(r.window, r.text, r.time);
+      RecordLocked(r.window, r.text, r.time, r.rejected);
     pending_.clear();
     // 手動加入的詞沒有原始紀錄，依加入時間補回（一樣隨時間衰減）
     const int64_t now = Now();
@@ -663,9 +718,12 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
 
 // 原始輸入紀錄：每筆各自加密後附加到檔尾（4 位元組長度 + 密文），供之後的定時精煉使用
 void PersonalLexicon::AppendRawLog(const std::wstring& window, const std::wstring& text,
-                                   int64_t now) {
+                                   const std::vector<std::wstring>& rejected, int64_t now) {
+  std::wstring body = text;
+  for (size_t i = 0; i < rejected.size(); ++i)
+    body += (i == 0 ? kRejectedMark : kRejectedSeparator) + rejected[i];
   std::ostringstream record;
-  record << now << "\t" << utf8::FromWide(window) << "\t" << utf8::FromWide(text);
+  record << now << "\t" << utf8::FromWide(window) << "\t" << utf8::FromWide(body);
   std::string cipher;
   if (!Protect(record.str(), &cipher))
     return;
@@ -681,6 +739,7 @@ void PersonalLexicon::Clear() {
   words_.clear();
   next_.clear();
   last_word_.clear();
+  chain_word_.clear();
   removed_.clear();
   merged_.clear();
   reviewed_.clear();
@@ -731,9 +790,11 @@ void PersonalLexicon::DeleteWords(const std::vector<std::wstring>& words) {
       next_.erase(word);
       for (auto& [prev, nexts] : next_)
         nexts.erase(word);
-      for (auto& [window, last] : last_word_) {
-        if (last == word)
-          last.clear();
+      for (auto* last_words : {&last_word_, &chain_word_}) {
+        for (auto& [window, last] : *last_words) {
+          if (last == word)
+            last.clear();
+        }
       }
       added_.erase(word);  // 手動加入的詞：刪除後重建也不補回
     }

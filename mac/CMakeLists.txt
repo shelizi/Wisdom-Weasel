@@ -46,6 +46,7 @@ add_library(wisdom_core STATIC
   ${CORE}/llm_ipc/client.cpp
   ${CORE}/personal/PersonalLexicon.cpp
   ${CORE}/personal/PersonalRefiner.cpp
+  ${CORE}/personal/LearnFilter.cpp
   ${CORE}/ime/controller.cpp
   ${CORE}/ime/prediction_engine.cpp
   ${CORE}/ime/rescore.cpp
