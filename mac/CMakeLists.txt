@@ -6,12 +6,13 @@
 # 沒有 RIME_ROOT 時用 Homebrew 的 librime（brew install librime）。
 # 沒有 LLAMA_ROOT 時不建推理程式（WisdomLLMHost），其他照常。
 cmake_minimum_required(VERSION 3.20)
+# 與鼠鬚管相同（13.0）；要在 project() 之前設定才有作用，鼠鬚管的 Makefile 會傳入它的版本
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "")
 project(WisdomWeaselMac LANGUAGES C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_OBJCXX_STANDARD 17)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
 
 get_filename_component(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(CORE "${ROOT}/core")
