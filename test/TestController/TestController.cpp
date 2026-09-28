@@ -8,6 +8,7 @@
 #include "../../core/llm/ContextHistory.h"
 #include "../../core/llm/LLMProvider.h"
 #include "../../core/personal/PersonalRefiner.h"
+#include "../../core/settings/bench.h"
 
 #include <rime_api.h>
 
@@ -436,6 +437,27 @@ int main(int argc, char** argv) {
       CHECK(splits[1].second == (std::vector<std::wstring>{L"謝謝", L"大家的", L"幫忙"}));
       CHECK(splits[2].second == (std::vector<std::wstring>{L"應該是", L"設定檔的", L"路徑"}));
     }
+  }
+
+  // 模型測試的題目與判定
+  {
+    using namespace settings_bench;
+    std::vector<std::wstring> errors;
+    const auto p = ParsePredictCases(L"# 註解\n謝謝你的|幫忙\n\n路上小｜心\n少一欄\n", &errors);
+    CHECK(p.size() == 2 && p[1].context == L"路上小" && p[1].expected == L"心");
+    CHECK(errors.size() == 1);
+    errors.clear();
+    const auto c = ParseCorrectCases(L"|ㄐㄧㄣ ㄊㄧㄢ|今天|今天\n前文，|ㄗㄞˋ ㄐㄧㄢˋ|在見|再見\n", &errors);
+    CHECK(errors.empty() && c.size() == 2 && c[0].context.empty() && c[1].context == L"前文，");
+    // 候選多接了字也算；只是開頭時要兩個字以上；超出 top 的不算
+    CHECK(PredictionHit({L"幫忙了"}, L"幫忙", 1));
+    CHECK(PredictionHit({L"快樂"}, L"快樂喔", 1));
+    CHECK(!PredictionHit({L"快"}, L"快樂", 5));
+    CHECK(PredictionHit({L"心"}, L"心", 1));
+    CHECK(!PredictionHit({L"a", L"幫忙"}, L"幫忙", 1) && PredictionHit({L"a", L"幫忙"}, L"幫忙", 5));
+    // 校正：不改（空字串）只有初稿本來就對時才算對
+    CHECK(CorrectionOk(L"", c[0]) && CorrectionOk(L"今天", c[0]) && !CorrectionOk(L"金天", c[0]));
+    CHECK(CorrectionOk(L"再見", c[1]) && !CorrectionOk(L"", c[1]));
   }
 
   // 精煉借用輸入法的模型：忙碌時等一下再試；審查與拆解共用，不另外載入（模型檔不存在，

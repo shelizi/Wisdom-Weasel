@@ -21,7 +21,7 @@ cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DNDEBUG /I"%ROOT%\include" /DPERSONA
   "%C%\llm\RemoteLLMProvider.cpp" "%C%\llm_ipc\client.cpp" ^
   "%C%\personal\PersonalLexicon.cpp" "%C%\personal\PersonalRefiner.cpp" "%C%\personal\LearnFilter.cpp" ^
   "%C%\crypto\personal_crypto.cpp" "%C%\platform\win\key_store_win.cpp" "%C%\platform\win\process_win.cpp" ^
-  "%C%\net\win\http_win.cpp" ^
+  "%C%\net\win\http_win.cpp" "%C%\settings\bench.cpp" ^
   /Tc "%C%\third_party\monocypher\monocypher.c" ^
   /link /LIBPATH:"%ROOT%\lib64" rime.lib || exit /b 1
 copy /y "%ROOT%\output\rime.dll" "%OUT%" >nul

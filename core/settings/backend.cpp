@@ -13,6 +13,8 @@
 #include <thread>
 
 #include "../net/http.h"
+#include "../base/utf8.h"
+#include "bench.h"
 #include "ops.h"
 
 namespace settings {
@@ -128,12 +130,15 @@ struct Backend::State {
   std::atomic<bool> model_running{false};
   std::thread grammar_job;
   std::shared_ptr<std::atomic<bool>> grammar_cancel;
+  std::thread bench_job;  // 模型測試
+  std::shared_ptr<std::atomic<bool>> bench_cancel;
+  std::atomic<bool> bench_running{false};
   std::atomic<unsigned> probe_id{0};
 
   State(Platform& p, Options o, Emit e) : platform(p), options(std::move(o)), emit(std::move(e)) {}
 
   ~State() {
-    for (auto* cancel : {&model_cancel, &grammar_cancel}) {
+    for (auto* cancel : {&model_cancel, &grammar_cancel, &bench_cancel}) {
       if (*cancel)
         **cancel = true;
     }
@@ -141,6 +146,8 @@ struct Backend::State {
       model_job.join();
     if (grammar_job.joinable())
       grammar_job.join();
+    if (bench_job.joinable())
+      bench_job.join();
     if (available.size)
       api->schema_list_destroy(&available);
     if (switcher)
@@ -492,6 +499,72 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
       std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
     return {{"connected", true}, {"timeout", true}};
+  }
+
+  // --- 模型測試：設定程式自己載入模型，跑預測與校正的題目 --------------------------
+  if (method == "bench.start") {
+    std::vector<std::wstring> errors;
+    const auto predict = settings_bench::ParsePredictCases(utf8::ToWide(Str(p, "predict")), &errors);
+    const auto correct = settings_bench::ParseCorrectCases(utf8::ToWide(Str(p, "correct")), &errors);
+    if (!errors.empty()) {
+      std::string text;
+      for (const auto& e : errors)
+        text += (text.empty() ? "" : "\n") + utf8::FromWide(e);
+      throw Error(text);
+    }
+    std::vector<settings_bench::Profile> profiles;
+    for (const auto& q : p.value("profiles", json::array())) {
+      settings_bench::Profile profile;
+      profile.name = q.value("name", "");
+      profile.remote = q.value("remote", false);
+      profile.model_path = q.value("model_path", "");
+      profile.instruct = q.value("model_type", "Instruct") != "Base";
+      profile.api_url = q.value("api_url", "");
+      profile.api_key = q.value("api_key", "");
+      profile.model = q.value("model", "");
+      profile.no_think = q.value("no_think", false);
+      profile.think_tokens = q.value("think_tokens", 2048);
+      profiles.push_back(std::move(profile));
+    }
+    if (profiles.empty())
+      throw Error("請先勾選要測試的模型。");
+    if (predict.empty() && correct.empty())
+      throw Error("沒有題目。");
+    settings_bench::Options options;
+    const json o = p.value("options", json::object());
+    options.prompt = utf8::ToWide(o.value("prompt", ""));
+    options.typo_prompt = utf8::ToWide(o.value("typo_prompt", ""));
+    options.n_ctx = o.value("n_ctx", 2048);
+    options.n_gpu_layers = o.value("n_gpu_layers", 0);
+    options.n_threads = o.value("n_threads", 4);
+    options.temperature = o.value("temperature", 0.8);
+
+    std::lock_guard<std::mutex> lock(s.job_mutex);
+    if (s.bench_running)
+      throw Error("模型測試正在進行中。");
+    if (s.bench_job.joinable())
+      s.bench_job.join();
+    s.bench_cancel = std::make_shared<std::atomic<bool>>(false);
+    s.bench_running = true;
+    Emit emit = s.emit;
+    auto cancel = s.bench_cancel;
+    s.bench_job = std::thread([&s, emit, cancel, profiles, options, predict, correct]() {
+      try {
+        settings_bench::Run(profiles, options, predict, correct, *cancel,
+                            [&emit](const json& e) { emit("bench", e); });
+        emit("bench", {{"state", *cancel ? "cancelled" : "done"}});
+      } catch (const std::exception& e) {
+        emit("bench", {{"state", "error"}, {"message", e.what()}});
+      }
+      s.bench_running = false;
+    });
+    return {{"started", true}, {"predict", predict.size()}, {"correct", correct.size()}};
+  }
+  if (method == "bench.cancel") {
+    std::lock_guard<std::mutex> lock(s.job_mutex);
+    if (s.bench_cancel)
+      *s.bench_cancel = true;
+    return nullptr;
   }
 
   // --- 語言模型 -------------------------------------------------------------

@@ -9,9 +9,10 @@ import choice from './pages/choice.js';
 import models from './pages/models.js';
 import personal from './pages/personal.js';
 import dict from './pages/dict.js';
+import bench from './pages/bench.js';
 
 // 順序與原本設定視窗的分頁相同（--page 參數用的編號）
-const pages = [schemas, style, predict, typo, choice, models, personal, dict];
+const pages = [schemas, style, predict, typo, choice, models, personal, dict, bench];
 const params = new URLSearchParams(location.search);
 let current = null;
 let applying = false;

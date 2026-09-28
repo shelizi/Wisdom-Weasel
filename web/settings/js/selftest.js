@@ -60,6 +60,8 @@ async function applyPhase(ctx) {
   }
   await expectError(ctx, 'models.download', { url: 'https://example.com/not-a-model.txt' }, results, 'models.download rejects non-gguf url');
   await expectError(ctx, 'models.add', { path: 'C:\\Windows\\win.ini' }, results, 'models.add rejects non-gguf file');
+  await expectError(ctx, 'bench.start', { profiles: [newProfile({ name: 'x' })], predict: '只有一欄', correct: '' }, results, 'bench.start rejects malformed cases');
+  await expectError(ctx, 'bench.start', { profiles: [], predict: '前文|詞', correct: '' }, results, 'bench.start needs a model');
   await downloadAndCancel(ctx, results);
 
   // 驗證：啟用預測卻沒有選模型 → 擋下
