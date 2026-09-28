@@ -40,7 +40,7 @@ step() { printf '\n==> %s\n' "$*"; }
 
 # ---- 1. 建置
 if [ ! -d "$squirrel/.git" ]; then
-  echo "找不到 $squirrel（鼠鬚管的修改版）：先取得 squirrel/ 再執行" >&2
+  echo "找不到 ${squirrel}（鼠鬚管的修改版）：先取得 squirrel/ 再執行" >&2
   exit 1
 fi
 if [ "$rebuild" = 1 ] || [ ! -x "$app/Contents/MacOS/Squirrel" ]; then
@@ -90,7 +90,7 @@ if [ "$with_model" = 1 ]; then
 fi
 
 # ---- 3. 安裝
-step "安裝到 $install_dir（需要管理者密碼）"
+step "安裝到 ${install_dir}（需要管理者密碼）"
 sudo rm -rf "$install_dir/Squirrel.app"
 sudo cp -R "$app" "$install_dir/"
 sudo DSTROOT="$install_dir" bash "$squirrel/scripts/postinstall"
@@ -154,7 +154,7 @@ block = [indent + begin] + ['%s"%s": %s' % (indent, k, v) for k, v in settings] 
 lines[patch_at + 1:patch_at + 1] = block
 open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 PYEOF
-  echo "已寫入 llm/*（模型：$model_path）"
+  echo "已寫入 llm/*（模型：${model_path}）"
 fi
 
 step "重新部署"
