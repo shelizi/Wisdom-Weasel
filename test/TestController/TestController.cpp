@@ -181,6 +181,14 @@ int main(int argc, char** argv) {
     std::ofstream out(fs::path(user) / "default.custom.yaml", std::ios::binary);
     out << "patch:\n  schema_list:\n    - schema: bopomofo\n";
   }
+  // 標點測試用的鍵：各版注音方案的標點設定不同（3.1 版起 Shift+數字是選字鍵），
+  // 固定讓 ~ 直接送出「～」
+  {
+    std::ofstream out(fs::path(user) / "bopomofo.custom.yaml", std::ios::binary);
+    out << "patch:\n"
+           "  \"punctuator/full_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n"
+           "  \"punctuator/half_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n";
+  }
   RimeApi* api = rime_get_api();
   RIME_STRUCT(RimeTraits, traits);
   traits.shared_data_dir = shared.c_str();
@@ -277,7 +285,7 @@ int main(int argc, char** argv) {
   // 組字中打標點：留在組字區，不直接送出
   {
     t.Type("5j4");
-    t.Key('!', mod::kShift);
+    t.Key('~', mod::kShift);
     CHECK(t.commits.empty());
     CHECK(ss.mixed_text.size() == 2 && IsCJK(ss.mixed_text[0]) &&
           !IsCJK(ss.mixed_text[1]));
