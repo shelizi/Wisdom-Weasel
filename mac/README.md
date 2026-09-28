@@ -44,9 +44,9 @@ ctest --test-dir build --output-on-failure
 let bridge = WisdomBridge.shared
 bridge.hideCandidates = { [weak self] in self?.panel?.hide() }
 bridge.redeploy = { [weak self] in self?.deploy() }
-bridge.startWithUserDirectory(userDataDir, sharedDirectory: Bundle.main.sharedSupportPath!)
+bridge.start(withUserDirectory: userDataDir, sharedDirectory: Bundle.main.sharedSupportPath!)
 
-// 部署完成後（重新 initialize 之後）
+// 部署完成後（維護執行緒結束後；網頁版設定部署時也在等它，不要同時 join_maintenance_thread）
 WisdomBridge.shared.reloadConfig()
 
 // rimeAPI.finalize 之前
@@ -87,7 +87,7 @@ keycode 與 modifiers 就是原本傳給 `process_key` 的值（Rime 的 keysym 
   每次更新都要呼叫（它也負責記錄選字統計）。
 - 候選：Rime 的候選後面接上 `predictionCandidates()`（標籤 Tab、⇧2…，註解「推薦」「校正」）。
   有 LLM 候選時即使 Rime 沒在組字也要顯示候選窗。
-- 點選候選：先呼叫 `selectCandidate(_:session:)`，回傳 true 就 `rimeUpdate()`，否則照原本交給 Rime。
+- 點選候選：先呼叫 `selectCandidate(UInt(index), session:)`，回傳 true 就 `rimeUpdate()`，否則照原本交給 Rime。
 
 **5. 其他**：失去焦點時 `focusOut(_:)`；應用程式要求送出／清除組字時改呼叫 `commitComposition(_:)`、`clearComposition(_:)`。
 

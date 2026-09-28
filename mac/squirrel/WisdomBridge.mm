@@ -341,16 +341,13 @@ class MacFrontend : public ime::Frontend {
     });
   };
   hooks.deploy = [weakSelf]() {
-    // 鼠鬚管的重新部署是非同步的：等維護執行緒結束，再重新讀 llm/*
+    // 鼠鬚管的重新部署是非同步的：等維護執行緒結束再回報。llm/* 由鼠鬚管在部署完成後重新讀（reloadConfig）
     RunOnMain(^{
       void (^redeploy)(void) = weakSelf.redeploy;
       if (redeploy)
         redeploy();
     });
     rime_get_api()->join_maintenance_thread();
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [weakSelf reloadConfig];
-    });
   };
   [WisdomSettingsWindowController showWithWebDirectory:webDir hooks:hooks];
 }

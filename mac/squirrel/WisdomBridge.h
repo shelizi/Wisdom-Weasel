@@ -36,7 +36,7 @@ typedef NS_OPTIONS(NSUInteger, WisdomKeyResult) {
 
 // 鼠鬚管自己的功能（啟動時設定）
 @property(nonatomic, copy, nullable) void (^hideCandidates)(void);  // 收起候選窗
-@property(nonatomic, copy, nullable) void (^redeploy)(void);        // 重新部署（非同步）
+@property(nonatomic, copy, nullable) void (^redeploy)(void);        // 重新部署（非同步；部署完成後要呼叫 reloadConfig）
 // 關掉所有 session 放開使用者詞典（整理選字記憶時）。在精煉的背景執行緒上、持有橋接層的鎖時呼叫：
 // 不可呼叫橋接層、也不可等主執行緒。沒設定時直接呼叫 rime_api->cleanup_all_sessions()。
 // 之後鼠鬚管發現 session 不在（find_session 為 false）要重建並再 addSession
