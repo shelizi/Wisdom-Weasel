@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 一次完成鼠鬚管（含 Wisdom-Weasel 功能）的建置、安裝與本機 LLM 設定：
 #   1. 還沒建過 Squirrel.app 就建置（librime、Sparkle、llama.cpp 用預先建好的發行檔）
-#   2. 本機 LLM 模型放到 ~/Library/Rime/models（沒有就下載並核對 SHA-256）
+#   2. 本機 LLM 模型（Gemma 4 E2B）放到 ~/Library/Rime/models（沒有就下載並核對 SHA-256）
 #   3. 安裝到 /Library/Input Methods（這一步要 sudo），註冊並啟用輸入法
 #   4. 把 llm/* 設定合併進 ~/Library/Rime/squirrel.custom.yaml（改之前先備份）；
 #      還沒有 default.custom.yaml 時預設輸入方案為注音·快打模式；重新部署
@@ -32,9 +32,11 @@ app="$squirrel/build/Build/Products/Release/Squirrel.app"
 install_dir="/Library/Input Methods"
 rime_dir="${RIME_USER_DIR:-$HOME/Library/Rime}"
 
-model_name="qwen2.5-0.5b-instruct-q4_k_m.gguf"
-model_url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/$model_name"
-model_sha256="74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+# Gemma 4 E2B 的官方 QAT 4-bit（3.3 GB）：M1 8GB 以 Metal 執行，預測約 0.45 秒；整個模型常駐記憶體（約 3.3 GB），
+# 同時執行兩份會超過 GPU 可用的記憶體
+model_name="gemma-4-E2B_q4_0-it.gguf"
+model_url="https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/$model_name"
+model_sha256="fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
 model_path="$rime_dir/models/$model_name"
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -127,7 +129,8 @@ if [ "$with_model" = 1 ]; then
   fi
   # 設定放在 patch: 底下、以標記框起來的一段；再執行時只替換這一段。
   # 其他地方已經有的同名設定會拿掉（同一個鍵出現兩次時 YAML 無效）
-  MODEL_PATH="$model_path" /usr/bin/python3 - "$custom" <<'PYEOF'
+  merge_status=0
+  MODEL_PATH="$model_path" /usr/bin/python3 - "$custom" <<'PYEOF' || merge_status=$?
 import os, re, sys
 path = sys.argv[1]
 begin, end = "# >>> Wisdom-Weasel 本機 LLM（mac/install-squirrel.sh 產生）", "# <<< Wisdom-Weasel 本機 LLM"
@@ -136,6 +139,8 @@ settings = [
     ("llm/provider_type", "llamacpp"),
     ("llm/llamacpp/model_path", '"%s"' % os.environ["MODEL_PATH"]),
     ("llm/llamacpp/model_type", "Instruct"),
+    # Gemma 常輸出簡體字。提示詞由預測與整句校正共用，只放兩者都適用的要求
+    ("llm/prompt", '"一律使用繁體中文（臺灣用字）輸出，不要使用簡體字。"'),
     ("llm/llamacpp/n_ctx", "2048"),
     ("llm/llamacpp/n_gpu_layers", "-1"),
     ("llm/llamacpp/max_tokens", "8"),
@@ -156,6 +161,10 @@ for line in lines:
     out.append(line)
 lines = out
 keys = {k for k, _ in settings}
+if any(re.match(r"^\s+llm:\s*(#.*)?$", l) for l in lines):
+    # 網頁版設定已經寫了整個 llm: 區塊（會蓋過 "llm/..." 的單一設定）：不重複寫，拿掉上次的一段就好
+    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    sys.exit(3)
 key_re = re.compile(r'^\s+["\']?([^"\':]+)["\']?\s*:')
 lines = [l for l in lines if not (key_re.match(l) and key_re.match(l).group(1).strip() in keys)]
 patch_at = next((i for i, l in enumerate(lines) if re.match(r"^patch:\s*(#.*)?$", l)), None)
@@ -176,7 +185,13 @@ block = [indent + begin] + ['%s"%s": %s' % (indent, k, v) for k, v in settings] 
 lines[patch_at + 1:patch_at + 1] = block
 open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 PYEOF
-  echo "已寫入 llm/*（模型：${model_path}）"
+  if [ "$merge_status" = 3 ]; then
+    echo "LLM 設定由網頁版設定管理（squirrel.custom.yaml 的 llm: 區塊），沒有修改：模型在網頁版設定選 ${model_path}"
+  elif [ "$merge_status" != 0 ]; then
+    exit "$merge_status"
+  else
+    echo "已寫入 llm/*（模型：${model_path}）"
+  fi
 fi
 
 # 輸入方案：還沒自訂過（沒有 default.custom.yaml）時預設為注音·快打模式
