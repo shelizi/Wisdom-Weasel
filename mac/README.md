@@ -40,6 +40,15 @@ ctest --test-dir build --output-on-failure
 
 ## 建置鼠鬚管（含以上功能）
 
+一次完成建置、安裝與本機 LLM 設定（還沒建過就建置；下載測試用的小模型到 `~/Library/Rime/models`；
+把 `llm/*` 合併進 `squirrel.custom.yaml`，原檔先備份）：
+
+```sh
+mac/install-squirrel.sh              # --no-model：只安裝輸入法；--rebuild：重新建置
+```
+
+手動的步驟：
+
 `squirrel/` 是鼠鬚管的修改版（`wisdom` 分支，下面「接到鼠鬚管」的改動都在裡面）。需要完整的 Xcode。
 
 ```sh
