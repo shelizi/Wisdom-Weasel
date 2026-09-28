@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -59,6 +60,13 @@ struct Case {
   std::vector<Strings> homophones;
   bool usable = false;  // 音節數 = 初稿字數 = 正確字數
   bool fixable = false;  // 正確的句子每個字都在同音字裡（推薦有可能改對）
+  std::string source =
+      "public";  // log / public / 開放測試集的來源（wiki、cc100）
+  std::string tags;  // 開放測試集的分類（A、D、F0/F10/F30）
+  // Rime（沙盒，沒有選字記憶）打這串注音的結果
+  std::wstring rime_draft;
+  Strings sentences;  // 整句候選（字數和注音相同），依 Rime 的順序
+  double rime_ms = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -122,6 +130,7 @@ bool LoadLog(const fs::path& file, std::vector<Case>* cases, size_t* skipped) {
     c.draft = f[5];
     c.truth = f[6];
     c.from_log = true;
+    c.source = "log";
     cases->push_back(std::move(c));
   }
   return true;
@@ -136,13 +145,17 @@ bool LoadCases(const fs::path& file, std::vector<Case>* cases) {
     if (w.empty() || w[0] == L'#')
       continue;
     const auto f = Split(w, L'|');
-    if (f.size() != 4)
+    if (f.size() < 4)
       continue;
     Case c;
     c.context = f[0];
     c.zhuyin = Trim(f[1]);
     c.draft = Trim(f[2]);
     c.truth = Trim(f[3]);
+    if (f.size() > 4)
+      c.tags = utf8::FromWide(Trim(f[4]));
+    if (f.size() > 5)
+      c.source = utf8::FromWide(Trim(f[5]));
     cases->push_back(std::move(c));
   }
   return true;
@@ -177,6 +190,114 @@ std::vector<std::string> SyllableKeys(const std::wstring& zhuyin) {
   if (!cur.empty())
     out.push_back(cur + ' ');
   return out;
+}
+
+// 在 Rime 打一整串按鍵：初稿（commit preview）與字數相同的整句候選（最多 20
+// 個）
+void Convert(RimeApi* api,
+             RimeSessionId session,
+             const std::string& input,
+             size_t chars,
+             Case* c) {
+  const auto t0 = std::chrono::steady_clock::now();
+  api->set_input(session, input.c_str());
+  RIME_STRUCT(RimeContext, ctx);
+  if (api->get_context(session, &ctx)) {
+    if (ctx.commit_text_preview) {
+      c->rime_draft = utf8::ToWide(ctx.commit_text_preview);
+      while (!c->rime_draft.empty() && c->rime_draft.back() < 0x80)
+        c->rime_draft.pop_back();
+    }
+    api->free_context(&ctx);
+  }
+  RimeCandidateListIterator iter = {0};
+  if (api->candidate_list_begin(session, &iter)) {
+    for (int i = 0;
+         i < 100 && c->sentences.size() < 20 && api->candidate_list_next(&iter);
+         ++i) {
+      if (!iter.candidate.text)
+        continue;
+      const std::wstring text = utf8::ToWide(iter.candidate.text);
+      if (zhuyin_preview::SplitChars(text).size() == chars &&
+          std::find(c->sentences.begin(), c->sentences.end(), text) ==
+              c->sentences.end())
+        c->sentences.push_back(text);
+    }
+    api->candidate_list_end(&iter);
+  }
+  c->rime_ms = std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - t0)
+                   .count();
+  api->clear_composition(session);
+}
+
+double Percentile(std::vector<double> v, double q) {
+  if (v.empty())
+    return NAN;
+  std::sort(v.begin(), v.end());
+  return v[(size_t)std::min<double>(v.size() - 1, q * (v.size() - 1) + 0.5)];
+}
+
+// 分組的鍵：來源，以及開放測試集的每個標籤
+std::vector<std::string> Groups(const Case& c) {
+  std::vector<std::string> g = {"all", "src:" + c.source};
+  std::stringstream ss(c.tags);
+  for (std::string t; std::getline(ss, t, ',');)
+    if (!t.empty())
+      g.push_back("tag:" + t);
+  return g;
+}
+
+// P0.5：只看 Rime（沙盒）。Top-1、oracle@K、MRR、延遲，依來源與標籤分開
+void ReportRime(const std::vector<Case>& cases) {
+  struct Sum {
+    size_t n = 0, top1 = 0, at3 = 0, at5 = 0, at10 = 0, unreachable = 0;
+    size_t user_draft = 0, user_n = 0;
+    double mrr = 0;
+    std::vector<double> ms;
+  };
+  std::map<std::string, Sum> sums;
+  for (const auto& c : cases) {
+    if (c.sentences.empty() && c.rime_draft.empty())
+      continue;
+    size_t rank = 0;
+    for (size_t i = 0; i < c.sentences.size(); ++i)
+      if (c.sentences[i] == c.truth) {
+        rank = i + 1;
+        break;
+      }
+    for (const auto& g : Groups(c)) {
+      Sum& s = sums[g];
+      ++s.n;
+      s.top1 += c.rime_draft == c.truth ? 1 : 0;
+      s.at3 += rank && rank <= 3 ? 1 : 0;
+      s.at5 += rank && rank <= 5 ? 1 : 0;
+      s.at10 += rank && rank <= 10 ? 1 : 0;
+      s.mrr += rank ? 1.0 / rank : 0;
+      s.unreachable +=
+          c.usable && !c.fixable && c.rime_draft != c.truth ? 1 : 0;
+      if (c.from_log) {
+        ++s.user_n;
+        s.user_draft += c.draft == c.truth ? 1 : 0;
+      }
+      s.ms.push_back(c.rime_ms);
+    }
+  }
+  std::printf(
+      "\nRime（沙盒，沒有選字記憶）：\n"
+      "  %-12s %6s %7s %7s %7s %7s %6s %9s %8s %8s\n",
+      "分組", "題數", "Top-1", "@3", "@5", "@10", "MRR", "讀音存疑", "P50 ms",
+      "P95 ms");
+  for (const auto& [g, s] : sums) {
+    std::printf("  %-12s %6zu %7.4f %7.4f %7.4f %7.4f %6.3f %9zu %8.2f %8.2f",
+                g.c_str(), s.n, (double)s.top1 / s.n, (double)s.at3 / s.n,
+                (double)s.at5 / s.n, (double)s.at10 / s.n, s.mrr / s.n,
+                s.unreachable, Percentile(s.ms, 0.5), Percentile(s.ms, 0.95));
+    if (s.user_n)
+      std::printf("（使用者自己的 Rime 初稿 %.4f）",
+                  (double)s.user_draft / s.user_n);
+    std::printf("\n");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +361,7 @@ struct Outcome {
   double gain = 0;
   bool right = false;        // 推薦／校正和正確的句子相同
   bool draft_right = false;  // 初稿本來就對
+  const Case* c = nullptr;
 };
 
 uint64_t Mix(uint64_t x) {
@@ -255,6 +377,8 @@ struct Score {
       0;  // 有推薦的題目上，校準機率的平均 log loss（out-of-fold）
   double ece = 0;
   size_t shown = 0, shown_right = 0, hidden_right = 0;
+  // wrong-change：初稿本來就對，卻顯示了（錯的）推薦
+  size_t draft_right = 0, wrong_changes = 0;
 };
 
 // 5-fold：在其他四份上擬合校準器，對這一份決定顯示與否；p
@@ -295,6 +419,10 @@ Score CrossValidate(const std::vector<Outcome>& outcomes,
           sum_y[bin] += o.right ? 1 : 0;
           ++scored;
         }
+      }
+      if (o.draft_right) {
+        ++s.draft_right;
+        s.wrong_changes += show && !o.right ? 1 : 0;
       }
       if (show) {
         ++s.shown;
@@ -412,10 +540,163 @@ void LearningCurve(const std::vector<Outcome>& outcomes, const Tuned& tuned) {
 void PrintScore(const char* name, const Score& s, size_t n) {
   std::printf(
       "  %s：第一候選正確率 %.4f（%zu 題），顯示 %zu 次、其中對 "
-      "%zu、藏掉的對的 %zu，"
+      "%zu、藏掉的對的 %zu，wrong-change %.4f，"
       "log loss %.3f、ECE %.3f\n",
-      name, s.accuracy, n, s.shown, s.shown_right, s.hidden_right, s.log_loss,
+      name, s.accuracy, n, s.shown, s.shown_right, s.hidden_right,
+      s.draft_right ? (double)s.wrong_changes / s.draft_right : 0.0, s.log_loss,
       s.ece);
+}
+
+// P3 評估：LM 重排 Rime 的 Top-K 整句。比 Rime 第一句通順超過 margin 才換；
+// margin 用 2-fold 選（一半選、另一半報），避免在同一份資料上選又報
+void ReportTopK(const std::vector<Case>& cases, LLMProvider* scorer) {
+  struct Item {
+    const Case* c;
+    std::vector<double> lm;
+  };
+  std::vector<Item> items;
+  std::vector<double> ms;
+  size_t scored = 0;
+  const auto start = std::chrono::steady_clock::now();
+  for (const auto& c : cases) {
+    if (c.sentences.empty() || c.rime_draft.empty())
+      continue;
+    Item it{&c, {}};
+    const auto t0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < c.sentences.size() && i < 10; ++i) {
+      double total = NAN;
+      if (!scorer->ScoreText(Tail(c.context, 30), c.sentences[i], &total,
+                             nullptr))
+        total = NAN;
+      it.lm.push_back(total);
+      ++scored;
+    }
+    ms.push_back(std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - t0)
+                     .count());
+    items.push_back(std::move(it));
+    if (items.size() % 500 == 0)
+      std::printf("  重排 %zu 題…\n", items.size());
+  }
+  std::printf("重排評分 %zu 次，%lld 秒\n", scored,
+              (long long)std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::steady_clock::now() - start)
+                  .count());
+  const auto choose = [](const Item& it, double margin) -> const std::wstring& {
+    size_t best = 0;
+    for (size_t i = 1; i < it.lm.size(); ++i)
+      if (std::isfinite(it.lm[i]) &&
+          (!std::isfinite(it.lm[best]) || it.lm[i] > it.lm[best]))
+        best = i;
+    if (best && std::isfinite(it.lm[0]) && it.lm[best] - it.lm[0] > margin &&
+        it.c->sentences[0] == it.c->rime_draft)
+      return it.c->sentences[best];
+    return it.c->rime_draft;
+  };
+  struct Eval {
+    size_t n = 0, right = 0, base_right = 0, wrong = 0;
+    double Acc() const { return n ? (double)right / n : 0; }
+    double Wrong() const { return base_right ? (double)wrong / base_right : 0; }
+  };
+  const auto eval = [&](double margin, int fold, const std::string& group) {
+    Eval e;
+    for (size_t i = 0; i < items.size(); ++i) {
+      if (fold >= 0 && (int)(Mix(i * 7919 + 3) % 2) != fold)
+        continue;
+      const Item& it = items[i];
+      const auto g = Groups(*it.c);
+      if (std::find(g.begin(), g.end(), group) == g.end())
+        continue;
+      const std::wstring& pick = choose(it, margin);
+      ++e.n;
+      e.right += pick == it.c->truth ? 1 : 0;
+      if (it.c->rime_draft == it.c->truth) {
+        ++e.base_right;
+        e.wrong += pick != it.c->truth ? 1 : 0;
+      }
+    }
+    return e;
+  };
+  const double kMargins[] = {0, 0.5, 1, 2, 3, 4, 6, 8, 12, 1e9};
+  std::printf("\n  margin（全部）：");
+  for (double m : kMargins) {
+    const Eval e = eval(m, -1, "all");
+    std::printf(" %s→%.4f/%.4f",
+                m >= 1e9 ? "不換" : std::to_string(m).substr(0, 4).c_str(),
+                e.Acc(), e.Wrong());
+  }
+  std::printf("（Top-1 / wrong-change）\n");
+  // 2-fold：各自在另一半選 margin
+  double picked[2] = {0, 0};
+  for (int f = 0; f < 2; ++f) {
+    double best = -1;
+    for (double m : kMargins) {
+      const double acc = eval(m, 1 - f, "all").Acc();
+      if (acc > best) {
+        best = acc;
+        picked[f] = m;
+      }
+    }
+  }
+  std::printf("  2-fold 選出的 margin：%.1f、%.1f\n", picked[0], picked[1]);
+  std::set<std::string> groups;
+  for (const auto& it : items)
+    for (const auto& g : Groups(*it.c))
+      groups.insert(g);
+  std::printf("  %-12s %6s %8s %8s %9s %10s %13s\n", "分組", "題數", "Rime",
+              "@10", "LM 直接", "LM+margin", "wrong-change");
+  for (const auto& g : groups) {
+    Eval base = eval(1e9, -1, g), raw = eval(0, -1, g);
+    Eval cv;
+    for (int f = 0; f < 2; ++f) {
+      const Eval e = eval(picked[f], f, g);
+      cv.n += e.n;
+      cv.right += e.right;
+      cv.base_right += e.base_right;
+      cv.wrong += e.wrong;
+    }
+    size_t at10 = 0;
+    for (const auto& it : items) {
+      const auto gg = Groups(*it.c);
+      if (std::find(gg.begin(), gg.end(), g) == gg.end())
+        continue;
+      at10 += std::find(it.c->sentences.begin(), it.c->sentences.end(),
+                        it.c->truth) != it.c->sentences.end()
+                  ? 1
+                  : 0;
+    }
+    std::printf("  %-12s %6zu %8.4f %8.4f %9.4f %10.4f %13.4f\n", g.c_str(),
+                base.n, base.Acc(), base.n ? (double)at10 / base.n : 0,
+                raw.Acc(), cv.Acc(), cv.Wrong());
+  }
+  std::printf(
+      "  延遲（每題逐句評分，未批次）：P50 %.0f ms、P95 %.0f ms、P99 %.0f ms\n",
+      Percentile(ms, 0.5), Percentile(ms, 0.95), Percentile(ms, 0.99));
+}
+
+// 全顯示時的分組結果：只用初稿、全顯示、wrong-change
+void ReportGroups(const std::vector<Outcome>& outcomes) {
+  struct Sum {
+    size_t n = 0, draft = 0, shown_all = 0, draft_right = 0, wrong = 0;
+  };
+  std::map<std::string, Sum> sums;
+  for (const auto& o : outcomes)
+    for (const auto& g : Groups(*o.c)) {
+      Sum& s = sums[g];
+      ++s.n;
+      s.draft += o.draft_right ? 1 : 0;
+      s.shown_all += (o.offered ? o.right : o.draft_right) ? 1 : 0;
+      if (o.draft_right) {
+        ++s.draft_right;
+        s.wrong += o.offered && !o.right ? 1 : 0;
+      }
+    }
+  std::printf("  %-12s %6s %8s %8s %13s\n", "分組", "題數", "只用初稿",
+              "全顯示", "wrong-change");
+  for (const auto& [g, s] : sums)
+    std::printf("  %-12s %6zu %8.4f %8.4f %13.4f\n", g.c_str(), s.n,
+                (double)s.draft / s.n, (double)s.shown_all / s.n,
+                s.draft_right ? (double)s.wrong / s.draft_right : 0.0);
 }
 
 }  // namespace
@@ -438,6 +719,13 @@ int main(int argc, char** argv) {
   int gpu = -1;
   bool only = false;
   ime::RescoreOptions only_options;
+  std::string grammar;  // octagram 語言模型檔（.gram），空白 = 不用
+  int max_sentences = 0;   // librime 1.17 translator/max_sentences，0 = 預設
+  bool rime_only = false;  // 只評估 Rime（P0.5），不載入模型
+  size_t latency = 0;      // 量推薦延遲的題數（不用快取）
+  bool topk_rerank = false;  // P3 評估：LM 重排 Rime 的 Top-K 整句
+  std::string dump_topk;  // 開放測試集的 Rime Top-K 寫到檔案（給 teacher
+                          // 試跑；不含選字紀錄）
   for (int i = 4; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&] {
@@ -457,6 +745,18 @@ int main(int argc, char** argv) {
       limit = (size_t)std::atoll(next().c_str());
     else if (a == "--gpu")
       gpu = std::atoi(next().c_str());
+    else if (a == "--grammar")
+      grammar = next();
+    else if (a == "--max-sentences")
+      max_sentences = std::atoi(next().c_str());
+    else if (a == "--rime-only")
+      rime_only = true;
+    else if (a == "--topk-rerank")
+      topk_rerank = true;
+    else if (a == "--dump-topk")
+      dump_topk = next();
+    else if (a == "--latency")
+      latency = (size_t)std::atoll(next().c_str());
     else if (a == "--only") {
       only =
           std::sscanf(next().c_str(), "%lf,%zu,%zu", &only_options.margin,
@@ -483,11 +783,31 @@ int main(int argc, char** argv) {
       log_count, skipped, cases.size() - log_count);
 
   // Rime：只部署注音方案，查同音字
-  const fs::path user = work / "user";
+  std::string variant =
+      grammar.empty() ? "plain" : fs::path(grammar).stem().string();
+  if (max_sentences > 0)
+    variant += "-k" + std::to_string(max_sentences);
+  const fs::path user = work / ("user-" + variant);
   fs::create_directories(user);
   {
     std::ofstream out(user / "default.custom.yaml", std::ios::binary);
     out << "patch:\n  schema_list:\n    - schema: bopomofo\n";
+  }
+  {
+    // 和設定程式加 octagram 的方式相同（core/settings/ops.cpp
+    // PatchSchemaGrammar）
+    std::ofstream out(user / "bopomofo.custom.yaml", std::ios::binary);
+    out << "patch:\n";
+    if (!grammar.empty()) {
+      std::error_code ec;
+      fs::copy_file(grammar, user / fs::path(grammar).filename(),
+                    fs::copy_options::overwrite_existing, ec);
+      out << "  grammar:\n    language: " << fs::path(grammar).stem().string()
+          << "\n  translator/contextual_suggestions: true\n"
+             "  translator/max_homophones: 7\n  translator/max_homographs: 7\n";
+    }
+    if (max_sentences > 0)
+      out << "  translator/max_sentences: " << max_sentences << "\n";
   }
   RimeApi* api = rime_get_api();
   const std::string user_dir = user.string();
@@ -504,6 +824,25 @@ int main(int argc, char** argv) {
   if (api->start_maintenance(False))
     api->join_maintenance_thread();
   ime::HomophoneFinder finder(api);
+  std::printf("librime %s，設定：%s\n",
+              api->get_version ? api->get_version() : "?", variant.c_str());
+  // 每一題打進 Rime：初稿空白的題目（開放測試集）用 Rime 的初稿
+  {
+    const RimeSessionId session = api->create_session();
+    api->select_schema(session, "bopomofo");
+    for (auto& c : cases) {
+      const auto keys = SyllableKeys(c.zhuyin);
+      if (keys.empty())
+        continue;
+      std::string input;
+      for (const auto& k : keys)
+        input += k;
+      Convert(api, session, input, keys.size(), &c);
+      if (c.draft.empty())
+        c.draft = c.rime_draft;
+    }
+    api->destroy_session(session);
+  }
 
   size_t usable = 0, fixable = 0, draft_right = 0;
   size_t public_bad = 0;
@@ -542,6 +881,31 @@ int main(int argc, char** argv) {
       "%zu），公開題目有問題 %zu 題\n",
       usable, draft_right, fixable, public_bad);
 
+  if (!dump_topk.empty()) {
+    // 每行：來源 \t 前文 \t 注音 \t 正確 \t Rime 初稿 \t 整句候選（以 |
+    // 分隔）。選字紀錄的題目不寫
+    std::ofstream out(dump_topk, std::ios::binary);
+    size_t n = 0;
+    for (const auto& c : cases) {
+      if (c.from_log || c.sentences.empty())
+        continue;
+      std::wstring joined;
+      for (const auto& t : c.sentences)
+        joined += (joined.empty() ? L"" : L"|") + t;
+      out << c.source << '\t' << utf8::FromWide(c.context) << '\t'
+          << utf8::FromWide(c.zhuyin) << '\t' << utf8::FromWide(c.truth) << '\t'
+          << utf8::FromWide(c.rime_draft) << '\t' << utf8::FromWide(joined)
+          << '\n';
+      ++n;
+    }
+    std::printf("寫出 %zu 題的 Top-K → %s\n", n, dump_topk.c_str());
+  }
+  if (rime_only) {
+    ReportRime(cases);
+    api->finalize();
+    return 0;
+  }
+
   // 本機模型
   LLMLocalModelSpec spec;
   spec.model_path = model;
@@ -556,6 +920,12 @@ int main(int argc, char** argv) {
     return 1;
   }
   CachedScorer scorer(&provider);
+  if (topk_rerank) {
+    ReportRime(cases);
+    ReportTopK(cases, &scorer);
+    api->finalize();
+    return 0;
+  }
 
   // 推薦：網格搜尋（先跑範圍最大的一組，之後大多是快取）
   struct Config {
@@ -594,6 +964,7 @@ int main(int argc, char** argv) {
       o.gain = gain;
       o.right = o.offered && rec == c.truth;
       o.draft_right = c.draft == c.truth;
+      o.c = &c;
       config.outcomes.push_back(o);
     }
     if (++done == 1)
@@ -613,7 +984,7 @@ int main(int argc, char** argv) {
                   r += c.usable && (c.draft == c.truth || c.fixable) ? 1 : 0;
                 return any.empty() ? 0.0 : (double)r / any.size();
               }());
-  // 目前的預設（margin 0.5、4 個位置、5 個同音字）
+  // 目前的預設（RescoreOptions()）
   auto find = [&](double margin, size_t positions,
                   size_t alternatives) -> Config* {
     for (auto& c : configs)
@@ -622,13 +993,18 @@ int main(int argc, char** argv) {
         return &c;
     return nullptr;
   };
-  if (Config* current = find(0.5, 4, 5)) {
-    std::printf("  目前的預設（margin 0.5、位置 4、同音字 5）全顯示：%.4f\n",
-                Baseline(current->outcomes, true));
+  const ime::RescoreOptions defaults;
+  if (Config* current =
+          find(defaults.margin, defaults.positions, defaults.alternatives)) {
+    std::printf(
+        "  目前的預設（margin %.1f、位置 %zu、同音字 %zu）全顯示：%.4f\n",
+        defaults.margin, defaults.positions, defaults.alternatives,
+        Baseline(current->outcomes, true));
     ime::CalibrationPrior prior;
     prior.min_samples = 1;
-    PrintScore("目前的預設 + 目前的校準（門檻 0.1）",
-               CrossValidate(current->outcomes, prior, 0.1), any.size());
+    PrintScore("目前的預設 + 目前的校準（門檻 0.5）",
+               CrossValidate(current->outcomes, prior, 0.5), any.size());
+    ReportGroups(current->outcomes);
   }
   // 還沒校準時（樣本不夠）是全顯示：這時最好的參數
   std::sort(configs.begin(), configs.end(),
@@ -664,6 +1040,30 @@ int main(int argc, char** argv) {
         c.tuned.prior.bias_weight, c.tuned.score.accuracy,
         Baseline(c.outcomes, true), c.tuned.score.shown,
         c.tuned.score.shown_right);
+  }
+  if (latency) {
+    std::vector<double> ms;
+    size_t calls = 0;
+    for (const auto& c : cases) {
+      if (!c.usable || ms.size() >= latency)
+        continue;
+      CachedScorer fresh(
+          &provider);  // 每題重新開始：同一題內的重複評分仍然省掉
+      const auto t0 = std::chrono::steady_clock::now();
+      double gain = NAN;
+      ime::RescoreSentence(&fresh, Tail(c.context, 30), c.units, c.homophones,
+                           &gain, defaults);
+      ms.push_back(std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - t0)
+                       .count());
+      calls += fresh.calls;
+    }
+    std::printf(
+        "\n推薦延遲（預設參數，%zu 題，平均評分 %.1f 次）：P50 %.0f ms、P95 "
+        "%.0f "
+        "ms、P99 %.0f ms\n",
+        ms.size(), ms.empty() ? 0.0 : (double)calls / ms.size(),
+        Percentile(ms, 0.5), Percentile(ms, 0.95), Percentile(ms, 0.99));
   }
   const Config& best = configs.front();
   PrintScore("最好的一組", best.tuned.score, best.outcomes.size());
