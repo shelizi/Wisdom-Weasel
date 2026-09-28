@@ -4,7 +4,7 @@
 #include <rime_api.h>
 #include "../net/http.h"
 #include <sstream>
-#include <future>
+#include <thread>
 
 namespace {
 
@@ -125,7 +125,8 @@ void MemoryCompressor::CompressAsync(
   std::string api_url = m_api_url;
   std::string api_key = m_api_key;
 
-  std::async(std::launch::async, [this, request_body, api_url, api_key, callback]() {
+  // 不能用 std::async：丢弃它回传的 future 会在析构时等待，整个请求就变成同步
+  std::thread([request_body, api_url, api_key, callback]() {
     std::string response_body;
     if (!ExecuteRequestOneShot(api_url, api_key, request_body, response_body)) {
       if (callback) callback(std::vector<std::wstring>());
@@ -133,7 +134,7 @@ void MemoryCompressor::CompressAsync(
     }
     std::vector<std::wstring> result = ParseResponse(response_body);
     if (callback) callback(result);
-  });
+  }).detach();
 }
 
 bool MemoryCompressor::ExecuteRequest(const std::string& url,

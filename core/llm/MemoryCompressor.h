@@ -28,9 +28,9 @@ class MemoryCompressor {
   bool ExecuteRequest(const std::string& url,
                       const std::string& request_body,
                       std::string& response_body);
-  std::vector<std::wstring> ParseResponse(const std::string& json_response);
+  static std::vector<std::wstring> ParseResponse(const std::string& json_response);
   // 一次性连接（可在后台线程执行）
-  bool ExecuteRequestOneShot(const std::string& url,
+  static bool ExecuteRequestOneShot(const std::string& url,
                              const std::string& api_key,
                              const std::string& request_body,
                              std::string& response_body);
