@@ -1,6 +1,6 @@
 // 輸入法端 llm_ipc::Client 的測試：推理行程正常回覆、取消、當掉後重新啟動、
-// 連續當掉後停用、取消後不回應時強制結束、逾時、請求進行中解構。Windows 以 run.bat
-// 編譯執行，macOS 由 mac/CMakeLists.txt 建置。
+// 連續當掉後停用、取消後不回應時強制結束、逾時、請求進行中解構。Windows 以
+// run.bat 編譯執行，macOS 由 mac/CMakeLists.txt 建置。
 #include "../../core/llm_ipc/client.h"
 
 #include <atomic>

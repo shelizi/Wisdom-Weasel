@@ -296,8 +296,8 @@ int main(int argc, char** argv) {
     t.commits.clear();
   }
 
-  // 組字中 Shift+字母：打大寫英文接在轉好的中文後面（不是 alternative_select_keys
-  // 的選字），仍留在中文；放開 Shift 不切換中英
+  // 組字中 Shift+字母：打大寫英文接在轉好的中文後面（不是
+  // alternative_select_keys 的選字），仍留在中文；放開 Shift 不切換中英
   {
     t.Type("5j4");
     const std::wstring first = t.preedit.text;

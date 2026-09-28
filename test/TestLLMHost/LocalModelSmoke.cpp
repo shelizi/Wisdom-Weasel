@@ -1,9 +1,11 @@
-// 本機模型的端到端測試：透過 RemoteLLMProvider 啟動真正的 WisdomLLMHost（同一資料夾），
-// 在推理行程裡用 llama.cpp 載入 GGUF 模型，預測下一個詞並比較句子的分數。
+// 本機模型的端到端測試：透過 RemoteLLMProvider 啟動真正的
+// WisdomLLMHost（同一資料夾）， 在推理行程裡用 llama.cpp 載入 GGUF
+// 模型，預測下一個詞並比較句子的分數。
 // 預測的原始輸出經過與預測引擎相同的整理（ime::CleanCandidates），才是使用者看到的候選。
 // 需要模型檔，不在 ctest 裡自動執行：
 //   LocalModelSmoke <model.gguf> [n_gpu_layers] [repeats] [prompt]
-// repeats > 1 時用不同的前文再預測幾次，印出之後（快取已建立）的延遲中位數與最大值
+// repeats > 1
+// 時用不同的前文再預測幾次，印出之後（快取已建立）的延遲中位數與最大值
 #include "../../core/base/utf8.h"
 #include "../../core/ime/text_rules.h"
 #include "../../core/llm/RemoteLLMProvider.h"
@@ -17,7 +19,8 @@
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::printf("usage: %s <model.gguf> [n_gpu_layers] [repeats] [prompt]\n", argv[0]);
+    std::printf("usage: %s <model.gguf> [n_gpu_layers] [repeats] [prompt]\n",
+                argv[0]);
     return 2;
   }
   int failures = 0;
@@ -29,7 +32,9 @@ int main(int argc, char** argv) {
 
   using clock = std::chrono::steady_clock;
   auto ms = [](clock::time_point since) {
-    return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - since).count();
+    return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+               clock::now() - since)
+        .count();
   };
 
   RemoteLLMProvider provider("llamacpp");
@@ -42,12 +47,14 @@ int main(int argc, char** argv) {
   // 提示詞（設定的 llm/prompt）：接在任務說明前面
   if (argc > 4)
     provider.SetPromptPrefix(utf8::ToWide(argv[4]));
-  std::printf("loaded %s (n_gpu_layers=%d) in %lld ms\n", provider.GetProviderName().c_str(),
-              spec.n_gpu_layers, ms(start));
+  std::printf("loaded %s (n_gpu_layers=%d) in %lld ms\n",
+              provider.GetProviderName().c_str(), spec.n_gpu_layers, ms(start));
 
   start = clock::now();
-  const auto raw = provider.PredictCandidates(L"今天天氣很好，我們一起去", L"", 5);
-  std::printf("predict: %zu raw candidates in %lld ms\n", raw.size(), ms(start));
+  const auto raw =
+      provider.PredictCandidates(L"今天天氣很好，我們一起去", L"", 5);
+  std::printf("predict: %zu raw candidates in %lld ms\n", raw.size(),
+              ms(start));
   const auto candidates = ime::CleanCandidates(raw, L"");
   std::printf("candidates:");
   for (const auto& c : candidates)
@@ -59,12 +66,14 @@ int main(int argc, char** argv) {
   }
 
   if (repeats > 1) {
-    static const wchar_t* kContexts[] = {L"我明天早上要去", L"這個問題我們可以", L"謝謝你的", L"請問你現在有空",
+    static const wchar_t* kContexts[] = {L"我明天早上要去", L"這個問題我們可以",
+                                         L"謝謝你的", L"請問你現在有空",
                                          L"我覺得這部電影很"};
     std::vector<long long> times;
     for (int i = 0; i < repeats; ++i) {
       start = clock::now();
-      const auto more = ime::CleanCandidates(provider.PredictCandidates(kContexts[i % 5], L"", 5), L"");
+      const auto more = ime::CleanCandidates(
+          provider.PredictCandidates(kContexts[i % 5], L"", 5), L"");
       times.push_back(ms(start));
       std::printf("  predict %d: %lld ms", i + 1, times.back());
       for (const auto& c : more)
@@ -72,7 +81,8 @@ int main(int argc, char** argv) {
       std::printf("\n");
     }
     std::sort(times.begin(), times.end());
-    std::printf("predict x%d: median %lld ms, max %lld ms\n", repeats, times[times.size() / 2], times.back());
+    std::printf("predict x%d: median %lld ms, max %lld ms\n", repeats,
+                times[times.size() / 2], times.back());
   }
 
   // 自然的句子分數（log 機率總和）要比同樣的字打亂後高
@@ -80,7 +90,8 @@ int main(int argc, char** argv) {
   start = clock::now();
   const bool ok1 = provider.ScoreText(L"", L"今天天氣很好", &natural, nullptr);
   const bool ok2 = provider.ScoreText(L"", L"好氣今很天天", &shuffled, nullptr);
-  std::printf("score: natural %.2f, shuffled %.2f in %lld ms\n", natural, shuffled, ms(start));
+  std::printf("score: natural %.2f, shuffled %.2f in %lld ms\n", natural,
+              shuffled, ms(start));
   if (!ok1 || !ok2) {
     std::printf("FAIL scoring failed\n");
     ++failures;
@@ -89,6 +100,8 @@ int main(int argc, char** argv) {
     ++failures;
   }
 
-  std::printf(failures ? "local model smoke: %d FAILED\n" : "local model smoke: all passed\n", failures);
+  std::printf(failures ? "local model smoke: %d FAILED\n"
+                       : "local model smoke: all passed\n",
+              failures);
   return failures ? 1 : 0;
 }
