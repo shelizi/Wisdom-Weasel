@@ -1259,7 +1259,7 @@ void LlamaCppProvider::DropSystemPromptCache() {
 }
 
 std::string LlamaCppProvider::Chat(const std::string& system, const std::string& user,
-                                   int max_tokens) {
+                                   int max_tokens, bool greedy) {
   if (!m_model_loaded)
     return "";
   std::string prompt = ApplyChatTemplate(system, user);
@@ -1267,10 +1267,59 @@ std::string LlamaCppProvider::Chat(const std::string& system, const std::string&
     prompt = system + "\n\n" + user + "\n\n整理結果：\n";
   // 不沿用預測的 system prompt 快取
   DropSystemPromptCache();
-  if (m_sampler)
-    llama_sampler_reset((llama_sampler*)m_sampler);
   const size_t limit = max_tokens < 0 ? (size_t)m_ctx_size : (size_t)max_tokens;
-  return utf8::FromWide(LLMStripThinking(utf8::ToWide(GenerateText(prompt, limit))));
+  if (!greedy) {
+    if (m_sampler)
+      llama_sampler_reset((llama_sampler*)m_sampler);
+    return utf8::FromWide(LLMStripThinking(utf8::ToWide(GenerateText(prompt, limit))));
+  }
+  // 和整句校正一樣暫時換成 greedy 取樣，不影響預測用的取樣設定
+  llama_sampler* sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+  void* saved = m_sampler;
+  m_sampler = sampler;
+  const std::string output = GenerateText(prompt, limit);
+  m_sampler = saved;
+  llama_sampler_free(sampler);
+  return utf8::FromWide(LLMStripThinking(utf8::ToWide(output)));
+}
+
+bool LlamaCppProvider::ChatWithin(const std::string& system, const std::string& user,
+                                  int max_tokens, bool greedy, std::string* output,
+                                  std::wstring* error, bool* too_long) {
+  output->clear();
+  if (too_long)
+    *too_long = false;
+  // 開啟思考時再加思考額度；不限制或放不下時，用完剩下的上下文（至少要放得下原本的結論額度）
+  const int base = max_tokens;
+  const int prompt_tokens = CountTokens(system + user) + 64;
+  const int room = ContextSize() - prompt_tokens;
+  max_tokens = ChatBudget(base);
+  if (max_tokens < 0 || max_tokens > room)
+    max_tokens = (std::max)(room, 0);
+  const int need = prompt_tokens + base;
+  if (need > ContextSize()) {
+    *error = L"提示太長（需要 " + std::to_wstring(need) + L" token，上下文 " +
+             std::to_wstring(ContextSize()) + L"）";
+    if (too_long)
+      *too_long = true;
+    return false;
+  }
+  *output = Chat(system, user, max_tokens, greedy);
+  if (output->empty()) {
+    *error = L"模型沒有產生內容";
+    return false;
+  }
+  return true;
+}
+
+bool LlamaCppProvider::IsModel(const std::string& model_path, bool instruct) const {
+  if (!m_model_loaded || instruct != m_instruct_model || model_path.empty())
+    return false;
+  // 設定裡的寫法可能不同（斜線方向、大小寫）：比對是不是同一個檔案
+  std::error_code ec;
+  const bool same = std::filesystem::equivalent(utf8::ToWide(model_path), utf8::ToWide(m_model_path), ec);
+  return ec ? model_path == m_model_path : same;
 }
 
 std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
@@ -1344,26 +1393,7 @@ bool LLMLocalChatSession::Chat(const std::string& system, const std::string& use
     *error = L"模型尚未載入";
     return false;
   }
-  LlamaCppProvider* provider = &impl_->provider;
-  // 開啟思考時再加思考額度；不限制或放不下時，用完剩下的上下文（至少要放得下原本的結論額度）
-  const int base = max_tokens;
-  const int prompt_tokens = provider->CountTokens(system + user) + 64;
-  const int room = provider->ContextSize() - prompt_tokens;
-  max_tokens = provider->ChatBudget(base);
-  if (max_tokens < 0 || max_tokens > room)
-    max_tokens = (std::max)(room, 0);
-  const int need = prompt_tokens + base;
-  if (need > provider->ContextSize()) {
-    *error = L"提示太長（需要 " + std::to_wstring(need) + L" token，上下文 " +
-             std::to_wstring(provider->ContextSize()) + L"）";
-    return false;
-  }
-  *output = provider->Chat(system, user, max_tokens);
-  if (output->empty()) {
-    *error = L"模型沒有產生內容";
-    return false;
-  }
-  return true;
+  return impl_->provider.ChatWithin(system, user, max_tokens, false, output, error);
 }
 
 bool LLMLocalChat(const LLMLocalModelSpec& spec, const std::string& system,

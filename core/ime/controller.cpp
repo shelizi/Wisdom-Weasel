@@ -85,6 +85,10 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
 
 Controller::~Controller() {
   learn_filter_.reset();  // 評分會用到模型與推理鎖，先停
+  // 精煉可能正在借用模型（用到推理鎖與模型）：先停，不能等成員解構（prediction_ 會先被釋放）
+  if (refiner_)
+    refiner_->RequestStop();
+  refiner_.reset();
   prediction_->Cancel();
   WaitRetired();
 }
@@ -95,6 +99,8 @@ Controller::~Controller() {
 void Controller::LoadConfig(RimeConfig* config) {
   // 先釋放舊模型（重新部署時），避免新舊模型同時佔用記憶體，或關閉 LLM 後舊模型仍駐留。
   // 作廢排隊中的預測，並等進行中的推理結束，避免背景執行緒用到已釋放的模型
+  // （精煉借用模型中也會中斷讓出來）
+  ++model_wanted_;
   prediction_->Cancel();
   std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
   typo_llm_ = nullptr;  // 可能指向 llm_provider_，先放掉
@@ -210,6 +216,48 @@ void Controller::LoadConfig(RimeConfig* config) {
             return false;
           fn();
           return true;
+        });
+        // 精煉的本機模型和預測或整句校正已載入的是同一個時，借來用，不再載入一份。
+        // 打字時讓出來：剛按過鍵就先不借，對話中按鍵（或要換模型）就中斷，精煉等一下再試
+        refiner_->SetSharedChat([this](const LLMLocalModelSpec& spec, const std::string& system,
+                                       const std::string& user, int max_tokens,
+                                       std::string* output, std::wstring* error) {
+          using Result = PersonalRefiner::SharedChatResult;
+          const uint64_t kIdleMs = 10000;
+          const uint64_t wanted = model_wanted_;
+          if (base::MonotonicMs() - last_key_ms_ < kIdleMs)
+            return Result::kBusy;
+          // 推理鎖：不能一直等（重新載入設定時會持鎖等精煉停下來）
+          std::unique_lock<std::mutex> lock(prediction_->InferMutex(), std::defer_lock);
+          while (!lock.try_lock()) {
+            if (LLMCancelled())
+              return Result::kFailed;
+            if (model_wanted_ != wanted)
+              return Result::kBusy;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          }
+          // 對話中：精煉要停止（原本的檢查）或有人要用模型就中斷
+          std::function<bool()>& check = LLMCancelCheck();
+          const std::function<bool()> outer = check;
+          check = [this, outer, wanted] { return (outer && outer()) || model_wanted_ != wanted; };
+          Result result = Result::kUnavailable;
+          for (LLMProvider* p : {llm_provider_.get(), typo_llm_}) {
+            auto* remote = dynamic_cast<RemoteLLMProvider*>(p);
+            if (!remote || (p == typo_llm_ && typo_llm_ == llm_provider_.get()))
+              continue;
+            const auto r = remote->ChatShared(spec, system, user, max_tokens, output, error);
+            if (r == RemoteLLMProvider::ChatResult::kNotApplicable)
+              continue;
+            result = r == RemoteLLMProvider::ChatResult::kOk ? Result::kOk : Result::kFailed;
+            break;
+          }
+          check = outer;
+          // 對話中有人要用模型：結果可能不完整，丟掉等一下重來（精煉自己要停止時回報失敗）
+          if (model_wanted_ != wanted) {
+            output->clear();
+            return LLMCancelled() ? Result::kFailed : Result::kBusy;
+          }
+          return result;
         });
         refiner_->Configure(refine);
         refiner_->Start();
@@ -378,6 +426,7 @@ void Controller::LoadTypoProvider(RimeConfig* config) {
 }
 
 void Controller::SetPredictionModel(std::unique_ptr<LLMProvider> model, bool enabled) {
+  ++model_wanted_;
   prediction_->Cancel();
   std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
   if (typo_llm_ == llm_provider_.get())
@@ -460,8 +509,12 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   const int other_mod_mask = mod::kControl | mod::kAlt | mod::kSuper;
 
   // 依目前輸入的視窗切換上下文（之後的送出紀錄與預測都用該視窗自己的前文）
-  if (!release)
+  if (!release) {
     UpdateContextKey(id);
+    // 精煉正在借用模型的話，讓給打字
+    last_key_ms_ = base::MonotonicMs();
+    ++model_wanted_;
+  }
 
   // 中英混打（Shift）
   bool respond = true;

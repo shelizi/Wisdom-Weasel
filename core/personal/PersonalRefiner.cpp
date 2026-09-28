@@ -99,7 +99,7 @@ const wchar_t kSystemPrompt[] =
 
 // 拆解：這麼長以上的片段才請 LLM 看要不要拆；每批送的片段數（輸出比刪除清單長，送少一點）
 const size_t kSplitMinLength = 5;
-const size_t kSplitBatchRemote = 150, kSplitBatchLocal = 40;
+const size_t kSplitBatchRemote = 150, kSplitBatchLocal = 30;
 
 const wchar_t kSplitPrompt[] =
     L"你是中文輸入法「個人詞庫」的整理助手。輸入法把使用者送出的文字依標點切成片段來學習，"
@@ -249,6 +249,73 @@ bool PersonalRefiner::Clear() {
   return true;
 }
 
+PersonalRefiner::LocalModel::LocalModel() = default;
+PersonalRefiner::LocalModel::~LocalModel() = default;
+
+bool PersonalRefiner::LocalChat(const Config& config, LocalModel* model, const wchar_t* system,
+                                const std::wstring& user, int max_tokens, std::string* output,
+                                std::wstring* error) {
+  LLMLocalModelSpec spec;
+  spec.model_path = config.model_path;
+  spec.instruct = config.instruct;
+  spec.n_gpu_layers = config.n_gpu_layers;
+  spec.n_threads = config.n_threads;
+  spec.disable_thinking = config.disable_thinking;
+  spec.think_tokens = config.think_tokens;
+  const std::string system_u8 = utf8::FromWide(system), user_u8 = utf8::FromWide(user);
+
+  // 1. 借用輸入法已載入的同一個模型；使用者在打字時等一下，一直沒空就改成自己載入
+  if (model->try_shared && shared_chat_) {
+    const uint64_t since = base::MonotonicMs();
+    for (int busy = 0;; ++busy) {
+      const SharedChatResult result =
+          shared_chat_(spec, system_u8, user_u8, max_tokens, output, error);
+      if (result == SharedChatResult::kOk) {
+        if (!model->announced)
+          Log(L"精煉借用輸入法已載入的模型（不另外載入）");
+        model->announced = true;
+        return true;
+      }
+      if (result == SharedChatResult::kFailed)
+        return false;
+      if (result == SharedChatResult::kUnavailable)
+        break;
+      if (stop_) {
+        *error = L"已中止";
+        return false;
+      }
+      if (busy >= 6 || base::MonotonicMs() - since > 10 * 60 * 1000) {
+        Log(L"輸入法一直在用模型，精煉改成自己載入模型");
+        break;
+      }
+      std::wstring base_progress;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        base_progress = progress_;
+        progress_ = (base_progress.empty() ? L"" : base_progress + L"：") + L"等停止打字";
+      }
+      WriteStatus();
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, std::chrono::milliseconds(config.shared_busy_wait_ms),
+                     [this] { return stop_.load(); });
+        progress_ = base_progress;
+      }
+    }
+    model->try_shared = false;
+  }
+
+  // 2. 自己載入：一次精煉只載入一次
+  if (!model->session) {
+    Log(L"載入本機精煉模型：" + utf8::ToWide(config.model_path));
+    auto session = std::make_unique<LLMLocalChatSession>();
+    if (!session->Open(spec, error))
+      return false;
+    model->session = std::move(session);
+  }
+  return model->session->Chat(system_u8, user_u8, max_tokens, output, error);
+}
+
 void PersonalRefiner::Run(bool full) {
   Config config;
   {
@@ -278,21 +345,22 @@ void PersonalRefiner::Run(bool full) {
     }
 
     std::wstring detail;
+    LocalModel model;  // 本機模型：各段共用，精煉結束才釋放
     if (!config.UsesLLM())
       detail = L"未選擇精煉模型，只做統計整理";
     else
-      detail = RefineWithLLM(config, full, records, &ok);
+      detail = RefineWithLLM(config, &model, full, records, &ok);
     // 把太長的片段拆成詞或片語；失敗不影響精煉，下次接著看
     if (ok && config.UsesLLM() && !stop_) {
       bool split_ok = true;
-      const std::wstring split = SplitWithLLM(config, full, &split_ok);
+      const std::wstring split = SplitWithLLM(config, &model, full, &split_ok);
       if (!split.empty())
         detail += L"；" + split;
     }
     // 順便整理 Rime 的選字記憶；失敗不影響個人詞庫的精煉，下次精煉會接著審查
     if (ok && config.UsesLLM() && config.clean_rime_memory && !stop_) {
       bool memory_ok = true;
-      const std::wstring memory = RefineRimeMemory(config, full, &memory_ok);
+      const std::wstring memory = RefineRimeMemory(config, &model, full, &memory_ok);
       if (!memory.empty())
         detail += L"；" + memory;
     }
@@ -444,8 +512,8 @@ void PersonalRefiner::ExportRimeDictAndDeploy() {
 }
 
 std::wstring PersonalRefiner::RefineWithLLM(
-    const Config& config, bool full, const std::vector<PersonalLexicon::RawRecord>& records,
-    bool* ok) {
+    const Config& config, LocalModel* model, bool full,
+    const std::vector<PersonalLexicon::RawRecord>& records, bool* ok) {
   *ok = true;
   const bool local = config.type == "llamacpp";
   const size_t batch_size = local ? kBatchLocal : kBatchRemote;
@@ -494,24 +562,6 @@ std::wstring PersonalRefiner::RefineWithLLM(
     }
     if (!cur.empty())
       groups.push_back(cur);
-  }
-
-  // 本機模型只載入一次，所有批次共用
-  LLMLocalChatSession session;
-  if (local) {
-    LLMLocalModelSpec spec;
-    spec.model_path = config.model_path;
-    spec.instruct = config.instruct;
-    spec.n_gpu_layers = config.n_gpu_layers;
-    spec.n_threads = config.n_threads;
-    spec.disable_thinking = config.disable_thinking;
-    spec.think_tokens = config.think_tokens;
-    std::wstring error;
-    Log(L"載入本機精煉模型：" + utf8::ToWide(config.model_path));
-    if (!session.Open(spec, &error)) {
-      *ok = false;
-      return error;
-    }
   }
 
   std::wstring reference_text;
@@ -584,7 +634,7 @@ std::wstring PersonalRefiner::RefineWithLLM(
       Log(L"本機精煉 第 " + std::to_wstring(b + 1) + L"／" + std::to_wstring(batches) + L" 批：" +
           std::to_wstring(targets.size()) + L" 個詞、" + std::to_wstring(examples.size()) + L" 句例句");
       std::string output;
-      batch_ok = session.Chat(utf8::FromWide(kSystemPrompt), utf8::FromWide(user.str()), 1024, &output, &error);
+      batch_ok = LocalChat(config, model, kSystemPrompt, user.str(), 1024, &output, &error);
       content = utf8::ToWide(output);
     } else {
       content = CallRemote(config, user.str(), targets.size(), examples.size(), &batch_ok);
@@ -610,7 +660,8 @@ std::wstring PersonalRefiner::RefineWithLLM(
   return summary();
 }
 
-std::wstring PersonalRefiner::SplitWithLLM(const Config& config, bool full, bool* ok) {
+std::wstring PersonalRefiner::SplitWithLLM(const Config& config, LocalModel* model, bool full,
+                                           bool* ok) {
   *ok = true;
   // 夠長、還沒看過的片段；常用的優先（拆了最有用）
   std::vector<std::wstring> pool;
@@ -625,22 +676,6 @@ std::wstring PersonalRefiner::SplitWithLLM(const Config& config, bool full, bool
   if (pool.empty())
     return L"";
   const size_t batches = (pool.size() + batch_size - 1) / batch_size;
-
-  LLMLocalChatSession session;
-  if (local) {
-    LLMLocalModelSpec spec;
-    spec.model_path = config.model_path;
-    spec.instruct = config.instruct;
-    spec.n_gpu_layers = config.n_gpu_layers;
-    spec.n_threads = config.n_threads;
-    spec.disable_thinking = config.disable_thinking;
-    spec.think_tokens = config.think_tokens;
-    std::wstring error;
-    if (!session.Open(spec, &error)) {
-      *ok = false;
-      return L"拆解：" + error;
-    }
-  }
 
   size_t checked = 0;
   std::vector<PersonalLexicon::Split> splits;
@@ -663,8 +698,7 @@ std::wstring PersonalRefiner::SplitWithLLM(const Config& config, bool full, bool
     bool batch_ok = true;
     if (local) {
       std::string output;
-      batch_ok = session.Chat(utf8::FromWide(kSplitPrompt), utf8::FromWide(user.str()), 2048,
-                              &output, &error);
+      batch_ok = LocalChat(config, model, kSplitPrompt, user.str(), 1024, &output, &error);
       content = utf8::ToWide(output);
     } else {
       content = CallRemote(config, user.str(), targets.size(), 0, &batch_ok, kSplitPrompt);
@@ -735,7 +769,8 @@ std::vector<PersonalLexicon::Split> PersonalRefiner::ParseSplits(
   return out;
 }
 
-std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, bool* ok) {
+std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, LocalModel* model, bool full,
+                                               bool* ok) {
   *ok = true;
   if (!user_dict_access_)
     return L"";
@@ -806,21 +841,6 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
   const bool local = config.type == "llamacpp";
   const size_t batch_size = local ? kMemoryBatchLocal : kMemoryBatchRemote;
   const size_t batches = (pool.size() + batch_size - 1) / batch_size;
-  LLMLocalChatSession session;
-  if (local) {
-    LLMLocalModelSpec spec;
-    spec.model_path = config.model_path;
-    spec.instruct = config.instruct;
-    spec.n_gpu_layers = config.n_gpu_layers;
-    spec.n_threads = config.n_threads;
-    spec.disable_thinking = config.disable_thinking;
-    spec.think_tokens = config.think_tokens;
-    std::wstring error;
-    if (!session.Open(spec, &error)) {
-      *ok = false;
-      return L"選字記憶：" + error;
-    }
-  }
 
   // 3. 分批請 LLM 挑錯
   std::vector<const Entry*> to_delete;
@@ -846,7 +866,7 @@ std::wstring PersonalRefiner::RefineRimeMemory(const Config& config, bool full, 
     bool batch_ok = true;
     if (local) {
       std::string output;
-      batch_ok = session.Chat(utf8::FromWide(kRimeMemoryPrompt), utf8::FromWide(user.str()), 1024, &output, &error);
+      batch_ok = LocalChat(config, model, kRimeMemoryPrompt, user.str(), 1024, &output, &error);
       content = utf8::ToWide(output);
     } else {
       content = CallRemote(config, user.str(), words, 0, &batch_ok, kRimeMemoryPrompt);

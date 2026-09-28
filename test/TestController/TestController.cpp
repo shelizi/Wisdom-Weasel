@@ -438,6 +438,42 @@ int main(int argc, char** argv) {
     }
   }
 
+  // 精煉借用輸入法的模型：忙碌時等一下再試；審查與拆解共用，不另外載入（模型檔不存在，
+  // 真的自己載入就會失敗）
+  {
+    const fs::path dir = fs::path(user) / "refine_shared";
+    fs::remove_all(dir);
+    PersonalLexicon lexicon(dir);
+    lexicon.Record(L"w", L"亂碼亂碼，我明天下午要去台北開會");
+    PersonalRefiner refiner(&lexicon);
+    std::vector<std::string> systems;
+    int busy = 1;
+    refiner.SetSharedChat([&](const LLMLocalModelSpec& spec, const std::string& system,
+                              const std::string&, int, std::string* output, std::wstring*) {
+      CHECK(spec.model_path == "shared.gguf");
+      if (busy-- > 0)
+        return PersonalRefiner::SharedChatResult::kBusy;
+      systems.push_back(system);
+      *output = systems.size() == 1
+                    ? U8(L"刪除\t亂碼亂碼\n")
+                    : U8(L"拆解\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n");
+      return PersonalRefiner::SharedChatResult::kOk;
+    });
+    PersonalRefiner::Config config;
+    config.type = "llamacpp";
+    config.model_path = "shared.gguf";
+    config.interval_days = 0;
+    config.clean_rime_memory = false;
+    config.shared_busy_wait_ms = 10;
+    refiner.Configure(config);
+    CHECK(refiner.RunAsync(false));
+    CHECK(WaitFor([&] { return !refiner.Running(); }, 10000));
+    CHECK(systems.size() == 2);  // 審查、拆解
+    CHECK(lexicon.WordScore(L"亂碼亂碼") == 0);
+    CHECK(lexicon.WordScore(L"台北") > 0);
+    refiner.Stop();
+  }
+
   {
     std::lock_guard<std::mutex> lock(frontend.mutex);
     api->destroy_session(ss.session_id);

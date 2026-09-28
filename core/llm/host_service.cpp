@@ -140,6 +140,28 @@ struct Host {
         out.Str(utf8::FromWide(error));
         break;
       }
+      case Op::kChat: {
+        // 精煉借用這個行程已載入的模型：要是同一個模型檔與設定、提示放得下
+        const std::string model_path = in.Str();
+        const bool instruct = in.Flag();
+        const std::string system = in.Str(), user = in.Str();
+        const int max_tokens = in.I32();
+        auto* llama = dynamic_cast<LlamaCppProvider*>(provider.get());
+        uint8_t result = 1;
+        std::string output;
+        std::wstring error;
+        if (llama && in.Ok() && llama->IsModel(model_path, instruct)) {
+          bool too_long = false;
+          if (llama->ChatWithin(system, user, max_tokens, true, &output, &error, &too_long))
+            result = 0;
+          else if (!too_long)
+            result = 2;
+        }
+        out.U8(result);
+        out.Str(output);
+        out.Str(utf8::FromWide(error));
+        break;
+      }
       default:
         break;
     }

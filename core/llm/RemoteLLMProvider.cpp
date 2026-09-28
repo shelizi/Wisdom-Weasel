@@ -156,6 +156,44 @@ bool RemoteLLMProvider::ScoreText(const std::wstring& context, const std::wstrin
   return true;
 }
 
+RemoteLLMProvider::ChatResult RemoteLLMProvider::ChatShared(const LLMLocalModelSpec& spec,
+                                                            const std::string& system_utf8,
+                                                            const std::string& user_utf8,
+                                                            int max_tokens, std::string* output,
+                                                            std::wstring* error) {
+  output->clear();
+  if (kind_ != "llamacpp" || !IsAvailable())
+    return ChatResult::kNotApplicable;
+  Writer request(Op::kChat, 0);
+  request.Str(spec.model_path);
+  request.Flag(spec.instruct);
+  request.Str(system_utf8);
+  request.Str(user_utf8);
+  request.I32(max_tokens);
+  // 精煉可能要跑很久：不限時，只在取消時停止
+  auto reply = client_->Call(std::move(request), Cancelled);
+  if (!reply) {
+    *error = Cancelled() ? L"已中止" : L"推理行程意外結束";
+    return ChatResult::kFailed;
+  }
+  const uint8_t result = reply->U8();
+  *output = reply->Str();
+  *error = utf8::ToWide(reply->Str());
+  if (!reply->Ok()) {
+    output->clear();
+    *error = L"推理行程的回覆格式不對";
+    return ChatResult::kFailed;
+  }
+  // 中途取消時推理行程會回傳已產生的部分：不完整，不能當結果
+  if (Cancelled()) {
+    output->clear();
+    *error = L"已中止";
+    return ChatResult::kFailed;
+  }
+  return result == 0 ? ChatResult::kOk
+                     : result == 1 ? ChatResult::kNotApplicable : ChatResult::kFailed;
+}
+
 bool RemoteLLMProvider::IsAvailable() const {
   return available_ && !client_->GaveUp();
 }
@@ -230,6 +268,12 @@ bool LLMLocalChatSession::Chat(const std::string& system_utf8, const std::string
   if (!reply->Ok()) {
     output->clear();
     *error = L"推理行程的回覆格式不對";
+    return false;
+  }
+  // 中途取消（要求停止）時是不完整的部分結果，不能套用
+  if (Cancelled()) {
+    output->clear();
+    *error = L"已中止";
     return false;
   }
   return ok;

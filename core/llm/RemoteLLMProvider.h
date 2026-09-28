@@ -40,6 +40,13 @@ class RemoteLLMProvider : public LLMProvider {
                        const std::string& model, const std::wstring& prompt,
                        bool disable_thinking, int think_tokens);
 
+  // 借這個已載入的本機模型做一次對話（個人詞庫精煉，省得再載入一份）：
+  // 載入的不是 spec 的模型檔與設定，或提示放不下時回傳 kNotApplicable
+  enum class ChatResult { kOk, kNotApplicable, kFailed };
+  ChatResult ChatShared(const LLMLocalModelSpec& spec, const std::string& system_utf8,
+                        const std::string& user_utf8, int max_tokens, std::string* output,
+                        std::wstring* error);
+
  private:
   void RefreshAvailable();
 

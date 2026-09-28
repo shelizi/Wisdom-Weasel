@@ -9,6 +9,7 @@
 // 除了背景執行緒的回呼，所有方法都在平台的服務端鎖（Frontend::ApiMutex）下呼叫。
 #include <rime_api.h>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -201,6 +202,9 @@ class Controller {
   bool mixed_shift_tap_ = false;    // Shift 按下後還沒按其他鍵（放開時算一次切換）
   uint64_t last_commit_ms_ = 0;     // 最近一次送出的時間（算送出後刪除）
   uint64_t last_grave_ms_ = 0;      // 上次按 ` 的時間（雙擊清空前文）
+  // 精煉借用輸入法的模型時：打字或要換模型就讓出來（背景執行緒讀）
+  std::atomic<uint64_t> last_key_ms_{0};   // 最近一次按鍵的時間
+  std::atomic<uint64_t> model_wanted_{0};  // 打字、換模型時加一：進行中的借用對話看到就中斷
 };
 
 }  // namespace ime

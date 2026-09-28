@@ -292,7 +292,15 @@ class LlamaCppProvider : public LLMProvider {
   void SetPromptPrefix(const std::wstring& prompt) { m_prompt_prefix = prompt; }
   // 一次對話：Instruct 模型套用模型內建的 chat template，Base 模型用純文字續寫；
   // max_tokens < 0 表示不限制（生成到結束或上下文用完）
-  std::string Chat(const std::string& system_utf8, const std::string& user_utf8, int max_tokens);
+  // greedy：固定取樣（借用預測的模型時，不沿用預測的溫度）
+  std::string Chat(const std::string& system_utf8, const std::string& user_utf8, int max_tokens,
+                   bool greedy = false);
+  // 先確認放得下再對話：輸出額度依思考設定調整、不超過剩下的上下文。
+  // 提示加上原本的輸出額度放不下時回傳 false 並設定 too_long
+  bool ChatWithin(const std::string& system_utf8, const std::string& user_utf8, int max_tokens,
+                  bool greedy, std::string* output, std::wstring* error, bool* too_long = nullptr);
+  // 載入的是不是這個模型檔、同樣的 Instruct／Base 設定（能不能借給精煉用）
+  bool IsModel(const std::string& model_path, bool instruct) const;
   // 目前模型可用的上下文長度（token）與文字的 token 數
   int ContextSize() const { return m_ctx_size; }
   // 對話需要的輸出額度：開啟思考時加上思考長度上限（-1 = 不限制）
