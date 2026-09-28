@@ -170,6 +170,7 @@ rem if neither x64 nor x86 is specified, build both (backward compatibility)
 if %build_x64% == 0 (
 if %build_x86% == 0 (
   set build_x64=1
+  set build_x86=1
 ))
 
 if %build_x64% == 1 (
