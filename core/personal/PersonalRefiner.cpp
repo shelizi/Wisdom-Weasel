@@ -6,6 +6,7 @@
 #include <rime_api.h>
 #include <rime_levers_api.h>
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -344,7 +345,7 @@ int PersonalRefiner::ExportRimeDict() {
         continue;
       const std::wstring w = utf8::ToWide(line.substr(0, tab));
       if (wanted.count(w))
-        essay[w] = _atoi64(line.c_str() + tab + 1);
+        essay[w] = std::atoll(line.c_str() + tab + 1);
     }
   }
   std::ostringstream out;

@@ -3,6 +3,7 @@
 #include "../base/clock.h"
 #include "../base/utf8.h"
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -330,9 +331,9 @@ bool PersonalLexicon::Load() {
     }
     f.push_back(line.substr(start));
     if (f.size() == 4 && f[0] == "W") {
-      words_[utf8::ToWide(f[1])] = Score{atof(f[2].c_str()), _atoi64(f[3].c_str())};
+      words_[utf8::ToWide(f[1])] = Score{atof(f[2].c_str()), std::atoll(f[3].c_str())};
     } else if (f.size() == 5 && f[0] == "N") {
-      next_[utf8::ToWide(f[1])][utf8::ToWide(f[2])] = Score{atof(f[3].c_str()), _atoi64(f[4].c_str())};
+      next_[utf8::ToWide(f[1])][utf8::ToWide(f[2])] = Score{atof(f[3].c_str()), std::atoll(f[4].c_str())};
     }
   }
   last_save_ = Now();
@@ -390,7 +391,7 @@ void PersonalLexicon::LoadRefinement() {
       continue;
     const std::string kind = line.substr(0, t1), rest = line.substr(t1 + 1);
     if (kind == "T") {
-      last_refine_ = _atoi64(rest.c_str());
+      last_refine_ = std::atoll(rest.c_str());
     } else if (kind == "R") {
       removed_.insert(utf8::ToWide(rest));
     } else if (kind == "V") {
@@ -398,7 +399,7 @@ void PersonalLexicon::LoadRefinement() {
     } else if (kind == "A") {
       const size_t t2 = rest.find('\t');
       added_[utf8::ToWide(rest.substr(0, t2))] =
-          t2 == std::string::npos ? 0 : _atoi64(rest.substr(t2 + 1).c_str());
+          t2 == std::string::npos ? 0 : std::atoll(rest.substr(t2 + 1).c_str());
     } else if (kind == "M") {
       const size_t t2 = rest.find('\t');
       if (t2 != std::string::npos)
@@ -609,7 +610,7 @@ std::vector<PersonalLexicon::RawRecord> PersonalLexicon::ReadRawLog(const fs::pa
     if (t2 == std::string::npos)
       continue;
     RawRecord r;
-    r.time = _atoi64(plain.substr(0, t1).c_str());
+    r.time = std::atoll(plain.substr(0, t1).c_str());
     r.window = utf8::ToWide(plain.substr(t1 + 1, t2 - t1 - 1));
     r.text = utf8::ToWide(plain.substr(t2 + 1));
     records.push_back(std::move(r));

@@ -30,7 +30,8 @@ jobs:
         run: cmake -S mac -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --parallel
+        # -k：遇到錯誤繼續編其他檔案，一次看到所有錯誤
+        run: cmake --build build --parallel -- -k
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
