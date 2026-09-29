@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <sstream>
+#include <utility>
 
 // 包含 llama.cpp 头文件
 #include "llama.h"
@@ -689,12 +691,16 @@ std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max
     }
     response.append(buf, n);
     if (stop_at_newline) {
-      // 思考區塊裡的換行不算；結論從思考結束後第一個非空白字開始
+      // 思考區塊裡的換行不算；結論從思考結束後第一個非空白字開始（Gemma 4 用 <|channel> … <channel|>）
       size_t from = 0;
-      const size_t open = response.find("<think>");
-      if (open != std::string::npos) {
-        const size_t close = response.find("</think>", open);
-        from = close == std::string::npos ? std::string::npos : close + 8;
+      for (const auto& [open_tag, close_tag] :
+           {std::pair<const char*, const char*>{"<think>", "</think>"}, {"<|channel>", "<channel|>"}}) {
+        const size_t open = response.find(open_tag);
+        if (open == std::string::npos)
+          continue;
+        const size_t close = response.find(close_tag, open);
+        from = close == std::string::npos ? std::string::npos : close + std::strlen(close_tag);
+        break;
       }
       if (from != std::string::npos) {
         from = response.find_first_not_of(" \t\r\n", from);
@@ -1144,6 +1150,12 @@ std::string LlamaCppProvider::ApplyChatTemplate(const std::string& system,
       m_instruct_model ? llama_model_chat_template((const llama_model*)m_model, nullptr) : nullptr;
   if (!tmpl)
     return "";
+  // Gemma 4（<|turn>…<turn|>）：這版 llama.cpp 的內建範本認不得，照模型的 chat template 自己組。
+  // 開啟思考是在 system 開頭放 <|think|>；BOS 由分詞時加上
+  if (std::strstr(tmpl, "<|turn>")) {
+    return std::string("<|turn>system\n") + (m_disable_thinking ? "" : "<|think|>\n") + system +
+           "<turn|>\n<|turn>user\n" + user + "<turn|>\n<|turn>model\n";
+  }
   llama_chat_message messages[2] = {{"system", system.c_str()}, {"user", user.c_str()}};
   std::vector<char> buf(system.size() + user.size() + 1024);
   int n = llama_chat_apply_template(tmpl, messages, 2, true, buf.data(), (int32_t)buf.size());

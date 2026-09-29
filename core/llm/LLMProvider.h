@@ -151,7 +151,9 @@ inline std::wstring LLMCorrectBasePrompt(const std::wstring& prompt, const std::
 // 只有結束標記（開頭標記在提示裡）時取其後；思考還沒寫完就被截斷時回傳空字串
 inline std::wstring LLMStripThinking(const std::wstring& text) {
   std::wstring s = text;
-  static const wchar_t* const kTags[][2] = {{L"<think>", L"</think>"}, {L"<thinking>", L"</thinking>"}};
+  // Gemma 4 的思考放在 <|channel>thought … <channel|>
+  static const wchar_t* const kTags[][2] = {
+      {L"<think>", L"</think>"}, {L"<thinking>", L"</thinking>"}, {L"<|channel>", L"<channel|>"}};
   for (const auto& tags : kTags) {
     const std::wstring open = tags[0], close = tags[1];
     const size_t last_close = s.rfind(close);
