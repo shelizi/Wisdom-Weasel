@@ -75,7 +75,7 @@ std::wstring PredictionSet::Comment(size_t i) const {
   const CandidateKind kind = Kind(i);
   if (kind == CandidateKind::kPrediction)
     return L"";
-  std::wstring text = kind == CandidateKind::kRecommend ? L"推薦" : L"校正";
+  std::wstring text = kind == CandidateKind::kCorrection ? L"校正" : L"推薦";
   const double p = Confidence(i);
   if (HasConfidence(p))
     text += L" " + std::to_wstring((int)std::lround(p * 100)) + L"%";
@@ -96,7 +96,8 @@ bool PredictionEngine::HasCandidates() const {
   return !state_->current.candidates.empty();
 }
 
-bool PredictionEngine::Take(size_t index, std::wstring* text, bool* recommend, bool* correction) {
+bool PredictionEngine::Take(size_t index, std::wstring* text, bool* recommend, bool* correction,
+                            CandidateKind* kind) {
   std::lock_guard<std::mutex> lock(state_->mutex);
   PredictionSet& set = state_->current;
   if (index >= set.candidates.size())
@@ -104,6 +105,8 @@ bool PredictionEngine::Take(size_t index, std::wstring* text, bool* recommend, b
   *text = set.candidates[index];
   *recommend = set.IsRecommend(index);
   *correction = set.IsCorrection(index);
+  if (kind)
+    *kind = set.Kind(index);
   set = PredictionSet();
   return true;
 }
@@ -140,10 +143,15 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
   };
   // 加入一個推薦或校正；機率低於門檻就不顯示，回傳 false（之後的續寫也不接在它後面）
   const auto suggest = [&](std::wstring text, CandidateKind kind, double gain) {
-    const double p = confidence(
-        kind == CandidateKind::kRecommend ? SuggestionKind::kRecommend : SuggestionKind::kCorrection, gain);
+    const double p = confidence(kind == CandidateKind::kRecommend ? SuggestionKind::kRecommend
+                                : kind == CandidateKind::kRerank  ? SuggestionKind::kRerank
+                                                                  : SuggestionKind::kCorrection,
+                                gain);
     if (Logging()) {
-      std::wstring line = std::wstring(L"[LLM] ") + (kind == CandidateKind::kRecommend ? L"推薦" : L"校正") +
+      std::wstring line = std::wstring(L"[LLM] ") +
+                          (kind == CandidateKind::kCorrection ? L"校正"
+                           : kind == CandidateKind::kRerank   ? L"整句重排"
+                                                              : L"推薦") +
                           L"信心：gain " + (std::isfinite(gain) ? std::to_wstring(gain) : L"—") + L"，p " +
                           (HasConfidence(p) ? std::to_wstring(p) : L"（尚未校準）");
       g_dev_console->WriteLine(line);
@@ -189,12 +197,45 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
     return;
   const bool rescore = req.rescore && !req.prefix.empty();
   const bool correct = req.correct && !req.zhuyin.empty() && !req.prefix.empty();
-  if (!req.predict && !correct && !rescore)
+  const bool rerank = (req.rerank || req.rerank_shadow) && !req.prefix.empty();
+  if (!req.predict && !correct && !rescore && !rerank)
     return;
   std::wstring context = req.history + req.prefix;
   std::wstring prefix = req.prefix;
   const std::wstring tail =
       req.history.size() > 30 ? req.history.substr(req.history.size() - 30) : req.history;
+
+  // 2a) 整句重排：Rime 的整句候選由呼叫端查（要用 Rime），這時還沒拿推理鎖
+  if (rerank && state->hooks.rerank_input && current()) {
+    std::vector<std::wstring> sentences;
+    if (!state->hooks.rerank_input(req.tag, seq, &sentences)) {
+      if (!current())
+        return;
+      sentences.clear();
+    }
+    if (sentences.size() >= 2) {
+      RerankResult result;
+      {
+        std::lock_guard<std::mutex> infer_lock(state->infer);
+        if (!current())
+          return;
+        if (LLMProvider* scorer = models().rescore)
+          result = RerankSentences(scorer, tail, sentences, req.rerank_options);
+      }
+      if (req.rerank_shadow) {
+        if (state->hooks.on_shadow && current())
+          state->hooks.on_shadow(req.tag, seq, sentences[0], result);
+      } else if (!result.text.empty() && result.text != sentences[0] &&
+                 suggest(result.text, CandidateKind::kRerank, result.gain)) {
+        if (!publish({}))
+          return;
+        context = req.history + result.text;
+        prefix = result.text;
+      }
+    }
+  }
+  if (!req.predict && !correct && !rescore)
+    return;
 
   // 2) 推薦：同音字由呼叫端查（要用 Rime），這時還沒拿推理鎖
   if (rescore && state->hooks.rescore_input && current()) {

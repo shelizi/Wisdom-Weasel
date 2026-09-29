@@ -66,6 +66,7 @@ void PopChar(std::wstring& s) {
 Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
     : api_(api), frontend_(frontend), options_(std::move(options)) {
   homophones_ = std::make_unique<HomophoneFinder>(api_);
+  sentences_ = std::make_unique<SentenceFinder>(api_);
   choice_store_ = std::make_unique<ChoiceStatsStore>(options_.user_dir);
   calibration_ = std::make_unique<CalibrationStore>(options_.user_dir);
   PredictionEngine::Hooks hooks;
@@ -83,6 +84,11 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
   hooks.on_update = [this](uint64_t tag, uint64_t seq, const PredictionSet& set) {
     OnPredictionUpdate(tag, seq, set);
   };
+  hooks.rerank_input = [this](uint64_t tag, uint64_t seq, std::vector<std::wstring>* sentences) {
+    return RerankInput(tag, seq, sentences);
+  };
+  hooks.on_shadow = [this](uint64_t tag, uint64_t seq, const std::wstring& first,
+                           const RerankResult& result) { OnShadow(tag, seq, first, result); };
   hooks.confidence = [this](SuggestionKind kind, double gain) {
     return calibration_->Probability(kind, gain);
   };
@@ -111,6 +117,7 @@ void Controller::LoadConfig(RimeConfig* config) {
   std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
   typo_llm_ = nullptr;  // 可能指向 llm_provider_，先放掉
   typo_owned_.reset();
+  scorer_owned_.reset();
   llm_provider_.reset();
   loaded_model_.clear();
   // 兩種自動觸發時機可分別關閉（未設定時預設開啟）；關閉後仍可按 ` 鍵手動觸發
@@ -124,6 +131,23 @@ void Controller::LoadConfig(RimeConfig* config) {
   // 推薦：本機模型比較同音字整句的通順度（預設關閉）
   flag = false;
   rescore_on_ = api_->config_get_bool(config, "llm/choice/rescore", &flag) && flag;
+  // 整句重排：off / shadow（只算不顯示，送出時統計）/ on
+  {
+    char mode[32] = {0};
+    rerank_mode_ = 0;
+    if (api_->config_get_string(config, "llm/choice/rerank", mode, sizeof(mode) - 1)) {
+      if (std::strcmp(mode, "shadow") == 0)
+        rerank_mode_ = 1;
+      else if (std::strcmp(mode, "on") == 0)
+        rerank_mode_ = 2;
+    }
+    double margin = 2.0;
+    api_->config_get_double(config, "llm/choice/rerank_margin", &margin);
+    rerank_margin_ = (std::max)(0.0, margin);
+    int sentences = 10;
+    api_->config_get_int(config, "llm/choice/rerank_sentences", &sentences);
+    rerank_sentences_ = (size_t)(std::min)(63, (std::max)(2, sentences));
+  }
   // 推薦／校正校準過的採用機率低於這個就不顯示（還沒校準時都顯示）；0 = 都顯示。
   // 預設 0.5：比較可能對才顯示（第一候選換成它才划算）
   {
@@ -355,6 +379,7 @@ void Controller::LoadConfig(RimeConfig* config) {
   }
   // 注音整句校正的模型：不受「智慧預測」開關影響
   LoadTypoProvider(config);
+  LoadScorerProvider(config);
 }
 
 void Controller::LoadTypoProvider(RimeConfig* config) {
@@ -438,6 +463,43 @@ void Controller::LoadTypoProvider(RimeConfig* config) {
   typo_llm_ = typo_owned_.get();
 }
 
+void Controller::LoadScorerProvider(RimeConfig* config) {
+  scorer_owned_.reset();
+  if (!rescore_on_ && rerank_mode_ == 0)
+    return;
+  auto read = [&](const char* key) {
+    char value[4096] = {0};
+    return api_->config_get_string(config, key, value, sizeof(value) - 1) ? std::string(value)
+                                                                          : std::string();
+  };
+  const std::string model_path = read("llm/choice/scorer/model_path");
+  if (model_path.empty())
+    return;  // 沒指定：借預測或校正已載入的本機模型
+  std::string model_type = read("llm/choice/scorer/model_type");
+  std::transform(model_type.begin(), model_type.end(), model_type.begin(), ::tolower);
+  LLMLocalModelSpec spec;
+  spec.model_path = model_path;
+  spec.instruct = model_type != "base";
+  spec.n_ctx = 1024;  // 前文 30 字加最多幾十句短句
+  spec.disable_thinking = true;
+  int value = 0;
+  if (api_->config_get_int(config, "llm/llamacpp/n_gpu_layers", &value))
+    spec.n_gpu_layers = value;
+  if (api_->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
+    spec.n_threads = value;
+  auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
+  if (provider->LoadModelDirect(spec, 0.0)) {
+    scorer_owned_ = std::move(provider);
+    LOG(INFO) << "Scorer model loaded: " << model_path;
+  } else {
+    LOG(ERROR) << "Scorer: failed to load model " << model_path;
+  }
+}
+
+bool Controller::ScoringWanted() const {
+  return (rescore_on_ || rerank_mode_ > 0) && RescoreProvider();
+}
+
 void Controller::SetPredictionModel(std::unique_ptr<LLMProvider> model, bool enabled) {
   ++model_wanted_;
   prediction_->Cancel();
@@ -495,6 +557,8 @@ LLMProvider* Controller::RescoreProvider() const {
   auto local = [](LLMProvider* p) {
     return p && p->IsAvailable() && p->GetProviderName() == "llama.cpp Local";
   };
+  if (local(scorer_owned_.get()))
+    return scorer_owned_.get();
   if (local(llm_provider_.get()))
     return llm_provider_.get();
   if (typo_on_ && local(typo_llm_))
@@ -679,7 +743,7 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     handled = True;
   }
   // 打字中補全：正在組字時，停頓 300ms 後以 Rime 目前的轉換結果續寫；組字結束則清除補全候選
-  const bool rescore = rescore_on_ && RescoreProvider();
+  const bool rescore = ScoringWanted();
   if (handled && !release && (PredictionAvailable() || TypoAvailable() || rescore)) {
     bool composing = false;
     RIME_STRUCT(RimeStatus, status);
@@ -1072,6 +1136,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
       ss.choice_changed = ss.llm_offered = false;
       ss.focus_used = ss.recommend_offered = false;
       ForgetSuggestions(ss);
+      ss.shadow_pending = false;
       ss.default_text.clear();
       ss.default_zhuyin.clear();
     }
@@ -1177,8 +1242,11 @@ void Controller::TriggerPrediction(uint64_t id,
   const bool llm_available = llm_provider_ && llm_provider_->IsAvailable();
   const bool correct = TypoAvailable() && !zhuyin.empty() && !completion_prefix.empty();
   // 推薦：打字中（有 Rime 轉換結果）才做
-  const bool rescore = rescore_on_ && !completion_prefix.empty() && RescoreProvider();
-  if (!llm_available && !personal_ && !correct && !rescore) {
+  const bool scoring = !completion_prefix.empty() && RescoreProvider();
+  // 整句重排顯示時取代同音字推薦（兩者都標「推薦」）
+  const bool rerank = scoring && rerank_mode_ > 0;
+  const bool rescore = scoring && rescore_on_ && rerank_mode_ != 2;
+  if (!llm_available && !personal_ && !correct && !rescore && !rerank) {
     LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
     return;
   }
@@ -1197,7 +1265,7 @@ void Controller::TriggerPrediction(uint64_t id,
         std::remove(request.personal.begin(), request.personal.end(), completion_prefix),
         request.personal.end());
   }
-  if (!llm_available && request.personal.empty() && !correct && !rescore)
+  if (!llm_available && request.personal.empty() && !correct && !rescore && !rerank)
     return;
 
   // 前文：目前視窗最近的前文；中英混打中尚未送出的部分也是前文
@@ -1209,6 +1277,10 @@ void Controller::TriggerPrediction(uint64_t id,
   request.predict = llm_available && complete;
   request.correct = correct;
   request.rescore = rescore;
+  request.rerank = rerank && rerank_mode_ == 2;
+  request.rerank_shadow = rerank && rerank_mode_ == 1;
+  request.rerank_options.margin = rerank_margin_;
+  request.rerank_options.max_sentences = rerank_sentences_;
   request.zhuyin = zhuyin;
   // 校正只看組字區的內容：組字區裡已確定的部分（混打、標點）當前文，不帶之前送出的文字
   request.typo_context = ss->mixed_text;
@@ -1248,6 +1320,74 @@ bool Controller::RescoreInput(uint64_t id,
   return true;
 }
 
+bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring>* sentences) {
+  // 整句候選要用 Rime：在服務端的鎖下查（引擎這時還沒拿推理鎖）
+  std::lock_guard<std::mutex> api_lock(frontend_->ApiMutex());
+  if (!prediction_->IsCurrent(seq))
+    return false;
+  const SessionState* ss = frontend_->Session(id);
+  if (!ss)
+    return false;
+  const char* raw = api_->get_input(ss->session_id);
+  const std::string input = raw ? raw : "";
+  char schema_id[256] = {0};
+  api_->get_current_schema(ss->session_id, schema_id, sizeof(schema_id));
+  // 只在整串都轉好（沒有還在拼的注音）、沒有往回選字時重排
+  if (input.empty() || ss->preview_input != input || ss->focus >= 0 ||
+      api_->get_caret_pos(ss->session_id) != input.size() || !IsZhuyinSchema(schema_id))
+    return false;
+  const std::wstring preview = zhuyin_preview::Join(ss->preview_units);
+  const std::vector<std::wstring> units = zhuyin_preview::SplitChars(preview);
+  if (units.size() < 2)
+    return false;
+  for (const auto& u : units)
+    if (u.empty() || u[0] < 0x3400 || zhuyin_preview::IsBopomofo(u[0]))
+      return false;
+  *sentences = sentences_->Find(schema_id, input, units.size(), rerank_sentences_);
+  // 第一句一定是使用者看到的轉換（選字記憶、手動選過的字都在裡面）
+  sentences->erase(std::remove(sentences->begin(), sentences->end(), preview), sentences->end());
+  sentences->insert(sentences->begin(), preview);
+  if (sentences->size() > rerank_sentences_)
+    sentences->resize(rerank_sentences_);
+  return sentences->size() >= 2;
+}
+
+void Controller::OnShadow(uint64_t id, uint64_t seq, const std::wstring& first,
+                          const RerankResult& result) {
+  std::lock_guard<std::mutex> api_lock(frontend_->ApiMutex());
+  if (!prediction_->IsCurrent(seq))
+    return;
+  SessionState* ss = frontend_->Session(id);
+  if (!ss)
+    return;
+  ss->shadow_pending = true;
+  ss->shadow_first = first;
+  ss->shadow_best = result.index > 0 ? result.best : std::wstring();
+  ss->shadow_gain = result.gain;
+  ss->shadow_would_change = !result.text.empty();
+}
+
+void Controller::CountShadow(SessionState& ss, const std::wstring& text) {
+  if (!ss.shadow_pending)
+    return;
+  ss.shadow_pending = false;
+  // 只對照同一段組字（字數相同）；之後又打了字或混打的送出不算
+  if (zhuyin_preview::SplitChars(text).size() != zhuyin_preview::SplitChars(ss.shadow_first).size())
+    return;
+  ChoiceStats& s = Stats(ss.session_id);
+  ++s.shadow_total;
+  if (ss.shadow_would_change) {
+    ++s.shadow_changed;
+    if (text == ss.shadow_best)
+      ++s.shadow_rerank_right;
+    else if (text == ss.shadow_first)
+      ++s.shadow_rime_right;
+  }
+  // 校準：分數最高的另一句是不是使用者要的（打開顯示時，校準已經有樣本）
+  if (!ss.shadow_best.empty() && std::isfinite(ss.shadow_gain))
+    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, text == ss.shadow_best);
+}
+
 void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionSet& set) {
   // 刷新候選窗必須在服務端的鎖下進行：按鍵處理執行緒同時在用 librime 與候選窗
   std::lock_guard<std::mutex> api_lock(frontend_->ApiMutex());
@@ -1255,16 +1395,19 @@ void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionS
     return;
   // 選字統計：這次組字第一次出現推薦（統計只在服務端的鎖下讀寫）
   SessionState* ss = frontend_->Session(id);
-  if (set.Count(CandidateKind::kRecommend) > 0 && ss && !ss->recommend_offered) {
+  if ((set.Count(CandidateKind::kRecommend) > 0 || set.Count(CandidateKind::kRerank) > 0) && ss &&
+      !ss->recommend_offered) {
     ss->recommend_offered = true;
     ++Stats(ss->session_id).recommend_offered;
     SaveStats();
   }
   // 信心校準：記下顯示中的推薦／校正（被更新的候選取代時跟著換）
   if (ss && prediction_mode_) {
-    ss->recommend_gain = ss->correction_gain = NoConfidence();
+    ss->recommend_gain = ss->correction_gain = ss->rerank_gain = NoConfidence();
     for (size_t i = 0; i < set.candidates.size(); ++i) {
-      if (set.IsRecommend(i))
+      if (set.Kind(i) == CandidateKind::kRerank)
+        ss->rerank_gain = set.Gain(i);
+      else if (set.IsRecommend(i))
         ss->recommend_gain = set.Gain(i);
       else if (set.IsCorrection(i))
         ss->correction_gain = set.Gain(i);
@@ -1278,11 +1421,13 @@ void Controller::RecordSuggestions(SessionState& ss, CandidateKind taken) {
     calibration_->Record(SuggestionKind::kRecommend, ss.recommend_gain, taken == CandidateKind::kRecommend);
   if (!std::isnan(ss.correction_gain))
     calibration_->Record(SuggestionKind::kCorrection, ss.correction_gain, taken == CandidateKind::kCorrection);
+  if (!std::isnan(ss.rerank_gain))
+    calibration_->Record(SuggestionKind::kRerank, ss.rerank_gain, taken == CandidateKind::kRerank);
   ForgetSuggestions(ss);
 }
 
 void Controller::ForgetSuggestions(SessionState& ss) {
-  ss.recommend_gain = ss.correction_gain = NoConfidence();
+  ss.recommend_gain = ss.correction_gain = ss.rerank_gain = NoConfidence();
 }
 
 void Controller::ExitPredictionMode(uint64_t id) {
@@ -1303,7 +1448,7 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
   if (!ss)
     return;
   const bool predict = PredictionAvailable();
-  const bool rescore = rescore_on_ && RescoreProvider();
+  const bool rescore = ScoringWanted();
   if (!predict && !TypoAvailable() && !rescore)
     return;
 
@@ -1415,11 +1560,10 @@ bool Controller::CommitPrediction(uint64_t id, size_t index) {
   SessionState& ss = *state;
   std::wstring selected;
   bool correction = false, recommend = false;
-  if (!prediction_->Take(index, &selected, &recommend, &correction))
+  CandidateKind kind = CandidateKind::kPrediction;
+  if (!prediction_->Take(index, &selected, &recommend, &correction, &kind))
     return false;
-  RecordSuggestions(ss, recommend    ? CandidateKind::kRecommend
-                        : correction ? CandidateKind::kCorrection
-                                     : CandidateKind::kPrediction);
+  RecordSuggestions(ss, kind);
   // 推薦：用 Rime 逐段選字把整句改成推薦的樣子，留在組字區（送出時 Rime 照常學習）
   if (recommend && ConfirmText(ss, selected)) {
     ++Stats(ss.session_id).recommend_used;
@@ -1505,7 +1649,9 @@ std::string Controller::ChoiceProfile(RimeSessionId session_id) {
     if (on)
       settings += (settings.empty() ? "" : "、") + std::string(name);
   };
-  add(rescore_on_ && RescoreProvider(), "推薦");
+  add(rescore_on_ && rerank_mode_ != 2 && RescoreProvider(), "推薦");
+  add(rerank_mode_ == 2 && RescoreProvider(), "整句重排");
+  add(rerank_mode_ == 1 && RescoreProvider(), "整句重排（shadow）");
   add(TypoAvailable(), "LLM 校正");
   add(PredictionAvailable() && while_typing_, "智慧預測");
   if (settings.empty())
@@ -1526,6 +1672,7 @@ void Controller::SaveStats() {
 
 void Controller::CountCommit(SessionState& ss, const std::wstring& text, bool mixed) {
   RecordSuggestions(ss, CandidateKind::kPrediction);  // 顯示著推薦／校正卻照 Rime 的送出
+  CountShadow(ss, text);
   ChoiceStats& s = Stats(ss.session_id);
   ++s.commits;
   s.chars += (int64_t)text.size();

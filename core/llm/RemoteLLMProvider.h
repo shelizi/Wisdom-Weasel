@@ -29,6 +29,8 @@ class RemoteLLMProvider : public LLMProvider {
                                const std::wstring& instruction) override;
   bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
                  std::vector<double>* per_char) override;
+  bool ScoreBatch(const std::wstring& context, const std::vector<std::wstring>& texts,
+                  std::vector<double>* totals) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override;
 

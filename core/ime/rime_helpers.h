@@ -25,6 +25,20 @@ bool SelectText(RimeApi* api,
                 const std::vector<std::wstring>& units);
 
 // 查同音字（單字候選）：用一個背景 session，只查候選、不送出，不會學習
+// Rime 對一串按鍵的整句候選（方案打開 translator/max_sentences 時有多句）：在背景 session 打同一串
+// 按鍵，取字數相同的候選，依 Rime 的順序最多 max 個。和輸入法共用使用者詞典（選字記憶）
+class SentenceFinder {
+ public:
+  explicit SentenceFinder(RimeApi* api) : api_(api) {}
+  std::vector<std::wstring> Find(const std::string& schema, const std::string& input, size_t chars,
+                                 size_t max);
+
+ private:
+  RimeApi* api_;
+  RimeSessionId session_ = 0;
+  std::string schema_;
+};
+
 class HomophoneFinder {
  public:
   explicit HomophoneFinder(RimeApi* api) : api_(api) {}

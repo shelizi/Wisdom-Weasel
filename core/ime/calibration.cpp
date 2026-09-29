@@ -23,7 +23,9 @@ const char* const kFile = "weasel_calibration.txt";
 }  // namespace
 
 const char* SuggestionKindName(SuggestionKind kind) {
-  return kind == SuggestionKind::kRecommend ? "recommend" : "correction";
+  return kind == SuggestionKind::kRecommend    ? "recommend"
+         : kind == SuggestionKind::kCorrection ? "correction"
+                                               : "rerank";
 }
 
 void Calibrator::Add(double gain, bool accepted, bool refit) {
@@ -208,7 +210,9 @@ std::string CalibrationStore::Summary(SuggestionKind kind) {
   if (c.Samples() == 0)
     return "";
   char buf[256];
-  std::snprintf(buf, sizeof(buf), "%s：%zu 筆（採用 %.0f%%），", kind == SuggestionKind::kRecommend ? "推薦" : "校正",
+  std::snprintf(buf, sizeof(buf), "%s：%zu 筆（採用 %.0f%%），", kind == SuggestionKind::kRecommend    ? "推薦"
+                : kind == SuggestionKind::kCorrection ? "校正"
+                                                      : "整句重排",
                 c.Samples(), 100.0 * c.Accepted() / c.Samples());
   std::string text = buf;
   if (!c.Ready()) {

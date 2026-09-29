@@ -1251,6 +1251,132 @@ bool LlamaCppProvider::ScoreText(const std::wstring& context, const std::wstring
   return true;
 }
 
+namespace {
+
+// logits 裡 token 的 log 機率（log-softmax 只算需要的那一格）
+double TokenLogProb(const float* logits, int n_vocab, llama_token token) {
+  float mx = logits[0];
+  for (int v = 1; v < n_vocab; ++v)
+    mx = logits[v] > mx ? logits[v] : mx;
+  double z = 0;
+  for (int v = 0; v < n_vocab; ++v)
+    z += std::exp(logits[v] - mx);
+  return logits[token] - mx - std::log(z);
+}
+
+}  // namespace
+
+bool LlamaCppProvider::ScoreBatch(const std::wstring& context,
+                                  const std::vector<std::wstring>& texts,
+                                  std::vector<double>* totals) {
+  totals->assign(texts.size(), std::numeric_limits<double>::quiet_NaN());
+  if (!IsAvailable() || texts.empty())
+    return false;
+  llama_context* ctx = (llama_context*)m_context;
+  const llama_vocab* vocab = (const llama_vocab*)m_vocab;
+  llama_memory_t mem = (llama_memory_t)m_memory;
+  auto tokenize = [&](const std::string& s) {
+    const int n = -llama_tokenize(vocab, s.c_str(), (int32_t)s.size(), NULL, 0, true, true);
+    std::vector<llama_token> t(n > 0 ? n : 0);
+    if (n > 0)
+      llama_tokenize(vocab, s.c_str(), (int32_t)s.size(), t.data(), n, true, true);
+    return t;
+  };
+  // 前文只算一次：候選整段切 token 時前文部分要和單獨切的一樣（接縫沒有合併），才能共用
+  const std::string ctx_u8 = utf8::FromWide(context);
+  const std::vector<llama_token> prefix = tokenize(ctx_u8);
+  const size_t kMaxShared = 63;  // n_seq_max 64，序列 0 放前文
+  std::vector<std::vector<llama_token>> suffix(texts.size());
+  std::vector<size_t> shared, single;
+  size_t batch_tokens = 0;
+  for (size_t i = 0; i < texts.size(); ++i) {
+    if (texts[i].empty())
+      continue;
+    const std::vector<llama_token> all = tokenize(ctx_u8 + utf8::FromWide(texts[i]));
+    if (!prefix.empty() && all.size() > prefix.size() && shared.size() < kMaxShared &&
+        std::equal(prefix.begin(), prefix.end(), all.begin())) {
+      suffix[i].assign(all.begin() + prefix.size(), all.end());
+      batch_tokens += suffix[i].size();
+      shared.push_back(i);
+    } else {
+      single.push_back(i);
+    }
+  }
+  // 放不下（前文加所有候選超過 context）就逐一評
+  if (prefix.size() + batch_tokens > (size_t)m_ctx_size) {
+    single.insert(single.end(), shared.begin(), shared.end());
+    shared.clear();
+  }
+  bool ok = !shared.empty();
+  if (ok) {
+    DropSystemPromptCache();
+    llama_memory_seq_rm(mem, -1, -1, -1);
+    const int n_vocab = llama_vocab_n_tokens(vocab);
+    // 1) 前文（序列 0），只要最後一個位置的 logits：它預測每個候選的第一個 token
+    llama_batch batch = llama_batch_init((int32_t)prefix.size(), 0, 1);
+    for (size_t j = 0; j < prefix.size(); ++j) {
+      batch.token[j] = prefix[j];
+      batch.pos[j] = (llama_pos)j;
+      batch.n_seq_id[j] = 1;
+      batch.seq_id[j][0] = 0;
+      batch.logits[j] = j + 1 == prefix.size();
+    }
+    batch.n_tokens = (int32_t)prefix.size();
+    ok = llama_decode(ctx, batch) == 0;
+    std::vector<float> last;
+    if (ok) {
+      const float* logits = llama_get_logits_ith(ctx, (int32_t)prefix.size() - 1);
+      last.assign(logits, logits + n_vocab);
+    }
+    llama_batch_free(batch);
+    // 2) 前文複製給每個候選（unified KV：共用同一段，不多占空間）；3) 所有候選一次解碼
+    if (ok) {
+      for (size_t k = 0; k < shared.size(); ++k)
+        llama_memory_seq_cp(mem, 0, (llama_seq_id)(k + 1), -1, -1);
+      batch = llama_batch_init((int32_t)batch_tokens, 0, 1);
+      std::vector<int32_t> first_row(shared.size());
+      int32_t n = 0;
+      for (size_t k = 0; k < shared.size(); ++k) {
+        const std::vector<llama_token>& t = suffix[shared[k]];
+        first_row[k] = n;
+        for (size_t j = 0; j < t.size(); ++j, ++n) {
+          batch.token[n] = t[j];
+          batch.pos[n] = (llama_pos)(prefix.size() + j);
+          batch.n_seq_id[n] = 1;
+          batch.seq_id[n][0] = (llama_seq_id)(k + 1);
+          batch.logits[n] = j + 1 < t.size();  // 最後一個 token 之後不用再預測
+        }
+      }
+      batch.n_tokens = n;
+      ok = llama_decode(ctx, batch) == 0;
+      if (ok) {
+        for (size_t k = 0; k < shared.size(); ++k) {
+          const std::vector<llama_token>& t = suffix[shared[k]];
+          double lp = TokenLogProb(last.data(), n_vocab, t[0]);
+          for (size_t j = 1; j < t.size(); ++j)
+            lp += TokenLogProb(llama_get_logits_ith(ctx, first_row[k] + (int32_t)j - 1), n_vocab,
+                               t[j]);
+          (*totals)[shared[k]] = lp;
+        }
+      }
+      llama_batch_free(batch);
+    }
+    llama_memory_seq_rm(mem, -1, -1, -1);
+  }
+  // 共用失敗（例如遞迴架構不能複製序列）或不能共用的：逐一評
+  if (!ok)
+    single.insert(single.end(), shared.begin(), shared.end());
+  for (size_t i : single) {
+    double total = 0;
+    if (ScoreText(context, texts[i], &total, nullptr))
+      (*totals)[i] = total;
+  }
+  for (double v : *totals)
+    if (!std::isnan(v))
+      return true;
+  return false;
+}
+
 void LlamaCppProvider::DropSystemPromptCache() {
   m_system_prompt_utf8.clear();
   m_system_prompt_ready = false;

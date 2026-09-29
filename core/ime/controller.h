@@ -32,6 +32,8 @@ namespace ime {
 struct ChoiceStats;
 class ChoiceStatsStore;
 class CalibrationStore;
+class SentenceFinder;
+struct RerankResult;
 enum class CandidateKind : uint8_t;
 class HomophoneFinder;
 class PredictionEngine;
@@ -149,6 +151,14 @@ class Controller {
   bool CommitPrediction(uint64_t id, size_t index);
   bool RescoreInput(uint64_t id, uint64_t seq, std::vector<std::wstring>* units,
                     std::vector<std::vector<std::wstring>>* homophones);
+  // 整句重排：Rime 對目前輸入的整句候選（第一句是使用者看到的轉換）
+  bool RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring>* sentences);
+  void OnShadow(uint64_t id, uint64_t seq, const std::wstring& first, const RerankResult& result);
+  // 送出時對照 shadow 的結果（選字統計與校準）
+  void CountShadow(SessionState& ss, const std::wstring& text);
+  // 推薦或整句重排要用本機模型評分
+  bool ScoringWanted() const;
+  void LoadScorerProvider(RimeConfig* config);
   void OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionSet& set);
   // 信心校準：把顯示中的推薦／校正記成樣本（taken 是選了哪一種，都沒選是 kPrediction）
   void RecordSuggestions(SessionState& ss, CandidateKind taken);
@@ -176,6 +186,10 @@ class Controller {
   bool typo_on_ = false;           // llm/typo/llm：LLM 整句校正
   bool rescore_on_ = false;        // llm/choice/rescore：推薦
   double min_confidence_ = 0.5;    // llm/choice/min_confidence：推薦／校正的採用機率低於這個就不顯示
+  // llm/choice/rerank：整句重排（Rime Top-K 由本機模型重排）。0 關、1 shadow（只算不顯示）、2 顯示
+  int rerank_mode_ = 0;
+  double rerank_margin_ = 2.0;     // llm/choice/rerank_margin
+  size_t rerank_sentences_ = 10;   // llm/choice/rerank_sentences：最多評幾句
   bool choice_log_ = false;        // llm/choice/log：記錄選字過程（加密）
   size_t context_max_chars_ = 100;      // llm/context/max_chars：給模型的前文最多幾個字
   unsigned context_idle_minutes_ = 10;  // llm/context/idle_minutes：視窗閒置多久後舊前文失效
@@ -186,6 +200,8 @@ class Controller {
   // 模型：在推理鎖（prediction_->InferMutex()）下更換與取用
   std::unique_ptr<LLMProvider> llm_provider_;
   std::unique_ptr<LLMProvider> typo_owned_;
+  // llm/choice/scorer/*：評分專用的本機模型（推薦、整句重排、學習過濾）；沒設定時借預測或校正的模型
+  std::unique_ptr<LLMProvider> scorer_owned_;
   LLMProvider* typo_llm_ = nullptr;  // 可能指向 llm_provider_
   std::wstring loaded_model_;        // 目前載入的模型（設定畫面顯示用）
 
@@ -198,6 +214,7 @@ class Controller {
 
   std::unique_ptr<PredictionEngine> prediction_;
   std::unique_ptr<HomophoneFinder> homophones_;
+  std::unique_ptr<SentenceFinder> sentences_;
   std::unique_ptr<ChoiceStatsStore> choice_store_;
   std::unique_ptr<CalibrationStore> calibration_;  // 推薦／校正的信心校準（預測背景執行緒也會讀）
   std::map<std::string, std::string> schema_flags_;  // 方案 → 方案裡的設定（語言模型等）

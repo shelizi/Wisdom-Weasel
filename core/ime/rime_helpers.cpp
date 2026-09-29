@@ -88,6 +88,36 @@ bool SelectText(RimeApi* api,
   return true;
 }
 
+std::vector<std::wstring> SentenceFinder::Find(const std::string& schema, const std::string& input,
+                                               size_t chars, size_t max) {
+  std::vector<std::wstring> result;
+  if (!session_ || !api_->find_session(session_)) {
+    session_ = api_->create_session();
+    schema_.clear();
+  }
+  if (!session_ || input.empty())
+    return result;
+  if (schema_ != schema) {
+    api_->select_schema(session_, schema.c_str());
+    schema_ = schema;
+  }
+  api_->set_input(session_, input.c_str());
+  RimeCandidateListIterator iter = {0};
+  if (api_->candidate_list_begin(session_, &iter)) {
+    for (int i = 0; i < 100 && result.size() < max && api_->candidate_list_next(&iter); ++i) {
+      if (!iter.candidate.text)
+        continue;
+      const std::wstring text = utf8::ToWide(iter.candidate.text);
+      if (zhuyin_preview::SplitChars(text).size() == chars &&
+          std::find(result.begin(), result.end(), text) == result.end())
+        result.push_back(text);
+    }
+    api_->candidate_list_end(&iter);
+  }
+  api_->clear_composition(session_);
+  return result;
+}
+
 std::vector<std::wstring> HomophoneFinder::Find(const std::string& schema, const std::string& keys) {
   const std::string cache_key = schema + "\t" + keys;
   auto it = cache_.find(cache_key);

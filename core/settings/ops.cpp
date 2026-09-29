@@ -375,6 +375,8 @@ const char kTypoBegin[] = "  # >>> weasel-typo-correction";
 const char kTypoEnd[] = "  # <<< weasel-typo-correction";
 const char kGrammarBegin[] = "  # >>> weasel-grammar";
 const char kGrammarEnd[] = "  # <<< weasel-grammar";
+const char kSentencesBegin[] = "  # >>> weasel-rerank-sentences";
+const char kSentencesEnd[] = "  # <<< weasel-rerank-sentences";
 const char kGrammarFile[] = "zh-hant-t-essay-bgw.gram";
 const uint64_t kGrammarMinBytes = 30ull * 1024 * 1024;  // 完整的檔案約 41 MB
 
@@ -487,6 +489,20 @@ bool PatchSchemaGrammar(const fs::path& file, bool enable, std::string* error) {
                           {"grammar:", "translator/contextual_suggestions"}, error);
 }
 
+// 整句重排：Rime 給出前幾個整句（librime 1.17 translator/max_sentences），輸入法再用本機模型重排。
+// 候選窗也會多出這些整句候選
+bool PatchSchemaSentences(const fs::path& file, bool enable, std::string* error) {
+  std::vector<std::string> block;
+  if (enable)
+    block = {
+        std::string(kSentencesBegin) + "：整句重排用的整句候選（小狼毫設定自動管理）",
+        "  translator/max_sentences: 10",
+        kSentencesEnd,
+    };
+  return PatchSchemaBlock(file, kSentencesBegin, kSentencesEnd, block, {"translator/max_sentences"},
+                          error);
+}
+
 // 三個注音方案都改；關閉時只還原已有的檔案
 bool PatchAllZhuyin(Platform& platform, bool enable, std::string* error,
                     bool (*patch)(const fs::path&, bool, std::string*)) {
@@ -559,6 +575,10 @@ bool ApplyGrammar(Platform& platform, bool enable, std::string* error) {
   return PatchAllZhuyin(platform, enable, error, PatchSchemaGrammar);
 }
 
+bool ApplyRerankSentences(Platform& platform, bool enable, std::string* error) {
+  return PatchAllZhuyin(platform, enable, error, PatchSchemaSentences);
+}
+
 bool GrammarEnabled(Platform& platform) {
   return ReadFile(platform.UserDataDir() / "bopomofo_express.custom.yaml").find("# >>> weasel-grammar") !=
          std::string::npos;
@@ -582,7 +602,8 @@ std::vector<StatsRow> ChoiceStats(Platform& platform, int span_days) {
   // weasel_stats_profiles.txt：組合代碼 版本 編譯時間 版本說明 設定 第一次出現
   struct Sum {
     int64_t commits = 0, chars = 0, changed = 0, offered = 0, used = 0, corrections = 0, backs = 0,
-            deleted = 0, focus = 0, rec_offered = 0, rec_used = 0;
+            deleted = 0, focus = 0, rec_offered = 0, rec_used = 0, sh_total = 0, sh_changed = 0,
+            sh_right = 0, sh_rime = 0;
     void Add(const Sum& s) {
       commits += s.commits;
       chars += s.chars;
@@ -595,6 +616,10 @@ std::vector<StatsRow> ChoiceStats(Platform& platform, int span_days) {
       focus += s.focus;
       rec_offered += s.rec_offered;
       rec_used += s.rec_used;
+      sh_total += s.sh_total;
+      sh_changed += s.sh_changed;
+      sh_right += s.sh_right;
+      sh_rime += s.sh_rime;
     }
   };
   struct Profile {
@@ -642,7 +667,8 @@ std::vector<StatsRow> ChoiceStats(Platform& platform, int span_days) {
       }
       Sum s;
       if (numbers >> s.commits >> s.chars >> s.changed >> s.offered >> s.used >> s.corrections >> s.backs) {
-        numbers >> s.deleted >> s.focus >> s.rec_offered >> s.rec_used;  // 較新的欄位
+        numbers >> s.deleted >> s.focus >> s.rec_offered >> s.rec_used >> s.sh_total >> s.sh_changed >>
+            s.sh_right >> s.sh_rime;  // 較新的欄位
         sums[key].Add(s);
         last[key] = (std::max)(last[key], date);
       }
@@ -664,6 +690,10 @@ std::vector<StatsRow> ChoiceStats(Platform& platform, int span_days) {
     out << t.chars << " 字、逐字選字 " << t.focus << "、推薦出現 " << t.rec_offered << "、LLM 出現 "
         << t.offered << "（校正採用 " << t.corrections << "）、Backspace " << t.backs << "、送出後刪除 "
         << t.deleted << " 次";
+    if (t.sh_total)
+      out << "\n整句重排（shadow，只算不顯示）：評估 " << t.sh_total << " 次、會改 " << t.sh_changed
+          << " 次，其中改對 " << t.sh_right << "、改錯（原本就對）" << t.sh_rime << "、兩個都不是 "
+          << t.sh_changed - t.sh_right - t.sh_rime;
     return out.str();
   };
 
@@ -686,6 +716,7 @@ std::vector<StatsRow> ChoiceStats(Platform& platform, int span_days) {
     row.deleted = percent(t.deleted, t.chars);
     row.changed = t.changed;
     row.recommended = ratio(t.rec_used, t.rec_offered);
+    row.rerank = ratio(t.sh_right, t.sh_changed);
     row.llm = ratio(t.used, t.offered);
     row.detail = detail;
     rows.push_back(std::move(row));

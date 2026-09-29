@@ -16,7 +16,7 @@ cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DNDEBUG /I"%ROOT%\include" /DPERSONA
   /Fo"%OUT%\\" /Fe"%OUT%\TestController.exe" ^
   TestController.cpp ^
   "%C%\ime\controller.cpp" "%C%\ime\prediction_engine.cpp" "%C%\ime\rescore.cpp" ^
-  "%C%\ime\text_rules.cpp" "%C%\ime\calibration.cpp" "%C%\ime\choice_stats.cpp" "%C%\ime\choice_log.cpp" "%C%\ime\rime_helpers.cpp" ^
+  "%C%\ime\text_rules.cpp" "%C%\ime\calibration.cpp" "%C%\ime\candidate_reranker.cpp" "%C%\ime\choice_stats.cpp" "%C%\ime\choice_log.cpp" "%C%\ime\rime_helpers.cpp" ^
   "%C%\llm\ContextHistory.cpp" "%C%\llm\MemoryCompressor.cpp" "%C%\llm\LLMProvider.cpp" ^
   "%C%\llm\RemoteLLMProvider.cpp" "%C%\llm_ipc\client.cpp" ^
   "%C%\personal\PersonalLexicon.cpp" "%C%\personal\PersonalRefiner.cpp" "%C%\personal\LearnFilter.cpp" ^

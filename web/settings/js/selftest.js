@@ -98,6 +98,8 @@ async function applyPhase(ctx) {
   f.choice.rescore = !f.choice.rescore;
   f.choice.log = !f.choice.log;
   f.choice.min_confidence = f.choice.min_confidence === '0.25' ? '0.5' : '0.25';
+  f.choice.rerank = f.choice.rerank === 'shadow' ? 'off' : 'shadow';
+  f.choice.rerank_margin = f.choice.rerank_margin === '3' ? '2' : '3';
   f.personal.max = 2;
   f.personal.half_life = '45';
   f.personal.interval = '3';

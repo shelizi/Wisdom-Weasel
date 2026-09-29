@@ -32,6 +32,13 @@ struct SessionState {
   // 信心校準：目前顯示中的推薦／校正比原句好多少（沒有是 NaN）；送出或選了候選時記成一筆樣本
   double recommend_gain = std::numeric_limits<double>::quiet_NaN();
   double correction_gain = std::numeric_limits<double>::quiet_NaN();
+  double rerank_gain = std::numeric_limits<double>::quiet_NaN();
+  // 整句重排的 shadow 模式：最後一次的結果（不顯示），送出時和使用者送出的句子對照
+  bool shadow_pending = false;
+  bool shadow_would_change = false;  // 過了門檻，顯示模式會推薦
+  std::wstring shadow_first;         // Rime 第一句
+  std::wstring shadow_best;          // 分數最高的另一句（沒有是空字串）
+  double shadow_gain = std::numeric_limits<double>::quiet_NaN();
   // 選字紀錄：還沒換字前 Rime 的預設轉換（整句）與對應的注音
   std::wstring default_text;
   std::wstring default_zhuyin;

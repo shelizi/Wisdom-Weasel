@@ -2,6 +2,7 @@
 // 的測試：文字規則、候選清洗、注音預覽的小工具、推薦、信心校準、選字統計與選字紀錄、學習過濾
 #include "../../core/ime/ZhuyinPreview.h"
 #include "../../core/ime/calibration.h"
+#include "../../core/ime/candidate_reranker.h"
 #include "../../core/ime/choice_log.h"
 #include "../../core/ime/choice_stats.h"
 #include "../../core/ime/prediction_engine.h"
@@ -206,11 +207,13 @@ static void TestChoiceStats(const fs::path& dir) {
                        std::istreambuf_iterator<char>());
   };
   const std::string saved = read(dir / "weasel_stats.txt");
-  CHECK(saved.find(ime::DateString(3) +
-                   "\tlegacy\t5\t10\t1\t0\t0\t0\t2\t0\t0\t0\t0\n") !=
-        std::string::npos);
+  CHECK(
+      saved.find(ime::DateString(3) +
+                 "\tlegacy\t5\t10\t1\t0\t0\t0\t2\t0\t0\t0\t0\t0\t0\t0\t0\n") !=
+      std::string::npos);
   CHECK(saved.find(ime::DateString(0) + "\t" + key +
-                   "\t3\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\n") != std::string::npos);
+                   "\t3\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0\t0\t0\t0\n") !=
+        std::string::npos);
   CHECK(saved.find("deadbeef") == std::string::npos);  // 超過 90 天
   const std::string profiles = read(dir / "weasel_stats_profiles.txt");
   CHECK(profiles == key + "\tabc\t2026-01-01\tsubject\tbopomofo｜推薦\t" +
@@ -593,6 +596,107 @@ static void TestConfidenceOrdering() {
   }
 }
 
+static void TestRerank() {
+  // 整句分數是各字分數的和：今天汽 -10、今天氣 -4、金天氣 -4（金 -1）
+  FakeScorer scorer;
+  scorer.score = {{L'今', -1}, {L'天', -1}, {L'汽', -8}, {L'氣', -2}};
+  const Strings sentences = {L"今天汽", L"今天氣", L"金天氣"};
+  ime::RerankResult r = ime::RerankSentences(&scorer, L"", sentences);
+  CHECK(r.text == L"今天氣" && r.best == L"今天氣" && r.index == 1);
+  CHECK(std::abs(r.gain - 6) < 1e-9 && r.scored == 3);
+  // 沒過門檻：不推薦，但最好的一句與改善多少照樣帶出來（shadow 與校準用）
+  ime::RerankOptions strict;
+  strict.margin = 7;
+  r = ime::RerankSentences(&scorer, L"", sentences, strict);
+  CHECK(r.text.empty() && r.best == L"今天氣" && std::abs(r.gain - 6) < 1e-9);
+  // 第一句最好、只有一句、沒有模型：不推薦
+  scorer.score[L'汽'] = -1;
+  r = ime::RerankSentences(&scorer, L"", sentences);
+  CHECK(r.text.empty() && r.best.empty() && r.index == 0);
+  CHECK(ime::RerankSentences(&scorer, L"", {L"今天"}).text.empty());
+  CHECK(ime::RerankSentences(nullptr, L"", sentences).text.empty());
+  // 最多評幾句
+  scorer.score[L'汽'] = -8;
+  ime::RerankOptions two;
+  two.max_sentences = 2;
+  scorer.calls = 0;
+  r = ime::RerankSentences(&scorer, L"", sentences, two);
+  CHECK(r.text == L"今天氣" && scorer.calls == 2);
+  // ScoreBatch 的預設實作：逐一評分
+  std::vector<double> totals;
+  CHECK(scorer.ScoreBatch(L"", {L"今天", L"天氣"}, &totals));
+  CHECK(totals.size() == 2 && totals[0] == -2 && totals[1] == -3);
+}
+
+static void TestRerankEngine() {
+  FakeScorer model;
+  model.predictions = {L"很好"};
+  model.score = {{L'今', -1}, {L'天', -1}, {L'汽', -8}, {L'氣', -2}};
+  std::mutex mutex;
+  std::wstring shadow_first;
+  ime::RerankResult shadow;
+  int shadows = 0;
+  ime::PredictionEngine::Hooks hooks;
+  hooks.models = [&] {
+    ime::PredictionModels m;
+    m.predict = m.rescore = &model;
+    return m;
+  };
+  hooks.rerank_input = [&](uint64_t, uint64_t,
+                           std::vector<std::wstring>* sentences) {
+    *sentences = {L"今天汽", L"今天氣"};
+    return true;
+  };
+  hooks.on_shadow = [&](uint64_t, uint64_t, const std::wstring& first,
+                        const ime::RerankResult& result) {
+    std::lock_guard<std::mutex> lock(mutex);
+    shadow_first = first;
+    shadow = result;
+    ++shadows;
+  };
+  std::atomic<int> updates{0};
+  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) {
+    ++updates;
+  };
+  ime::PredictionEngine engine(hooks);
+
+  // 顯示：重排的句子是推薦（kRerank），續寫接在它後面
+  ime::PredictionRequest typing;
+  typing.history = L"前文";
+  typing.prefix = L"今天汽";
+  typing.predict = true;
+  typing.rerank = true;
+  engine.Request(typing);
+  CHECK(WaitFor([&] { return updates.load() == 2; }));
+  ime::PredictionSet set = engine.Snapshot();
+  CHECK(!set.candidates.empty() && set.candidates[0] == L"今天氣");
+  CHECK(set.Kind(0) == ime::CandidateKind::kRerank && set.IsRecommend(0) &&
+        set.Comment(0) == L"推薦" && std::abs(set.Gain(0) - 6) < 1e-9);
+  CHECK(model.last_context == L"前文今天氣");
+  std::wstring text;
+  bool recommend = false, correction = false;
+  ime::CandidateKind kind = ime::CandidateKind::kPrediction;
+  CHECK(engine.Take(0, &text, &recommend, &correction, &kind));
+  CHECK(text == L"今天氣" && recommend && !correction &&
+        kind == ime::CandidateKind::kRerank);
+
+  // shadow：只算不顯示，結果交給 on_shadow；續寫仍接在 Rime 的轉換後面
+  updates = 0;
+  typing.rerank = false;
+  typing.rerank_shadow = true;
+  engine.Request(typing);
+  CHECK(WaitFor([&] { return updates.load() == 1; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  set = engine.Snapshot();
+  CHECK(set.Count(ime::CandidateKind::kRerank) == 0);
+  CHECK(model.last_context == L"前文今天汽");
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK(shadows == 1 && shadow_first == L"今天汽" &&
+          shadow.text == L"今天氣" && shadow.best == L"今天氣");
+  }
+}
+
 static void TestLearnFilter(const fs::path& dir) {
   // 片段的平均分數：逗號切開，低於門檻的不學；分數與文字長度對不上時不擋
   const std::wstring text = L"今天很好，ㄅㄅㄅ";
@@ -736,6 +840,8 @@ int main() {
   TestRescore();
   TestPredictionEngine();
   TestConfidenceOrdering();
+  TestRerank();
+  TestRerankEngine();
   TestCalibration(dir / "calibration");
   TestChoiceStats(dir / "stats");
   TestChoiceLog(dir / "log");

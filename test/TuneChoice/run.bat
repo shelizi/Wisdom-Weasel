@@ -17,7 +17,7 @@ set "C=%ROOT%\core"
 cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /O2 /DNDEBUG /I"%ROOT%\include" ^
   /Fo"%OUT%\\" /Fe"%BIN%\TuneChoice.exe" ^
   TuneChoice.cpp ^
-  "%C%\ime\rescore.cpp" "%C%\ime\calibration.cpp" "%C%\ime\text_rules.cpp" "%C%\ime\rime_helpers.cpp" ^
+  "%C%\ime\rescore.cpp" "%C%\ime\calibration.cpp" "%C%\ime\candidate_reranker.cpp" "%C%\ime\text_rules.cpp" "%C%\ime\rime_helpers.cpp" ^
   "%C%\llm\RemoteLLMProvider.cpp" "%C%\llm\LLMProvider.cpp" "%C%\llm_ipc\client.cpp" ^
   "%C%\crypto\personal_crypto.cpp" "%C%\platform\win\key_store_win.cpp" "%C%\platform\win\process_win.cpp" ^
   "%C%\net\win\http_win.cpp" ^
@@ -25,6 +25,8 @@ cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /O2 /DNDEBUG /I"%ROOT%\include" ^
   /link /LIBPATH:"%ROOT%\lib64" rime.lib || exit /b 1
 rem The LLM host has to sit next to the executable
 for %%f in ("%WEASEL_INSTALL%\WisdomLLMHost.exe" "%WEASEL_INSTALL%\*.dll") do copy /y "%%~f" "%BIN%" >nul
+rem A freshly built host (with the newest IPC requests) takes precedence over the installed one
+if exist "%ROOT%\output\WisdomLLMHost.exe" copy /y "%ROOT%\output\WisdomLLMHost.exe" "%BIN%" >nul
 if "%~1"=="" (
   echo usage: run.bat ^<model.gguf^> [--log file] [--cases file] [--correct] [--limit N] [--gpu N] [--base] [--dump file]
   exit /b 2

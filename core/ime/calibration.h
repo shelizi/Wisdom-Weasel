@@ -4,7 +4,7 @@
 //   p = sigmoid(a·gain + b)，a、b 用使用者實際的選擇擬合（採用 = 1、出現了但沒用 = 0），
 //   最小化 log loss（proper scoring rule：只有說實話的機率才會最好），所以 p 是校準過的。
 // 樣本只有數字、不含打字內容，寫在使用者資料夾的 weasel_calibration.txt：
-//   每行：種類（recommend / correction） \t gain \t 採用（0/1）
+//   每行：種類（recommend / correction / rerank） \t gain \t 採用（0/1）
 #include <cmath>
 #include <deque>
 #include <filesystem>
@@ -14,8 +14,8 @@
 
 namespace ime {
 
-enum class SuggestionKind { kRecommend = 0, kCorrection = 1 };
-constexpr int kSuggestionKinds = 2;
+enum class SuggestionKind { kRecommend = 0, kCorrection = 1, kRerank = 2 };
+constexpr int kSuggestionKinds = 3;
 
 const char* SuggestionKindName(SuggestionKind kind);
 

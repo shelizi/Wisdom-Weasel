@@ -29,6 +29,7 @@ enum class Op : uint8_t {
   // 借用已載入的本機模型對話（模型不同或放不下時不做）：
   // 模型路徑、instruct、system、user、max_tokens → 結果（0 成功、1 不適用、2 失敗）、輸出、錯誤訊息
   kChat = 16,
+  kScoreBatch = 17,  // 前文、候選清單 → 每個候選的總分（評不了的是 NaN）
   // 不需回覆
   kCancel = 100,  // 取消編號為 id 的請求
   // 推理行程送出

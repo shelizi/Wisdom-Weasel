@@ -62,6 +62,8 @@ bool ApplyRimeBoost(Platform& platform, RimeLeversApi* api, RimeSwitcherSettings
                     bool enable, std::string* error);
 bool ApplyTypoCorrection(Platform& platform, bool enable, std::string* error);
 bool ApplyGrammar(Platform& platform, bool enable, std::string* error);
+// 整句重排：三個注音方案加上 translator/max_sentences（關閉時拿掉）
+bool ApplyRerankSentences(Platform& platform, bool enable, std::string* error);
 bool GrammarEnabled(Platform& platform);  // 注音方案裡有我們加的區塊
 fs::path GrammarPath(Platform& platform);
 bool GrammarReady(Platform& platform);  // 模型檔已下載
@@ -73,6 +75,7 @@ struct StatsRow {
   std::string version, settings;
   int64_t commits = 0, changed = 0;
   std::string first_ok, deleted, recommended, llm;  // 百分比或 n／d
+  std::string rerank;  // 整句重排 shadow：改對／會改
   std::string detail;
 };
 // span_days：1 = 今天、7、30；0 = 全部。有兩種以上的組合時第一列是合計

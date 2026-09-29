@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <string>
 #include <vector>
 #include <memory>
@@ -61,6 +62,23 @@ class LLMProvider {
   virtual bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
                          std::vector<double>* per_char) {
     return false;
+  }
+
+  // 同一段前文、多個候選一起評分（重排 Rime 的整句候選用）：totals 與 texts 一一對應，
+  // 評不了的是 NaN；有任何一個評得出來就回傳 true。
+  // 預設逐一呼叫 ScoreText；本機模型會共用前文、一次解碼所有候選
+  virtual bool ScoreBatch(const std::wstring& context, const std::vector<std::wstring>& texts,
+                          std::vector<double>* totals) {
+    totals->assign(texts.size(), std::numeric_limits<double>::quiet_NaN());
+    bool any = false;
+    for (size_t i = 0; i < texts.size(); ++i) {
+      double total = 0;
+      if (ScoreText(context, texts[i], &total, nullptr)) {
+        (*totals)[i] = total;
+        any = true;
+      }
+    }
+    return any;
   }
 
   // 检查LLM是否可用
@@ -285,6 +303,8 @@ class LlamaCppProvider : public LLMProvider {
   bool IsAvailable() const override;
   bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
                  std::vector<double>* per_char) override;
+  bool ScoreBatch(const std::wstring& context, const std::vector<std::wstring>& texts,
+                  std::vector<double>* totals) override;
   std::string GetProviderName() const override { return "llama.cpp Local"; }
 
   // 不經 rime 設定，直接指定模型載入（LLMLocalChat 用）

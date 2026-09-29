@@ -297,6 +297,11 @@ struct Backend::State {
       if (!error.empty())
         add_error("注音排序：", error);
     }
+    if (c.contains("rerank_sentences")) {
+      std::string error;
+      if (!ApplyRerankSentences(platform, c["rerank_sentences"].get<bool>(), &error))
+        add_error("整句重排：", error);
+    }
     if (c.contains("typo_rime")) {
       std::string error;
       if (!ApplyTypoCorrection(platform, c["typo_rime"].get<bool>(), &error))
@@ -697,6 +702,7 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
                       {"changed", r.changed},
                       {"recommended", r.recommended},
                       {"llm", r.llm},
+                      {"rerank", r.rerank},
                       {"detail", r.detail}});
     return rows;
   }

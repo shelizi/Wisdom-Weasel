@@ -17,12 +17,14 @@
 #include <vector>
 
 #include "calibration.h"
+#include "candidate_reranker.h"
 
 class LLMProvider;
 
 namespace ime {
 
-enum class CandidateKind : uint8_t { kPrediction, kRecommend, kCorrection };
+// kRerank：整句重排的推薦（候選窗一樣標「推薦」、Tab 套用，校準另外算）
+enum class CandidateKind : uint8_t { kPrediction, kRecommend, kCorrection, kRerank };
 
 // 一組候選：推薦、整句校正排最前（候選窗標示「推薦」「校正」），兩者的先後依校準過的採用機率
 struct PredictionSet {
@@ -32,7 +34,9 @@ struct PredictionSet {
   std::vector<double> confidences;   // 校準過的採用機率，還沒校準是 NaN
 
   CandidateKind Kind(size_t i) const { return i < kinds.size() ? kinds[i] : CandidateKind::kPrediction; }
-  bool IsRecommend(size_t i) const { return Kind(i) == CandidateKind::kRecommend; }
+  bool IsRecommend(size_t i) const {
+    return Kind(i) == CandidateKind::kRecommend || Kind(i) == CandidateKind::kRerank;
+  }
   bool IsCorrection(size_t i) const { return Kind(i) == CandidateKind::kCorrection; }
   double Gain(size_t i) const;
   double Confidence(size_t i) const;
@@ -61,6 +65,9 @@ struct PredictionRequest {
   std::wstring typo_context;           // 校正的前文（組字區裡已確定的部分）
   std::wstring typo_prompt;            // 自訂校正指令，空字串用預設
   double min_confidence = 0;           // 推薦／校正校準過的採用機率低於這個就不顯示（0 = 都顯示）
+  bool rerank = false;                 // 整句重排：比 Rime 第一句通順的整句當推薦（需要 prefix）
+  bool rerank_shadow = false;          // 整句重排只算不顯示，結果交給 on_shadow（驗證用）
+  RerankOptions rerank_options;
   unsigned delay_ms = 0;               // 防抖：等這麼久後若已有更新的請求就放棄
 };
 
@@ -76,6 +83,14 @@ class PredictionEngine {
         rescore_input;
     // 背景執行緒：候選更新了。呼叫端加鎖後用 IsCurrent(seq) 確認仍是最新的再更新介面
     std::function<void(uint64_t tag, uint64_t seq, const PredictionSet& set)> on_update;
+    // 背景執行緒：Rime 對目前輸入的整句候選，第一句是使用者看到的轉換（呼叫端自己加鎖）；
+    // 回傳 false 表示不重排
+    std::function<bool(uint64_t tag, uint64_t seq, std::vector<std::wstring>* sentences)>
+        rerank_input;
+    // 背景執行緒：shadow 模式的重排結果（不顯示）；呼叫端加鎖後用 IsCurrent(seq) 確認
+    std::function<void(uint64_t tag, uint64_t seq, const std::wstring& first,
+                       const RerankResult& result)>
+        on_shadow;
     // 背景執行緒：把 gain 換成校準過的採用機率（呼叫端自己加鎖）；沒有或還沒校準回傳 NaN
     std::function<double(SuggestionKind kind, double gain)> confidence;
   };
@@ -94,7 +109,8 @@ class PredictionEngine {
   PredictionSet Snapshot() const;
   bool HasCandidates() const;
   // 取出第 index 個候選並清掉候選；沒有時回傳 false
-  bool Take(size_t index, std::wstring* text, bool* recommend, bool* correction);
+  bool Take(size_t index, std::wstring* text, bool* recommend, bool* correction,
+            CandidateKind* kind = nullptr);
 
   // 更換模型（例如重新部署）時要持有這個鎖，避免背景推理用到被釋放的模型
   std::mutex& InferMutex();

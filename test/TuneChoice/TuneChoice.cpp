@@ -549,7 +549,10 @@ void PrintScore(const char* name, const Score& s, size_t n) {
 
 // P3 評估：LM 重排 Rime 的 Top-K 整句。比 Rime 第一句通順超過 margin 才換；
 // margin 用 2-fold 選（一半選、另一半報），避免在同一份資料上選又報
-void ReportTopK(const std::vector<Case>& cases, LLMProvider* scorer) {
+// batch：用 ScoreBatch（共用前文、一次解碼，同輸入法）而不是逐句 ScoreText
+void ReportTopK(const std::vector<Case>& cases,
+                LLMProvider* scorer,
+                bool batch) {
   struct Item {
     const Case* c;
     std::vector<double> lm;
@@ -563,13 +566,21 @@ void ReportTopK(const std::vector<Case>& cases, LLMProvider* scorer) {
       continue;
     Item it{&c, {}};
     const auto t0 = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < c.sentences.size() && i < 10; ++i) {
-      double total = NAN;
-      if (!scorer->ScoreText(Tail(c.context, 30), c.sentences[i], &total,
-                             nullptr))
-        total = NAN;
-      it.lm.push_back(total);
-      ++scored;
+    if (batch) {
+      const std::vector<std::wstring> texts(
+          c.sentences.begin(),
+          c.sentences.begin() + (std::min<size_t>)(c.sentences.size(), 10));
+      scorer->ScoreBatch(Tail(c.context, 30), texts, &it.lm);
+      scored += texts.size();
+    } else {
+      for (size_t i = 0; i < c.sentences.size() && i < 10; ++i) {
+        double total = NAN;
+        if (!scorer->ScoreText(Tail(c.context, 30), c.sentences[i], &total,
+                               nullptr))
+          total = NAN;
+        it.lm.push_back(total);
+        ++scored;
+      }
     }
     ms.push_back(std::chrono::duration<double, std::milli>(
                      std::chrono::steady_clock::now() - t0)
@@ -669,9 +680,11 @@ void ReportTopK(const std::vector<Case>& cases, LLMProvider* scorer) {
                 base.n, base.Acc(), base.n ? (double)at10 / base.n : 0,
                 raw.Acc(), cv.Acc(), cv.Wrong());
   }
-  std::printf(
-      "  延遲（每題逐句評分，未批次）：P50 %.0f ms、P95 %.0f ms、P99 %.0f ms\n",
-      Percentile(ms, 0.5), Percentile(ms, 0.95), Percentile(ms, 0.99));
+  std::printf(batch ? "  延遲（每題一次 ScoreBatch）：P50 %.0f ms、P95 %.0f "
+                      "ms、P99 %.0f ms\n"
+                    : "  延遲（每題逐句評分，未批次）：P50 %.0f ms、P95 %.0f "
+                      "ms、P99 %.0f ms\n",
+              Percentile(ms, 0.5), Percentile(ms, 0.95), Percentile(ms, 0.99));
 }
 
 // 全顯示時的分組結果：只用初稿、全顯示、wrong-change
@@ -723,7 +736,9 @@ int main(int argc, char** argv) {
   int max_sentences = 0;   // librime 1.17 translator/max_sentences，0 = 預設
   bool rime_only = false;  // 只評估 Rime（P0.5），不載入模型
   size_t latency = 0;      // 量推薦延遲的題數（不用快取）
-  bool topk_rerank = false;  // P3 評估：LM 重排 Rime 的 Top-K 整句
+  bool topk_rerank = false;
+  bool batch = false;  // --topk-rerank 用 ScoreBatch  // P3 評估：LM 重排 Rime
+                       // 的 Top-K 整句
   std::string dump_topk;  // 開放測試集的 Rime Top-K 寫到檔案（給 teacher
                           // 試跑；不含選字紀錄）
   for (int i = 4; i < argc; ++i) {
@@ -753,6 +768,8 @@ int main(int argc, char** argv) {
       rime_only = true;
     else if (a == "--topk-rerank")
       topk_rerank = true;
+    else if (a == "--batch")
+      batch = true;
     else if (a == "--dump-topk")
       dump_topk = next();
     else if (a == "--latency")
@@ -922,7 +939,8 @@ int main(int argc, char** argv) {
   CachedScorer scorer(&provider);
   if (topk_rerank) {
     ReportRime(cases);
-    ReportTopK(cases, &scorer);
+    ReportTopK(cases, batch ? static_cast<LLMProvider*>(&provider) : &scorer,
+               batch);
     api->finalize();
     return 0;
   }

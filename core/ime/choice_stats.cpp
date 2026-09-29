@@ -60,7 +60,8 @@ void ChoiceStatsStore::Load() {
     if (numbers >> s.commits >> s.chars >> s.changed >> s.llm_offered >> s.llm_used >>
         s.corrections_used >> s.backspaces) {
       // 較新的欄位，舊檔沒有就是 0
-      numbers >> s.deleted_after >> s.focus_uses >> s.recommend_offered >> s.recommend_used;
+      numbers >> s.deleted_after >> s.focus_uses >> s.recommend_offered >> s.recommend_used >>
+          s.shadow_total >> s.shadow_changed >> s.shadow_rerank_right >> s.shadow_rime_right;
       stats_[date + "\t" + key] = s;
     }
   }
@@ -96,7 +97,8 @@ void ChoiceStatsStore::Save() {
     out << day_key << '\t' << s.commits << '\t' << s.chars << '\t' << s.changed << '\t'
         << s.llm_offered << '\t' << s.llm_used << '\t' << s.corrections_used << '\t' << s.backspaces
         << '\t' << s.deleted_after << '\t' << s.focus_uses << '\t' << s.recommend_offered << '\t'
-        << s.recommend_used << '\n';
+        << s.recommend_used << '\t' << s.shadow_total << '\t' << s.shadow_changed << '\t'
+        << s.shadow_rerank_right << '\t' << s.shadow_rime_right << '\n';
 }
 
 void ChoiceStatsStore::Reset() {
