@@ -325,10 +325,10 @@ export function validate() {
   const valid = (i) => (i >= 0 && i < profiles.length ? i : -1);
   const llmOn = form.predict.enabled;
   const predict = valid(use.predict);
-  if (llmOn && predict < 0) return { page: 'predict', message: '請選擇預測使用的模型（可在「語言模型」頁新增）。' };
+  if (llmOn && predict < 0) return { page: 'models', message: '請在「各功能使用的模型」選擇智慧預測使用的模型。' };
   const typoLlm = form.typo.llm;
   const typo = valid(use.typo);
-  if (typoLlm && typo < 0) return { page: 'typo', message: '請選擇注音校正使用的模型（可在「語言模型」頁新增）。' };
+  if (typoLlm && typo < 0) return { page: 'models', message: '請在「各功能使用的模型」選擇 LLM 整句校正使用的模型。' };
   for (const index of [llmOn ? predict : -1, valid(use.refine), typoLlm ? typo : -1]) {
     if (index < 0) continue;
     const p = profiles[index];

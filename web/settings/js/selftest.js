@@ -70,7 +70,7 @@ async function applyPhase(ctx) {
   const savedPredict = state.use.predict;
   state.use.predict = -1;
   const problem = validate();
-  results.checks.push({ name: 'validate blocks missing predict model', ok: !!problem && problem.page === 'predict', detail: JSON.stringify(problem) });
+  results.checks.push({ name: 'validate blocks missing predict model', ok: !!problem && problem.page === 'models', detail: JSON.stringify(problem) });
   state.use.predict = savedPredict;
 
   // 各類設定都改一點
