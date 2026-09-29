@@ -153,8 +153,8 @@ export default {
             ctx.rerender();
           }, { width: '240px' }),
           below: [
-            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' && !c.rescore ? 'muted' : '' }, '評分模型（推薦也用）'),
-              profileInfo(ctx, 'scorer', { disabled: c.rerank === 'off' && !c.rescore })),
+            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' && !c.rescore && !c.show_probability ? 'muted' : '' }, '評分模型（推薦與整句機率也用）'),
+              profileInfo(ctx, 'scorer', { disabled: c.rerank === 'off' && !c.rescore && !c.show_probability })),
             h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '門檻'),
               input(c.rerank_margin, (v) => { c.rerank_margin = v; ctx.markDirty('llm'); },
                 { width: '80px', disabled: c.rerank === 'off' }),

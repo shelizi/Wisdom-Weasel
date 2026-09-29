@@ -20,6 +20,8 @@ RerankResult RerankSentences(LLMProvider* scorer,
   if (!scorer->ScoreBatch(context, texts, &scores) || scores.size() != texts.size() ||
       std::isnan(scores[0]))
     return result;
+  result.texts = texts;
+  result.scores = scores;
   size_t best = 0;
   for (size_t i = 1; i < scores.size(); ++i) {
     if (!std::isnan(scores[i]))
@@ -41,6 +43,27 @@ RerankResult RerankSentences(LLMProvider* scorer,
                              std::to_wstring(result.gain) +
                              (result.text.empty() ? L"，未過門檻）" : L"）"));
   return result;
+}
+
+std::vector<double> SentenceProbabilities(const std::vector<double>& scores) {
+  std::vector<double> probs(scores.size(), std::numeric_limits<double>::quiet_NaN());
+  double best = -std::numeric_limits<double>::infinity();
+  for (double s : scores) {
+    if (!std::isnan(s))
+      best = (std::max)(best, s);
+  }
+  if (std::isinf(best))
+    return probs;
+  double sum = 0;
+  for (size_t i = 0; i < scores.size(); ++i) {
+    if (!std::isnan(scores[i]))
+      sum += probs[i] = std::exp(scores[i] - best);  // 減掉最大的，避免 exp 溢位
+  }
+  for (double& p : probs) {
+    if (!std::isnan(p))
+      p /= sum;
+  }
+  return probs;
 }
 
 }  // namespace ime

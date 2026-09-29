@@ -48,6 +48,7 @@ add_library(wisdom_core STATIC
   ${CORE}/personal/PersonalRefiner.cpp
   ${CORE}/personal/LearnFilter.cpp
   ${CORE}/ime/controller.cpp
+  ${CORE}/ime/script_convert.cpp
   ${CORE}/ime/prediction_engine.cpp
   ${CORE}/ime/rescore.cpp
   ${CORE}/ime/text_rules.cpp
@@ -63,6 +64,11 @@ add_library(wisdom_core STATIC
 )
 target_include_directories(wisdom_core PUBLIC ${COMMON_INCLUDES})
 target_link_libraries(wisdom_core PUBLIC CURL::libcurl ${SECURITY} ${COREFOUNDATION})
+# 送出時的繁轉簡（core/ime/script_convert.cpp）：OpenCC（brew install opencc）；字典用 Rime 共用資料的 opencc
+find_path(OPENCC_INCLUDE opencc/opencc.h HINTS "${RIME_ROOT}/include" /opt/homebrew/include /usr/local/include REQUIRED)
+find_library(OPENCC_LIB opencc HINTS "${RIME_ROOT}/lib" /opt/homebrew/lib /usr/local/lib REQUIRED)
+target_include_directories(wisdom_core PRIVATE "${OPENCC_INCLUDE}")
+target_link_libraries(wisdom_core PUBLIC ${OPENCC_LIB})
 if(RIME_LIB)
   target_link_libraries(wisdom_core PUBLIC ${RIME_LIB})
 endif()

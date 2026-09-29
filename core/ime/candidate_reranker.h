@@ -25,7 +25,13 @@ struct RerankResult {
   double gain = std::numeric_limits<double>::quiet_NaN();  // 最好的一句比第一句好多少（給信心校準）
   size_t index = 0;   // 在 Rime 整句裡的名次（0 = 第一句）
   size_t scored = 0;  // 評了幾句
+  // 評過的每一句與分數（整句 log 機率，評分失敗是 NaN）；候選窗顯示機率用
+  std::vector<std::wstring> texts;
+  std::vector<double> scores;
 };
+
+// 評過的整句彼此比較的機率（softmax，加起來是 1）；評分失敗的句子是 NaN
+std::vector<double> SentenceProbabilities(const std::vector<double>& scores);
 
 // sentences[0] 必須是 Rime 目前的第一句（使用者看到的轉換結果）
 RerankResult RerankSentences(LLMProvider* scorer,

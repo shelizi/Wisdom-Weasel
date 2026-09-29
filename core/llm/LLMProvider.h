@@ -57,6 +57,12 @@ class LLMProvider {
     return std::wstring();
   }
 
+  // 簡體在地化：把臺灣繁體的一句話改寫成中國大陸簡體的用字與用語（instruction 空字串用預設）。
+  // 回傳改寫後的句子；不支援或失敗時回傳空字串
+  virtual std::wstring LocalizeText(const std::wstring& text, const std::wstring& instruction) {
+    return std::wstring();
+  }
+
   // 文字接在前文後面的機率（log，自然對數）：total 為整段總和，per_char 為每個字分到的值。
   // 用來比較同音字的句子哪個通順；不支援（例如 API 模型）時回傳 false
   virtual bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
@@ -196,6 +202,62 @@ inline int LLMTokenBudget(int base, bool thinking, int think_tokens) {
   return think_tokens <= 0 ? -1 : base + think_tokens;
 }
 
+// ---------------------------------------------------------------------------
+// 簡體在地化（llm/simplified/config: llm）：送出前把臺灣繁體改寫成中國大陸簡體的用字與用語
+
+constexpr wchar_t kLLMLocalizeInstruction[] =
+    L"你是繁簡轉換與在地化工具。把使用者給的臺灣繁體中文改寫成中國大陸的簡體中文："
+    L"字改成簡體字，臺灣的用語改成大陸的慣用說法（例如 軟體→软件、滑鼠→鼠标、資訊→信息、影片→视频、網路→网络）。\n"
+    L"要求：不要改變意思、語氣與標點，不要增刪內容，不要翻譯成其他語言，不要解釋或加引號，只輸出改寫後的句子。";
+
+// Instruct / OpenAI：system 指令（自訂的取代預設）與 user 訊息
+inline std::wstring LLMLocalizeSystem(const std::wstring& instruction) {
+  const std::wstring i = LLMTrimPrompt(instruction);
+  return i.empty() ? kLLMLocalizeInstruction : i;
+}
+inline std::wstring LLMLocalizeUser(const std::wstring& text) {
+  return text;
+}
+
+// Base：以幾組範例引導續寫，模型接在最後的「大陸：」後面輸出一行
+inline std::wstring LLMLocalizeBasePrompt(const std::wstring& text) {
+  return L"以下是臺灣繁體中文與中國大陸簡體中文的對照，大陸的句子用大陸的用字與慣用說法，意思與標點不變。\n\n"
+         L"臺灣：我的滑鼠壞了，要買一個新的。\n大陸：我的鼠标坏了，要买一个新的。\n\n"
+         L"臺灣：這個軟體的資訊很清楚\n大陸：这个软件的信息很清楚\n\n"
+         L"臺灣：請把影片上傳到網路上\n大陸：请把视频上传到网络上\n\n"
+         L"臺灣：今天天氣很好\n大陸：今天天气很好\n\n"
+         L"臺灣：" + text + L"\n大陸：";
+}
+
+// 模型的輸出能不能用：去掉思考與前後空白，只取第一行；空的、字數差太多（多接了句子或漏掉內容）
+// 就不用（回傳空字串，呼叫端改用 OpenCC）
+inline std::wstring LLMCheckLocalized(const std::wstring& source, std::wstring output) {
+  output = LLMStripThinking(output);
+  const size_t b = output.find_first_not_of(L" \t\r\n\u3000");
+  if (b == std::wstring::npos)
+    return std::wstring();
+  output = output.substr(b);
+  output = output.substr(0, output.find_first_of(L"\r\n"));
+  while (!output.empty() && (output.back() == L' ' || output.back() == L'\u3000' || output.back() == L'\uFFFD'))
+    output.pop_back();
+  // 去掉模型自己加的引號（原文沒有的）
+  auto strip_quotes = [&](wchar_t open, wchar_t close) {
+    if (output.size() >= 2 && output.front() == open && output.back() == close &&
+        !(source.size() >= 2 && source.front() == open && source.back() == close))
+      output = output.substr(1, output.size() - 2);
+  };
+  strip_quotes(L'「', L'」');
+  strip_quotes(L'"', L'"');
+  strip_quotes(L'“', L'”');
+  if (output.empty())
+    return std::wstring();
+  // 在地化會換用詞（字數略有增減），但不會差到一半以上
+  const double ratio = (double)output.size() / (double)(std::max)((size_t)1, source.size());
+  if (ratio < 0.5 || ratio > 1.8)
+    return std::wstring();
+  return output;
+}
+
 // OpenAI 相容 API 關閉思考的參數（不含前後逗號）。各家寫法不同，依網址判斷：
 // OpenRouter 用 reasoning.enabled；Ollama 用 think；OpenAI 的推理模型用 reasoning_effort；
 // 其餘（llama-server、vLLM、LM Studio 等）用 chat_template_kwargs.enable_thinking
@@ -251,6 +313,7 @@ class OpenAICompatibleProvider : public LLMProvider {
   std::wstring CorrectSentence(const std::wstring& context, const std::wstring& zhuyin,
                                const std::wstring& draft,
                                const std::wstring& instruction) override;
+  std::wstring LocalizeText(const std::wstring& text, const std::wstring& instruction) override;
   bool IsAvailable() const override;
   std::string GetProviderName() const override { return "OpenAI Compatible"; }
   // 不經 rime 設定（也不看 llm/enabled），直接指定 API（注音校正用）
@@ -302,6 +365,7 @@ class LlamaCppProvider : public LLMProvider {
   std::wstring CorrectSentence(const std::wstring& context, const std::wstring& zhuyin,
                                const std::wstring& draft,
                                const std::wstring& instruction) override;
+  std::wstring LocalizeText(const std::wstring& text, const std::wstring& instruction) override;
   bool IsAvailable() const override;
   bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
                  std::vector<double>* per_char) override;

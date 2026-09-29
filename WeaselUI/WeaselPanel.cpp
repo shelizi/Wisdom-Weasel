@@ -596,7 +596,7 @@ bool WeaselPanel::_DrawPreedit(const Text& text,
 
     if (range.start < range.end) {
       std::wstring before_str = t.substr(0, range.start);
-      std::wstring hilited_str = t.substr(range.start, range.end);
+      std::wstring hilited_str = t.substr(range.start, range.end - range.start);
       std::wstring after_str = t.substr(range.end);
       CSize beforeSz = m_layout->GetBeforeSize();
       CSize hilitedSz = m_layout->GetHilitedSize();

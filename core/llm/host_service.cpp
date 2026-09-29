@@ -103,6 +103,12 @@ struct Host {
                     : std::string());
         break;
       }
+      case Op::kLocalize: {
+        const std::wstring text = utf8::ToWide(in.Str()), instruction = utf8::ToWide(in.Str());
+        out.Str(provider && in.Ok() ? utf8::FromWide(provider->LocalizeText(text, instruction))
+                                    : std::string());
+        break;
+      }
       case Op::kScore: {
         const std::wstring context = utf8::ToWide(in.Str()), text = utf8::ToWide(in.Str());
         const bool want_per_char = in.Flag();

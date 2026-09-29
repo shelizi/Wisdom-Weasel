@@ -9,6 +9,7 @@
 #include "../core/ime/controller.h"
 #include "../core/ime/prediction_engine.h"
 
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -533,6 +534,16 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
       cinfo.comments[i].str =
           escape_string(u8tow(ctx.menu.candidates[i].comment));
     }
+    // 整句的機率（外觀設定開啟、本機模型評過這句時）
+    double probability = 0;
+    if (m_controller->SentenceProbability(u8tow(ctx.menu.candidates[i].text),
+                                          &probability)) {
+      const int percent = (int)std::lround(probability * 100);
+      std::wstring& comment = cinfo.comments[i].str;
+      comment += (comment.empty() ? L"" : L" ") +
+                 (percent < 1 ? std::wstring(L"<1%")
+                              : std::to_wstring(percent) + L"%");
+    }
     if (RIME_STRUCT_HAS_MEMBER(ctx, ctx.select_labels) && ctx.select_labels) {
       cinfo.labels[i].str = escape_string(u8tow(ctx.select_labels[i]));
     } else if (ctx.menu.select_keys) {
@@ -666,7 +677,10 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   // - 有LLM候选词时：无论是否TSF，都需要获取，以便在_UI中合并Rime+LLM候选
   bool has_llm_candidates = false;
 
-  has_llm_candidates = m_controller->ShowingPredictions();
+  // 整句機率是停頓後才算好的：TSF 的候選窗只在按鍵回應時更新，要跟 LLM 候選一樣
+  // 由服務端候選窗顯示（下一次按鍵時機率清掉，服務端候選窗跟著收起）
+  has_llm_candidates = m_controller->ShowingPredictions() ||
+                       m_controller->HasSentenceProbabilities();
 
   bool need_context = !is_tsf || has_llm_candidates;
 
@@ -1765,6 +1779,27 @@ void RimeWithWeaselHandler::SetDevConsole(DevConsole* dev_console) {
   // 设置全局开发终端实例供共用程式碼（core）使用
   g_dev_console = dev_console;
   m_controller->LogStatus();
+}
+
+bool RimeWithWeaselHandler::SimplifiedOutput() const {
+  return m_controller->SimplifiedOutput();
+}
+
+void RimeWithWeaselHandler::SetSimplifiedOutput(bool on) {
+  m_controller->SetSimplifiedOutput(on);
+}
+
+// 短暫顯示提示（和切換中英時的提示一樣用服務端候選窗；TSF 下也是）
+void RimeWithWeaselHandler::ShowTip(uint64_t id, const std::wstring& text) {
+  if (!m_ui)
+    return;
+  Context ctx;
+  Status& status = m_ui->status();
+  _GetStatus(status, (WeaselSessionId)id, ctx);
+  ctx.aux.str = text;
+  status.type = SCHEMA;
+  m_ui->Update(ctx, status);
+  m_ui->ShowWithTimeout(m_show_notifications_time > 0 ? m_show_notifications_time : 1200);
 }
 
 void RimeWithWeaselHandler::PersonalCommand(DWORD command) {

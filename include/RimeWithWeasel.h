@@ -86,6 +86,9 @@ class RimeWithWeaselHandler : public weasel::RequestHandler,
   virtual void EndMaintenance();
   virtual void LLMTestRequest();
   virtual void PersonalCommand(DWORD command);
+  // 簡體輸出（系統匣選單用；任何執行緒都可以呼叫）
+  bool SimplifiedOutput() const;
+  void SetSimplifiedOutput(bool on);
   virtual void SetOption(WeaselSessionId ipc_id,
                          const std::string& opt,
                          bool val);
@@ -178,4 +181,5 @@ class RimeWithWeaselHandler : public weasel::RequestHandler,
   std::wstring ContextKey(uint64_t id) override;  // 應用程式＋前景視窗＋標題
   void Redeploy() override;
   bool ReleaseSessions() override;
+  void ShowTip(uint64_t id, const std::wstring& text) override;
 };

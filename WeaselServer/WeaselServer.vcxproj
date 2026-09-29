@@ -573,6 +573,13 @@
     <Image Include="..\resource\full.ico" />
     <Image Include="..\resource\half.ico" />
   </ItemGroup>
+  <!-- 送出時的繁轉簡（core/ime/script_convert.cpp）：OpenCC 與 marisa 的靜態庫，get-opencc.ps1 解到 deps\opencc -->
+  <ItemDefinitionGroup>
+    <Link>
+      <AdditionalDependencies>opencc.lib;marisa.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\opencc\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

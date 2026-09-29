@@ -293,6 +293,11 @@
     <ClCompile Include="..\core\ime\controller.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\ime\script_convert.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <!-- OpenCC（get-opencc.ps1 從 rime-deps 解到 deps\opencc） -->
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\opencc\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="..\core\ime\prediction_engine.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

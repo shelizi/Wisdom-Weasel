@@ -18,6 +18,8 @@ class WeaselTrayIcon : public CSystemTray {
 
   BOOL Create(HWND hTargetWnd);
   void Refresh();
+  // 簡體輸出目前是否開啟（選單打勾用）
+  std::function<bool()> simplified_state;
 
  protected:
   virtual void CustomizeMenu(HMENU hMenu);
