@@ -10,6 +10,9 @@ export const kModelUses = [
     desc: '本機或 API 都可以。' },
   { which: 'scorer', label: '推薦、整句重排與整句機率的評分', page: '選字策略', on: (f) => f.choice.rescore || f.choice.rerank !== 'off' || f.choice.show_probability,
     desc: '只能用本機模型。建議小的 Base 模型（例如 Qwen3-0.6B-Base）：在開放繁中測試集上，整句重排的 Top-1 從約 57～64% 提升到 70～74%，改錯不到 2%。' },
+  { which: 'localize', label: '簡體在地化', page: '輸入方案', on: (f) => f.simplified.config === 'llm',
+    desc: '送出前把臺灣用語改成大陸簡體的說法。Instruct 或翻譯模型比較可靠；本機或 API 都可以，選 API 時送出的每一句都會傳到該服務。',
+    warn: (p) => (p && !p.remote && p.model_type === 'Base' ? 'Base 模型不會照指示改寫，只能靠範例引導，容易多接句子或不改。' : '') },
   { which: 'refine', label: '個人詞庫精煉', page: '個人詞庫', on: (f) => f.personal.enabled,
     desc: '需要能照指示回答的 Instruct 模型。選「不使用 LLM」時只做統計整理、不送出資料；選雲端 API 時，常用詞與部分例句會送到該服務。' },
 ];

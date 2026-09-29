@@ -478,6 +478,24 @@ std::wstring OpenAICompatibleProvider::CorrectSentence(const std::wstring& conte
   return result.substr(0, result.find_first_of(L"\r\n"));
 }
 
+std::wstring OpenAICompatibleProvider::LocalizeText(const std::wstring& text,
+                                                    const std::wstring& instruction) {
+  if (!IsAvailable() || text.empty())
+    return L"";
+  // 要穩定的結果：溫度 0；換用詞時字數可能變多，多留一些 token
+  const std::string request_body =
+      BuildChatBody(LLMLocalizeSystem(instruction), LLMLocalizeUser(text),
+                    LLMTokenBudget((int)text.size() * 3 + 16, !m_disable_thinking, m_think_tokens), 0.0);
+  std::string response_body;
+  if (!ExecuteRequest(m_api_url, request_body, response_body))
+    return L"";
+  bool found = false;
+  const std::wstring result = LLMExtractChatContent(response_body, &found);
+  if (g_dev_console && g_dev_console->IsEnabled())
+    g_dev_console->WriteLine(L"[LLM] 簡體在地化 (OpenAI): " + text + L" → " + result);
+  return found ? LLMCheckLocalized(text, result) : L"";
+}
+
 bool OpenAICompatibleProvider::IsAvailable() const {
   // api_key可以为空（适用于本地服务如Ollama），只需要enabled和api_url不为空
   return m_enabled && !m_api_url.empty();

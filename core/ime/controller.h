@@ -35,6 +35,7 @@ class ChoiceStatsStore;
 class CalibrationStore;
 class SentenceFinder;
 struct RerankResult;
+class ScriptConverter;
 enum class CandidateKind : uint8_t;
 class HomophoneFinder;
 class PredictionEngine;
@@ -57,6 +58,8 @@ class Frontend {
   virtual void Redeploy() = 0;
   // 關掉所有 session 放開使用者詞典（整理選字記憶時；呼叫端已持有 ApiMutex）。停用中回傳 false
   virtual bool ReleaseSessions() = 0;
+  // 短暫顯示一段提示（例如切換繁簡輸出；呼叫端已持有 ApiMutex）
+  virtual void ShowTip(uint64_t id, const std::wstring& text) {}
 };
 
 // 按鍵的結果
@@ -132,6 +135,14 @@ class Controller {
   bool ShowingPredictions() const;  // 預測模式中且有候選
   PredictionSet Predictions() const;
 
+  // 簡體輸出（llm/simplified/*）：組字與候選照常是繁體，送出的文字轉成簡體。
+  // 設定決定重新部署後的預設；快速鍵與系統匣選單隨時切換（到下次重新部署）。任何執行緒都可以呼叫
+  bool SimplifiedOutput() const { return simplified_; }
+  bool SetSimplifiedOutput(bool on);  // 轉換字典載入失敗時開不了，回傳 false
+  // 測試或自訂前端用：直接指定轉換字典與在地化模型（wait_ms：送出時最多等在地化多久）；LoadConfig 會換掉
+  bool SetSimplifiedConversion(const std::filesystem::path& opencc_config,
+                               std::unique_ptr<LLMProvider> localize, unsigned wait_ms);
+
   // 設定程式的指令：1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙
   // 6 套用修改並匯出 7 產生 Rime 詞典 8 重設選字統計；狀態寫在 personal/status.txt。
   // 9 暫停模型（設定程式的模型測試：放掉所有模型、精煉不載入模型，放完寫 llm_paused.txt）
@@ -149,6 +160,12 @@ class Controller {
   // 讀校正、評分要用的模型（在 LoadConfig 裡）；載入交給背景的 LoadModels
   void PlanTypo(RimeConfig* config, ModelPlan* plan);
   void PlanScorer(RimeConfig* config, ModelPlan* plan);
+  void PlanLocalize(RimeConfig* config, ModelPlan* plan);
+  // 簡體在地化：排進背景改寫（urgent：送出時要，不等停頓）；送出時取結果（等不到回傳 false）
+  void RequestLocalize(const std::wstring& text, bool urgent);
+  bool WaitLocalized(const std::wstring& text, std::wstring* result);
+  void LocalizeLoop();
+  std::wstring ComposingSentence(RimeSessionId session_id);
   // 背景：照 LoadConfig 讀好的設定啟動推理行程、載入模型，載好再換上
   void ModelLoaderLoop();
   void LoadModels(ModelPlan& plan);
@@ -161,6 +178,7 @@ class Controller {
   void ResumeModels();
   void UpdateContextKey(uint64_t id);
 
+  bool HandleSimplifiedKey(uint64_t id, int keycode, int mask);
   bool HandleMixedInput(uint64_t id, SessionState& ss, int keycode, int mask, bool* respond);
   bool HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, int mask);
   bool FocusSyllable(SessionState& ss, int index);
@@ -219,6 +237,27 @@ class Controller {
   size_t context_max_chars_ = 100;      // llm/context/max_chars：給模型的前文最多幾個字
   unsigned context_idle_minutes_ = 10;  // llm/context/idle_minutes：視窗閒置多久後舊前文失效
   size_t personal_max_ = 3;             // 候選中最多幾個來自個人詞庫
+  // 簡體輸出：轉換器（OpenCC）、目前是否轉換、切換的快速鍵（keysym 小寫與修飾鍵；0 = 沒有）
+  std::unique_ptr<ScriptConverter> simplifier_;
+  std::atomic<bool> simplified_{false};
+  int simplified_key_ = 0;
+  int simplified_mask_ = 0;
+  bool simplified_key_down_ = false;  // 按下時切換了，放開也吃掉
+  // 簡體在地化（llm/simplified/config: llm）：打字停頓時先在背景改寫目前的句子，送出時用現成的結果；
+  // 還沒好就放開服務端的鎖等一下（llm/simplified/wait_ms），等不到或改寫不能用就用 OpenCC（tw2sp）
+  bool localize_on_ = false;
+  unsigned localize_wait_ms_ = 1000;
+  std::unique_ptr<LLMProvider> localize_owned_;
+  LLMProvider* localize_llm_ = nullptr;  // 可能指向 llm_provider_ 或 typo_llm_（推理鎖下換）
+  std::thread localize_thread_;
+  std::mutex localize_mutex_;
+  std::condition_variable localize_cv_;
+  std::wstring localize_pending_;   // 等著改寫的（只留最新的）
+  bool localize_urgent_ = false;    // 送出時要：不等停頓
+  std::wstring localize_running_;   // 正在改寫的
+  std::map<std::wstring, std::wstring> localized_;  // 改好的：原句 → 結果（空字串 = 不能用）
+  std::vector<std::wstring> localized_order_;       // 最多留 64 句（先進先出）
+  bool localize_stop_ = false;
   std::mutex typo_prompt_mutex_;
   std::wstring typo_prompt_;  // llm/typo/prompt：自訂校正指令
 

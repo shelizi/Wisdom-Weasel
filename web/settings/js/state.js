@@ -6,7 +6,7 @@ export const state = {
   llm: {},            // 目前儲存的 llm 設定（存檔時以它為底，保留介面上沒有的項目）
   form: null,         // 各頁表單
   profiles: [],       // 模型設定
-  use: { predict: -1, refine: -1, typo: -1, scorer: -1 },  // 各功能選用的模型設定（profiles 的索引）
+  use: { predict: -1, refine: -1, typo: -1, scorer: -1, localize: -1 },  // 各功能選用的模型設定（profiles 的索引）
   loaded: {},         // 目前已套用的值（判斷要不要改方案檔）
   schemas: [],        // [{id, name, selected}]，已選的在前
   style: null,        // {active, fonts}
@@ -104,7 +104,7 @@ function loadProfiles(llm, defaultApiUrl) {
       think_tokens: think === '' ? 2048 : Math.max(0, int(think, 0)),
     }));
   }
-  let predict = -1, refine = -1, typo = -1, scorer = -1;
+  let predict = -1, refine = -1, typo = -1, scorer = -1, localize = -1;
   if (!profiles.length) {
     // 舊設定轉換：本機模型、預測用的 API、精煉用的 API 各一組
     const provider = lower(get(llm, 'provider_type'));
@@ -146,9 +146,10 @@ function loadProfiles(llm, defaultApiUrl) {
     refine = find(get(llm, 'personal/refine/profile'));
     typo = find(get(llm, 'typo/profile'));
     scorer = find(get(llm, 'choice/scorer/profile'));
+    localize = find(get(llm, 'simplified/localize/profile'));
   }
   if (typo < 0) typo = predict;  // 還沒選過：預設和智慧預測用同一個模型
-  return { profiles, use: { predict, refine, typo, scorer } };
+  return { profiles, use: { predict, refine, typo, scorer, localize } };
 }
 
 function saveProfiles(llm, profiles, use) {
@@ -218,6 +219,18 @@ function saveProfiles(llm, profiles, use) {
   set(llm, 'choice/scorer/profile', sc ? keyOf(scorerIndex) : '');
   set(llm, 'choice/scorer/model_path', sc ? toYamlPath(sc.model_path) : '');
   set(llm, 'choice/scorer/model_type', sc ? sc.model_type : '');
+  // 簡體在地化（本機或 API）
+  const localize = valid(use.localize);
+  const z = localize >= 0 ? profiles[localize] : none;
+  set(llm, 'simplified/localize/profile', localize >= 0 ? keyOf(localize) : '');
+  set(llm, 'simplified/localize/type', localize < 0 ? '' : z.remote ? 'openai' : 'llamacpp');
+  set(llm, 'simplified/localize/model_path', localize >= 0 && !z.remote ? toYamlPath(z.model_path) : '');
+  set(llm, 'simplified/localize/model_type', localize >= 0 && !z.remote ? z.model_type : '');
+  set(llm, 'simplified/localize/api_url', localize >= 0 && z.remote ? z.api_url : '');
+  set(llm, 'simplified/localize/api_key', localize >= 0 && z.remote ? z.api_key : '');
+  set(llm, 'simplified/localize/model', localize >= 0 && z.remote ? z.model : '');
+  set(llm, 'simplified/localize/disable_thinking', localize >= 0 && z.no_think);
+  set(llm, 'simplified/localize/think_tokens', z.think_tokens);
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +277,13 @@ function loadForm(llm, defaults) {
       half_life: String(halfLife > 0 ? halfLife : 30),
       interval: str(get(llm, 'personal/refine/interval_days')) || '1',
     },
+    // 簡體輸出：送出時轉成簡體（輸入方案頁）
+    simplified: {
+      enabled: bool(get(llm, 'simplified/enabled'), false),
+      config: ['tw2s', 'tw2sp', 'llm'].includes(str(get(llm, 'simplified/config'))) ? str(get(llm, 'simplified/config')) : 'tw2s',
+      wait_ms: String(int(get(llm, 'simplified/wait_ms'), 1000)),
+      hotkey: str(get(llm, 'simplified/hotkey')) || 'ctrl+shift+f',
+    },
     // 本機模型（llama.cpp）的執行設定：預測的模型用；GPU 層數與執行緒整句校正與精煉也用
     local: {
       n_ctx: int(get(llm, 'llamacpp/n_ctx'), 2048),
@@ -287,6 +307,10 @@ export function buildLlm() {
   set(llm, 'choice/rerank_margin', Number.isFinite(rerankMargin) && rerankMargin >= 0 ? rerankMargin : 2);
   set(llm, 'choice/sentence_candidates', Number(form.choice.sentences) || 0);
   set(llm, 'choice/show_probability', form.choice.show_probability);
+  set(llm, 'simplified/enabled', form.simplified.enabled);
+  set(llm, 'simplified/config', form.simplified.config);
+  set(llm, 'simplified/hotkey', form.simplified.hotkey);
+  set(llm, 'simplified/wait_ms', Math.min(5000, Math.max(0, int(form.simplified.wait_ms, 1000))));
   // 0～0.9；空白或不合理時用預設
   const minConfidence = parseFloat(trim(form.choice.min_confidence));
   set(llm, 'choice/min_confidence',
@@ -331,7 +355,10 @@ export function validate() {
   const typoLlm = form.typo.llm;
   const typo = valid(use.typo);
   if (typoLlm && typo < 0) return { page: 'models', message: '請在「各功能使用的模型」選擇 LLM 整句校正使用的模型。' };
-  for (const index of [llmOn ? predict : -1, valid(use.refine), typoLlm ? typo : -1]) {
+  const localizeLlm = form.simplified.config === 'llm';
+  const localize = valid(use.localize);
+  if (localizeLlm && localize < 0) return { page: 'models', message: '請在「各功能使用的模型」選擇簡體在地化使用的模型。' };
+  for (const index of [llmOn ? predict : -1, valid(use.refine), typoLlm ? typo : -1, localizeLlm ? localize : -1]) {
     if (index < 0) continue;
     const p = profiles[index];
     if (p.remote && !p.api_url) return { page: 'models', profile: index, message: '請填寫 OpenAI 相容 API 的網址。' };

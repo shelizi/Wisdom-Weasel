@@ -1500,6 +1500,35 @@ std::wstring LlamaCppProvider::CorrectSentence(const std::wstring& context,
   return result;
 }
 
+std::wstring LlamaCppProvider::LocalizeText(const std::wstring& text, const std::wstring& instruction) {
+  if (!IsAvailable() || text.empty())
+    return L"";
+  std::string prompt;
+  if (m_instruct_model) {
+    const std::string system = utf8::FromWide(LLMLocalizeSystem(instruction));
+    const std::string user = utf8::FromWide(LLMLocalizeUser(text));
+    prompt = ApplyChatTemplate(system, user);
+    if (prompt.empty())
+      prompt = system + "\n\n" + user;
+  } else {
+    prompt = utf8::FromWide(LLMLocalizeBasePrompt(text));
+  }
+  // 和整句校正一樣用 greedy 取樣，不沿用預測的 system prompt 快取
+  DropSystemPromptCache();
+  llama_sampler* greedy = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(greedy, llama_sampler_init_greedy());
+  void* saved = m_sampler;
+  m_sampler = greedy;
+  const int budget = LLMTokenBudget((int)text.size() * 2 + 8, Thinking(), m_think_tokens);
+  const std::string output =
+      GenerateText(prompt, budget < 0 ? (size_t)m_ctx_size : (size_t)budget, true);
+  m_sampler = saved;
+  llama_sampler_free(greedy);
+  if (g_dev_console && g_dev_console->IsEnabled())
+    g_dev_console->WriteLine(L"[LLM] 簡體在地化 (llama.cpp): " + text + L" → " + utf8::ToWide(output));
+  return LLMCheckLocalized(text, utf8::ToWide(output));
+}
+
 struct LLMLocalChatSession::Impl {
   LlamaCppProvider provider;
 };

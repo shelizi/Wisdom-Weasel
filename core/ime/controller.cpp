@@ -28,6 +28,7 @@
 #include "keys.h"
 #include "prediction_engine.h"
 #include "rime_helpers.h"
+#include "script_convert.h"
 #include "text_rules.h"
 
 namespace ime {
@@ -35,6 +36,32 @@ namespace ime {
 namespace fs = std::filesystem;
 
 namespace {
+
+// 快速鍵的文字（例如 ctrl+shift+f、alt+f12）→ keysym（字母用小寫）與修飾鍵；空的或 none 回傳 false
+bool ParseHotkey(const std::string& text, int* keycode, int* mask) {
+  *keycode = *mask = 0;
+  std::string token;
+  std::stringstream in(text);
+  while (std::getline(in, token, '+')) {
+    std::transform(token.begin(), token.end(), token.begin(), ::tolower);
+    if (token == "ctrl" || token == "control")
+      *mask |= mod::kControl;
+    else if (token == "shift")
+      *mask |= mod::kShift;
+    else if (token == "alt")
+      *mask |= mod::kAlt;
+    else if (token == "win" || token == "super")
+      *mask |= mod::kSuper;
+    else if (token.size() == 1 && std::isalnum((unsigned char)token[0]))
+      *keycode = (unsigned char)token[0];
+    else if (token.size() >= 2 && token[0] == 'f' && std::atoi(token.c_str() + 1) >= 1 &&
+             std::atoi(token.c_str() + 1) <= 12)
+      *keycode = 0xFFBE + std::atoi(token.c_str() + 1) - 1;  // XK_F1…F12
+    else
+      return false;
+  }
+  return *keycode != 0;
+}
 
 constexpr uint64_t kGraveDoubleClickMs = 500;  // 雙擊 ` 的時間間隔
 constexpr unsigned kCompletionDelayMs = 300;   // 打字中停頓多久觸發補全預測
@@ -83,6 +110,14 @@ struct Controller::ModelPlan {
   // 推薦、整句重排的評分模型（沒指定時借預測或校正的，不在這裡載入）
   bool scorer = false;
   LLMLocalModelSpec scorer_spec;
+  // 簡體在地化：和智慧預測（1）或整句校正（2）選同一組時共用，否則自己載入
+  bool localize = false;
+  std::string localize_type;  // llamacpp／openai
+  int localize_share = 0;
+  LLMLocalModelSpec localize_spec;
+  std::string localize_api_url, localize_api_key, localize_model;
+  bool localize_no_think = false;
+  int localize_think_tokens = 2048;
 };
 
 Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
@@ -91,6 +126,7 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
   sentences_ = std::make_unique<SentenceFinder>(api_);
   choice_store_ = std::make_unique<ChoiceStatsStore>(options_.user_dir);
   calibration_ = std::make_unique<CalibrationStore>(options_.user_dir);
+  simplifier_ = std::make_unique<ScriptConverter>();
   PredictionEngine::Hooks hooks;
   hooks.models = [this] {
     PredictionModels models;
@@ -129,6 +165,14 @@ Controller::~Controller() {
   loader_cv_.notify_all();
   if (loader_thread_.joinable())
     loader_thread_.join();
+  // 在地化的執行緒會用到模型與推理鎖：正在改寫的等它改完
+  {
+    std::lock_guard<std::mutex> lock(localize_mutex_);
+    localize_stop_ = true;
+  }
+  localize_cv_.notify_all();
+  if (localize_thread_.joinable())
+    localize_thread_.join();
   learn_filter_.reset();  // 評分會用到模型與推理鎖，先停
   // 精煉可能正在借用模型（用到推理鎖與模型）：先停，不能等成員解構（prediction_ 會先被釋放）
   if (refiner_)
@@ -177,6 +221,38 @@ void Controller::LoadConfig(RimeConfig* config) {
     int sentences = 10;
     api_->config_get_int(config, "llm/choice/rerank_sentences", &sentences);
     rerank_sentences_ = (size_t)(std::min)(63, (std::max)(2, sentences));
+  }
+  // 簡體輸出：送出時用 OpenCC 轉換（tw2s 只換字；tw2sp 連兩岸用詞一起換）。
+  // 字典檔很小，這裡直接載入；重新部署後回到設定的預設（快速鍵、系統匣的切換到這裡為止）
+  {
+    char buf[64] = {0};
+    std::string conversion =
+        api_->config_get_string(config, "llm/simplified/config", buf, sizeof(buf) - 1) ? buf : "tw2s";
+    if (conversion != "tw2s" && conversion != "tw2sp" && conversion != "llm")
+      conversion = "tw2s";
+    // 語言模型在地化：OpenCC 的「連用詞一起換」當後備（等不到、改寫不能用），也用來補轉模型漏掉的字
+    localize_on_ = conversion == "llm";
+    if (localize_on_)
+      conversion = "tw2sp";
+    int wait_ms = 1000;
+    if (api_->config_get_int(config, "llm/simplified/wait_ms", &wait_ms))
+      localize_wait_ms_ = (unsigned)(std::min)(5000, (std::max)(0, wait_ms));
+    {
+      std::lock_guard<std::mutex> lock(localize_mutex_);
+      localized_.clear();  // 模型或設定可能換了
+      localized_order_.clear();
+      localize_pending_.clear();
+    }
+    if (!simplifier_->Load(options_.shared_dir / "opencc" / (conversion + ".json")))
+      Log(L"[簡體輸出] 無法載入 OpenCC 字典（" + utf8::ToWide(conversion) + L".json）");
+    flag = false;
+    const bool simplified = api_->config_get_bool(config, "llm/simplified/enabled", &flag) && flag;
+    simplified_ = simplified && simplifier_->Loaded();
+    char hotkey[64] = {0};
+    if (!api_->config_get_string(config, "llm/simplified/hotkey", hotkey, sizeof(hotkey) - 1))
+      std::strcpy(hotkey, "ctrl+shift+f");
+    if (!ParseHotkey(hotkey, &simplified_key_, &simplified_mask_))
+      simplified_key_ = simplified_mask_ = 0;  // none：不用快速鍵
   }
   // 候選窗在整句後面顯示機率（外觀設定；要本機模型評分）
   flag = false;
@@ -407,6 +483,7 @@ void Controller::LoadConfig(RimeConfig* config) {
   // 注音整句校正的模型：不受「智慧預測」開關影響
   PlanTypo(config, plan.get());
   PlanScorer(config, plan.get());
+  PlanLocalize(config, plan.get());
 
   // 重新部署後恢復模型測試暫停的模型（設定程式沒送恢復就結束時，也不會一直停用）
   if (models_paused_) {
@@ -424,6 +501,8 @@ std::vector<std::unique_ptr<LLMProvider>> Controller::TakeModels() {
   retired.push_back(std::move(typo_owned_));
   retired.push_back(std::move(scorer_owned_));
   retired.push_back(std::move(llm_provider_));
+  localize_llm_ = nullptr;
+  retired.push_back(std::move(localize_owned_));
   loaded_model_.clear();
   return retired;
 }
@@ -542,6 +621,58 @@ void Controller::PlanTypo(RimeConfig* config, ModelPlan* plan) {
   }
 }
 
+void Controller::PlanLocalize(RimeConfig* config, ModelPlan* plan) {
+  if (!localize_on_)
+    return;
+  auto read = [&](const char* key) {
+    char value[4096] = {0};
+    return api_->config_get_string(config, key, value, sizeof(value) - 1) ? std::string(value)
+                                                                          : std::string();
+  };
+  // 在地化用的模型由設定程式從「語言模型」清單選用後展開到 llm/simplified/localize/*
+  const std::string type = read("llm/simplified/localize/type");
+  if (type.empty())
+    return;
+  plan->localize = true;
+  plan->localize_type = type;
+  const std::string profile = read("llm/simplified/localize/profile");
+  if (!profile.empty() && llm_enabled_ && profile == read("llm/predict_profile"))
+    plan->localize_share = 1;
+  else if (!profile.empty() && typo_on_ && profile == read("llm/typo/profile"))
+    plan->localize_share = 2;
+  plan->localize_no_think = read("llm/simplified/localize/disable_thinking") == "true";
+  int think_tokens = 2048;
+  if (api_->config_get_int(config, "llm/simplified/localize/think_tokens", &think_tokens))
+    plan->localize_think_tokens = (std::max)(0, think_tokens);
+  if (type == "llamacpp") {
+    LLMLocalModelSpec& spec = plan->localize_spec;
+    spec.model_path = read("llm/simplified/localize/model_path");
+    std::string model_type = read("llm/simplified/localize/model_type");
+    std::transform(model_type.begin(), model_type.end(), model_type.begin(), ::tolower);
+    spec.instruct = model_type != "base";
+    spec.n_ctx = 2048;  // 一句話加指令；開啟思考時再加上思考額度
+    spec.disable_thinking = plan->localize_no_think;
+    spec.think_tokens = plan->localize_think_tokens;
+    if (!spec.instruct || plan->localize_no_think)
+      spec.n_ctx = 2048;
+    else
+      spec.n_ctx = plan->localize_think_tokens <= 0 ? 8192 : (std::min)(2048 + plan->localize_think_tokens, 32768);
+    int value = 0;
+    if (api_->config_get_int(config, "llm/llamacpp/n_gpu_layers", &value))
+      spec.n_gpu_layers = value;
+    if (api_->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
+      spec.n_threads = value;
+    if (spec.model_path.empty())
+      plan->localize = false;
+  } else {
+    plan->localize_api_url = read("llm/simplified/localize/api_url");
+    plan->localize_api_key = read("llm/simplified/localize/api_key");
+    plan->localize_model = read("llm/simplified/localize/model");
+    if (plan->localize_api_url.empty())
+      plan->localize = false;
+  }
+}
+
 void Controller::PlanScorer(RimeConfig* config, ModelPlan* plan) {
   if (!rescore_on_ && rerank_mode_ == 0 && !show_probability_)
     return;
@@ -599,7 +730,8 @@ bool Controller::PlanStale(const ModelPlan& plan) {
 
 void Controller::LoadModels(ModelPlan& plan) {
   const uint64_t t0 = base::MonotonicMs();
-  std::unique_ptr<LLMProvider> predict, typo, scorer;
+  std::unique_ptr<LLMProvider> predict, typo, scorer, localize;
+  int localize_shares = 0;
   std::wstring label;
   if (plan.predict && !PlanStale(plan)) {
     auto provider = std::make_unique<RemoteLLMProvider>(plan.provider_type);
@@ -634,6 +766,24 @@ void Controller::LoadModels(ModelPlan& plan) {
       LOG(WARNING) << "Typo correction: no model selected (llm/typo/type)";
     }
   }
+  if (plan.localize && !PlanStale(plan)) {
+    if (plan.localize_share == 1 && predict && predict->IsAvailable()) {
+      localize_shares = 1;
+    } else if (plan.localize_share == 2 && (typo || typo_shares)) {
+      localize_shares = 2;
+    } else if (plan.localize_type == "llamacpp") {
+      auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
+      if (provider->LoadModelDirect(plan.localize_spec, 0.0))
+        localize = std::move(provider);
+      else
+        LOG(ERROR) << "Localize: failed to load model " << plan.localize_spec.model_path;
+    } else if (plan.localize_type == "openai") {
+      auto provider = std::make_unique<RemoteLLMProvider>("openai");
+      provider->ConfigureDirect(plan.localize_api_url, plan.localize_api_key, plan.localize_model, L"",
+                                plan.localize_no_think, plan.localize_think_tokens);
+      localize = std::move(provider);
+    }
+  }
   if (plan.scorer && !PlanStale(plan)) {
     auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
     if (provider->LoadModelDirect(plan.scorer_spec, 0.0)) {
@@ -665,6 +815,10 @@ void Controller::LoadModels(ModelPlan& plan) {
     typo.swap(typo_owned_);
     scorer.swap(scorer_owned_);
     typo_llm_ = typo_shares ? llm_provider_.get() : typo_owned_.get();
+    localize.swap(localize_owned_);
+    localize_llm_ = localize_shares == 1   ? llm_provider_.get()
+                    : localize_shares == 2 ? typo_llm_
+                                           : localize_owned_.get();
     loaded_model_ = label;
   }
   api_lock.unlock();
@@ -759,6 +913,10 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   const RimeSessionId session_id = ss.session_id;
   const bool release = (mask & mod::kRelease) != 0;
   const int other_mod_mask = mod::kControl | mod::kAlt | mod::kSuper;
+
+  // 切換繁簡輸出的快速鍵（組字中也可以；不影響目前的組字）
+  if (HandleSimplifiedKey(id, keycode, mask))
+    return {true, false};
 
   // 依目前輸入的視窗切換上下文（之後的送出紀錄與預測都用該視窗自己的前文）
   if (!release) {
@@ -917,6 +1075,9 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     ss.mixed_text += (wchar_t)keycode;
     handled = True;
   }
+  // 簡體在地化：先在背景改寫目前的整句（停頓一下才開始），送出時就不必等
+  if (handled && !release && simplified_ && localize_on_)
+    RequestLocalize(ComposingSentence(session_id), false);
   // 打字中補全：正在組字時，停頓 300ms 後以 Rime 目前的轉換結果續寫；組字結束則清除補全候選
   const bool rescore = ScoringWanted();
   if (handled && !release && (PredictionAvailable() || TypoAvailable() || rescore)) {
@@ -1201,6 +1362,176 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   return true;
 }
 
+bool Controller::SetSimplifiedOutput(bool on) {
+  if (on && !simplifier_->Loaded())
+    return false;
+  simplified_ = on;
+  return true;
+}
+
+bool Controller::SetSimplifiedConversion(const fs::path& opencc_config,
+                                         std::unique_ptr<LLMProvider> localize, unsigned wait_ms) {
+  if (!simplifier_->Load(opencc_config))
+    return false;
+  ++model_wanted_;
+  prediction_->Cancel();
+  std::unique_ptr<LLMProvider> old;
+  {
+    std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
+    old = std::move(localize_owned_);
+    localize_owned_ = std::move(localize);
+    localize_llm_ = localize_owned_.get();
+  }
+  localize_on_ = localize_llm_ != nullptr;
+  localize_wait_ms_ = wait_ms;
+  std::lock_guard<std::mutex> lock(localize_mutex_);
+  localized_.clear();
+  localized_order_.clear();
+  return true;
+}
+
+// Rime 目前的整句（注音方案往回選字時，游標後面還沒轉換的按鍵不算）
+std::wstring Controller::ComposingSentence(RimeSessionId session_id) {
+  std::wstring text;
+  RIME_STRUCT(RimeContext, ctx);
+  if (api_->get_context(session_id, &ctx)) {
+    if (ctx.commit_text_preview)
+      text = utf8::ToWide(ctx.commit_text_preview);
+    api_->free_context(&ctx);
+  }
+  while (!text.empty() && text.back() < 0x80)
+    text.pop_back();
+  return text;
+}
+
+namespace {
+
+// 有兩個以上的漢字才值得請模型改寫（單字、標點、英文直接用 OpenCC）
+bool WorthLocalizing(const std::wstring& text) {
+  int han = 0;
+  for (wchar_t c : text) {
+    if (c >= 0x4E00 && c <= 0x9FFF && ++han >= 2)
+      return true;
+  }
+  return false;
+}
+
+constexpr unsigned kLocalizeDelayMs = 300;  // 打字停頓多久才開始改寫
+constexpr size_t kLocalizedKeep = 64;
+
+}  // namespace
+
+void Controller::RequestLocalize(const std::wstring& text, bool urgent) {
+  if (!WorthLocalizing(text))
+    return;
+  std::lock_guard<std::mutex> lock(localize_mutex_);
+  if (localized_.count(text) || localize_running_ == text)
+    return;
+  localize_pending_ = text;
+  localize_urgent_ = localize_urgent_ || urgent;
+  if (!localize_thread_.joinable())
+    localize_thread_ = std::thread([this] { LocalizeLoop(); });
+  localize_cv_.notify_all();
+}
+
+void Controller::LocalizeLoop() {
+  std::unique_lock<std::mutex> lock(localize_mutex_);
+  for (;;) {
+    localize_cv_.wait(lock, [this] { return localize_stop_ || !localize_pending_.empty(); });
+    if (localize_stop_)
+      return;
+    // 防抖：停頓一下，句子還在變就重新等（送出時要的不等）
+    if (!localize_urgent_) {
+      const std::wstring text = localize_pending_;
+      if (localize_cv_.wait_for(lock, std::chrono::milliseconds(kLocalizeDelayMs), [&] {
+            return localize_stop_ || localize_urgent_ || localize_pending_ != text;
+          }))
+        continue;
+    }
+    const std::wstring text = std::move(localize_pending_);
+    localize_pending_.clear();
+    localize_urgent_ = false;
+    localize_running_ = text;
+    lock.unlock();
+    std::wstring result;
+    const uint64_t t0 = base::MonotonicMs();
+    {
+      std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
+      if (localize_llm_ && localize_llm_->IsAvailable())
+        result = localize_llm_->LocalizeText(text, L"");
+    }
+    // 模型漏轉的繁體字用 OpenCC 補（已經是簡體的不會變）
+    if (!result.empty())
+      result = simplifier_->Convert(result);
+    Log(L"[簡體輸出] 在地化 " + std::to_wstring(base::MonotonicMs() - t0) + L" ms：" + text + L" → " +
+        (result.empty() ? std::wstring(L"（不能用，改用 OpenCC）") : result));
+    lock.lock();
+    localize_running_.clear();
+    if (!localized_.count(text)) {
+      localized_order_.push_back(text);
+      if (localized_order_.size() > kLocalizedKeep) {
+        localized_.erase(localized_order_.front());
+        localized_order_.erase(localized_order_.begin());
+      }
+    }
+    localized_[text] = result;
+    localize_cv_.notify_all();
+  }
+}
+
+// 送出時（服務端的鎖下）：有現成的結果就用；還沒好就放開服務端的鎖等一下（只有這個應用程式在等，
+// 其他應用程式照常打字），等不到或改寫不能用回傳 false
+bool Controller::WaitLocalized(const std::wstring& text, std::wstring* result) {
+  if (!WorthLocalizing(text) || !localize_llm_)
+    return false;
+  std::unique_lock<std::mutex> lock(localize_mutex_);
+  auto found = [&] { return localized_.find(text); };
+  if (found() == localized_.end()) {
+    lock.unlock();
+    RequestLocalize(text, true);
+    // 正在跑的預測先停下來，讓出推理鎖（送出後這些預測也不適用了）
+    prediction_->Cancel();
+    std::mutex& api = frontend_->ApiMutex();
+    api.unlock();
+    lock.lock();
+    localize_cv_.wait_for(lock, std::chrono::milliseconds(localize_wait_ms_),
+                          [&] { return localize_stop_ || found() != localized_.end(); });
+    lock.unlock();
+    api.lock();  // 呼叫端（按鍵處理）拿著這把鎖進來的，還它原樣
+    lock.lock();
+  }
+  const auto it = found();
+  if (it == localized_.end() || it->second.empty()) {
+    if (it == localized_.end())
+      Log(L"[簡體輸出] 在地化來不及（" + std::to_wstring(localize_wait_ms_) + L" ms），改用 OpenCC：" + text);
+    return false;
+  }
+  *result = it->second;
+  return true;
+}
+
+bool Controller::HandleSimplifiedKey(uint64_t id, int keycode, int mask) {
+  if (!simplified_key_)
+    return false;
+  const int key = keycode < 0x80 ? std::tolower(keycode) : keycode;
+  if (key != simplified_key_)
+    return false;
+  if (mask & mod::kRelease) {
+    // 放開：按下時切換過就一起吃掉（修飾鍵可能已經先放開）
+    const bool handled = simplified_key_down_;
+    simplified_key_down_ = false;
+    return handled;
+  }
+  if ((mask & (mod::kShift | mod::kControl | mod::kAlt | mod::kSuper)) != simplified_mask_)
+    return false;
+  simplified_key_down_ = true;
+  if (!SetSimplifiedOutput(!simplified_))
+    frontend_->ShowTip(id, L"無法載入繁簡轉換字典（opencc）");
+  else
+    frontend_->ShowTip(id, simplified_ ? L"简体输出" : L"繁體輸出");
+  return true;
+}
+
 bool Controller::SelectCandidate(uint64_t id, size_t index) {
   SessionState* ss = frontend_->Session(id);
   if (!ss)
@@ -1314,6 +1645,16 @@ std::vector<std::wstring> Controller::TakeCommits(uint64_t id) {
         prediction_mode_ = true;
         TriggerPrediction(id);
       }
+    }
+  }
+  // 簡體輸出：前文、個人詞庫與統計都記繁體（上面已經記好），只有送進應用程式的轉成簡體
+  if (simplified_) {
+    for (auto& text : commits) {
+      std::wstring localized;
+      if (localize_on_ && WaitLocalized(text, &localized))
+        text = localized;
+      else
+        text = simplifier_->Convert(text);
     }
   }
   return commits;

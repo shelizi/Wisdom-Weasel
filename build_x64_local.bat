@@ -4,6 +4,8 @@ setlocal
 set NoDefaultCurrentDirectoryInExePath=
 cd /d %~dp0
 call "%~dp0env.bat"
+rem OpenCC for Simplified output (from the rime-deps archives)
+if not exist "%~dp0deps\opencc\include\opencc\opencc.h" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0get-opencc.ps1" || exit /b 1
 
 set "VSDIR=C:\Program Files\Microsoft Visual Studio\18\Community"
 call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1

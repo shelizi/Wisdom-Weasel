@@ -12,10 +12,10 @@ if not exist "%OUT%" mkdir "%OUT%"
 set "KEY=%OUT%\keys\personal.key"
 set "KEY=%KEY:\=\\%"
 set "C=%ROOT%\core"
-cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DNDEBUG /I"%ROOT%\include" /DPERSONAL_CRYPTO_TEST_KEY_FILE=\"%KEY%\" ^
+cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DNDEBUG /I"%ROOT%\include" /I"%ROOT%\deps\opencc\include" /DPERSONAL_CRYPTO_TEST_KEY_FILE=\"%KEY%\" ^
   /Fo"%OUT%\\" /Fe"%OUT%\TestController.exe" ^
   TestController.cpp ^
-  "%C%\ime\controller.cpp" "%C%\ime\prediction_engine.cpp" "%C%\ime\rescore.cpp" ^
+  "%C%\ime\controller.cpp" "%C%\ime\script_convert.cpp" "%C%\ime\prediction_engine.cpp" "%C%\ime\rescore.cpp" ^
   "%C%\ime\text_rules.cpp" "%C%\ime\calibration.cpp" "%C%\ime\candidate_reranker.cpp" "%C%\ime\choice_stats.cpp" "%C%\ime\choice_log.cpp" "%C%\ime\rime_helpers.cpp" ^
   "%C%\llm\ContextHistory.cpp" "%C%\llm\MemoryCompressor.cpp" "%C%\llm\LLMProvider.cpp" ^
   "%C%\llm\RemoteLLMProvider.cpp" "%C%\llm_ipc\client.cpp" ^
@@ -23,6 +23,6 @@ cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /DNDEBUG /I"%ROOT%\include" /DPERSONA
   "%C%\crypto\personal_crypto.cpp" "%C%\platform\win\key_store_win.cpp" "%C%\platform\win\process_win.cpp" ^
   "%C%\net\win\http_win.cpp" "%C%\settings\bench.cpp" ^
   /Tc "%C%\third_party\monocypher\monocypher.c" ^
-  /link /LIBPATH:"%ROOT%\lib64" rime.lib || exit /b 1
+  /link /LIBPATH:"%ROOT%\lib64" /LIBPATH:"%ROOT%\deps\opencc\x64" rime.lib opencc.lib marisa.lib || exit /b 1
 copy /y "%ROOT%\output\rime.dll" "%OUT%" >nul
 "%OUT%\TestController.exe" "%RIME_SHARED%" "%OUT%\user"

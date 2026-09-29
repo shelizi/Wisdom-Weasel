@@ -90,7 +90,7 @@ export default {
     const remove = async () => {
       const { use } = state;
       let message = '確定要刪除「' + p.name + '」嗎？';
-      if (use.predict === index || use.refine === index || use.typo === index || use.scorer === index)
+      if (use.predict === index || use.refine === index || use.typo === index || use.scorer === index || use.localize === index)
         message += '\n\n這組設定正在使用中，刪除後請另外選擇模型。';
       if (!(await confirm(message, { title: '刪除模型設定', danger: true, ok: '刪除' }))) return;
       const shift = (i) => (i === index ? -1 : i > index ? i - 1 : i);
@@ -98,6 +98,7 @@ export default {
       use.refine = shift(use.refine);
       use.typo = shift(use.typo);
       use.scorer = shift(use.scorer);
+      use.localize = shift(use.localize);
       profiles.splice(index, 1);
       state.selectedProfile = Math.min(index, profiles.length - 1);
       changed();
@@ -248,7 +249,8 @@ export default {
     };
     const uses = kModelUses.map((u) => card({
       title: u.label,
-      desc: (u.on(state.form) ? '' : '（「' + u.page + '」頁目前沒有開啟）\n') + u.desc + (u.which === 'scorer' ? scorerWarning() : ''),
+      desc: (u.on(state.form) ? '' : '（「' + u.page + '」頁目前沒有開啟）\n') + u.desc + (u.which === 'scorer' ? scorerWarning() : '')
+        + (u.warn && u.warn(profiles[state.use[u.which]]) ? '\n注意：' + u.warn(profiles[state.use[u.which]]) : ''),
       control: profileSelect(ctx, u.which),
     }));
 
@@ -258,7 +260,8 @@ export default {
         h('div', { class: 'note' }, lines('本機模型的共用：智慧預測與 LLM 整句校正選同一組（同一個檔、同樣類型）時共用一份，不重複載入（智慧預測要開著）。'
           + '\n評分選「借用」時直接用智慧預測或注音校正已載入的模型；選了某一組就另外載入一份（即使和預測同一組）。'
           + '\n精煉的模型已被智慧預測或注音校正載入時直接借用，否則精煉時另外載入一次，完成後釋放。'
-          + '\n個人詞庫的「過濾不通順的輸入」用評分、預測或校正已載入的本機模型，不另外載入。'))),
+          + '\n個人詞庫的「過濾不通順的輸入」用評分、預測或校正已載入的本機模型，不另外載入。'
+          + '\n簡體在地化和智慧預測或 LLM 整句校正選同一組時共用，否則另外載入一份。'))),
       section('模型設定',
         h('div', { class: 'grid two' },
           h('div', {}, list, h('div', { class: 'spacer' }),

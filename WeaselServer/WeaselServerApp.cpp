@@ -70,6 +70,12 @@ void WeaselServerApp::SetupMenuHandlers() {
   std::filesystem::path dir = install_dir();
   m_server.AddMenuHandler(ID_WEASELTRAY_QUIT,
                           [this] { return m_server.Stop() == 0; });
+  // 簡體輸出：切換到下次重新部署（預設在設定裡）
+  m_server.AddMenuHandler(ID_WEASELTRAY_SIMPLIFIED, [this] {
+    m_handler->SetSimplifiedOutput(!m_handler->SimplifiedOutput());
+    return true;
+  });
+  tray_icon.simplified_state = [this] { return m_handler->SimplifiedOutput(); };
   m_server.AddMenuHandler(ID_WEASELTRAY_DEPLOY,
                           std::bind(execute, dir / L"WeaselDeployer.exe",
                                     std::wstring(L"/deploy")));

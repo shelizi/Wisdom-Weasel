@@ -1781,6 +1781,27 @@ void RimeWithWeaselHandler::SetDevConsole(DevConsole* dev_console) {
   m_controller->LogStatus();
 }
 
+bool RimeWithWeaselHandler::SimplifiedOutput() const {
+  return m_controller->SimplifiedOutput();
+}
+
+void RimeWithWeaselHandler::SetSimplifiedOutput(bool on) {
+  m_controller->SetSimplifiedOutput(on);
+}
+
+// 短暫顯示提示（和切換中英時的提示一樣用服務端候選窗；TSF 下也是）
+void RimeWithWeaselHandler::ShowTip(uint64_t id, const std::wstring& text) {
+  if (!m_ui)
+    return;
+  Context ctx;
+  Status& status = m_ui->status();
+  _GetStatus(status, (WeaselSessionId)id, ctx);
+  ctx.aux.str = text;
+  status.type = SCHEMA;
+  m_ui->Update(ctx, status);
+  m_ui->ShowWithTimeout(m_show_notifications_time > 0 ? m_show_notifications_time : 1200);
+}
+
 void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
   m_controller->PersonalCommand((int)command);
 }

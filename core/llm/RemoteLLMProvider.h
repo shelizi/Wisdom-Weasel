@@ -27,6 +27,7 @@ class RemoteLLMProvider : public LLMProvider {
   std::wstring CorrectSentence(const std::wstring& context, const std::wstring& zhuyin,
                                const std::wstring& draft,
                                const std::wstring& instruction) override;
+  std::wstring LocalizeText(const std::wstring& text, const std::wstring& instruction) override;
   bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
                  std::vector<double>* per_char) override;
   bool ScoreBatch(const std::wstring& context, const std::vector<std::wstring>& texts,

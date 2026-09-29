@@ -4,6 +4,7 @@
 #include "../../core/ime/controller.h"
 #include "../../core/ime/keys.h"
 #include "../../core/ime/prediction_engine.h"
+#include "../../core/ime/script_convert.h"
 #include "../../core/base/utf8.h"
 #include "../../core/llm/ContextHistory.h"
 #include "../../core/llm/LLMProvider.h"
@@ -59,6 +60,25 @@ class TestFrontend : public Frontend {
   std::wstring ContextKey(uint64_t) override { return L"test.exe|1|視窗"; }
   void Redeploy() override {}
   bool ReleaseSessions() override { return true; }
+};
+
+// 簡體在地化的假模型：回傳固定的句子，可以慢一點（測送出時的等待）
+class FakeLocalizer : public LLMProvider {
+ public:
+  std::wstring output;
+  int delay_ms = 0;
+  std::atomic<int> calls{0};
+  bool LoadConfig(const std::string&) override { return true; }
+  std::vector<std::wstring> PredictCandidates(const std::wstring&, const std::wstring&, size_t) override {
+    return {};
+  }
+  std::wstring LocalizeText(const std::wstring&, const std::wstring&) override {
+    ++calls;
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    return output;
+  }
+  bool IsAvailable() const override { return true; }
+  std::string GetProviderName() const override { return "fake-localize"; }
 };
 
 class FakeModel : public LLMProvider {
@@ -213,6 +233,21 @@ int main(int argc, char** argv) {
               (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - t0)
                   .count());
+
+  // 簡體輸出：Rime 共用資料的 OpenCC 字典（tw2s 只換字，tw2sp 連用詞）
+  {
+    ScriptConverter chars, phrases;
+    CHECK(chars.Load(fs::path(shared) / "opencc" / "tw2s.json"));
+    CHECK(phrases.Load(fs::path(shared) / "opencc" / "tw2sp.json"));
+    const std::wstring text = L"裡面的軟體和滑鼠都很好用";
+    const std::wstring a = chars.Convert(text), b = phrases.Convert(text);
+    std::printf("  tw2s  -> %s\n  tw2sp -> %s\n", U8(a).c_str(), U8(b).c_str());
+    CHECK(a == L"里面的软体和滑鼠都很好用");
+    CHECK(b == L"里面的软件和鼠标都很好用");
+    ScriptConverter missing;
+    CHECK(!missing.Load(fs::path(shared) / "opencc" / "no-such.json"));
+    CHECK(missing.Convert(text) == text);
+  }
 
   TestFrontend frontend;
   Controller::Options options;
@@ -411,6 +446,62 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 5 && t.Composing(); ++i)
       t.Key(key::kEscape);
     CHECK(!t.Composing());
+  }
+
+  // 簡體輸出：模型的輸出檢查
+  CHECK(LLMCheckLocalized(L"我的滑鼠壞了", L"我的鼠标坏了\n（把滑鼠改成鼠标）") == L"我的鼠标坏了");
+  CHECK(LLMCheckLocalized(L"我的滑鼠壞了", L"「我的鼠标坏了」") == L"我的鼠标坏了");
+  CHECK(LLMCheckLocalized(L"今天天氣很好", L"今天天气很好，我们一起去爬山吧，好不好呢") == L"");
+  CHECK(LLMCheckLocalized(L"今天天氣很好", L"  ") == L"");
+
+  // 簡體輸出：送出時用在地化模型的結果（停頓時先改好）；模型太慢就用 OpenCC
+  {
+    auto fast_owned = std::make_unique<FakeLocalizer>();
+    FakeLocalizer* fast = fast_owned.get();
+    fast->output = L"今天天气真好";
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      CHECK(controller.SetSimplifiedConversion(fs::path(shared) / "opencc" / "tw2sp.json", std::move(fast_owned), 1500));
+      CHECK(controller.SetSimplifiedOutput(true));
+    }
+    t.commits.clear();
+    t.Type("rup wu0 wu0 fu4cp3cl3");  // 今天天氣很好
+    CHECK(WaitFor([&] { return fast->calls > 0; }));  // 停頓後在背景改寫
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.CommitComposition(1);
+    }
+    t.Respond();
+    CHECK(t.commits.size() == 1 && t.commits.back() == L"今天天气真好");
+    CHECK(fast->calls == 1);
+
+    auto slow_owned = std::make_unique<FakeLocalizer>();
+    FakeLocalizer* slow = slow_owned.get();
+    slow->output = L"今天天气真好";
+    slow->delay_ms = 1500;
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      CHECK(controller.SetSimplifiedConversion(fs::path(shared) / "opencc" / "tw2sp.json", std::move(slow_owned), 200));
+    }
+    t.commits.clear();
+    t.Type("rup wu0 wu0 fu4cp3cl3");
+    const auto t0 = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.CommitComposition(1);
+    }
+    t.Respond();
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("  simplified fallback after %lld ms -> %s\n", (long long)waited, U8(t.commits.empty() ? L"" : t.commits.back()).c_str());
+    CHECK(t.commits.size() == 1 && t.commits.back() == L"今天天气很好");
+    CHECK(waited < 1200);
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.SetSimplifiedOutput(false);
+    }
+    CHECK(WaitFor([&] { return slow->calls > 0; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1600));  // 讓慢模型跑完，不影響後面的測試
+    t.commits.clear();
   }
 
   // LLM：打字停頓後出現補全候選，Tab 送出，接著預測下一個詞；Esc 收起

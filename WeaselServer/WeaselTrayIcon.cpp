@@ -17,7 +17,12 @@ WeaselTrayIcon::WeaselTrayIcon(weasel::UI& ui)
       m_schema_ascii_icon(),
       m_disabled(false) {}
 
-void WeaselTrayIcon::CustomizeMenu(HMENU hMenu) {}
+// 選單彈出前：「簡體輸出」依目前狀態打勾
+void WeaselTrayIcon::CustomizeMenu(HMENU hMenu) {
+  if (simplified_state)
+    CheckMenuItem(hMenu, ID_WEASELTRAY_SIMPLIFIED,
+                  MF_BYCOMMAND | (simplified_state() ? MF_CHECKED : MF_UNCHECKED));
+}
 
 BOOL WeaselTrayIcon::Create(HWND hTargetWnd) {
   HMODULE hModule = GetModuleHandle(NULL);

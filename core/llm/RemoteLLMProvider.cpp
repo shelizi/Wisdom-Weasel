@@ -134,6 +134,20 @@ std::wstring RemoteLLMProvider::CorrectSentence(const std::wstring& context,
   return reply->Ok() ? utf8::ToWide(text) : std::wstring();
 }
 
+std::wstring RemoteLLMProvider::LocalizeText(const std::wstring& text,
+                                             const std::wstring& instruction) {
+  if (!IsAvailable())
+    return std::wstring();
+  Writer request(Op::kLocalize, 0);
+  request.Str(utf8::FromWide(text));
+  request.Str(utf8::FromWide(instruction));
+  auto reply = client_->Call(std::move(request), Cancelled, kInferenceTimeout);
+  if (!reply)
+    return std::wstring();
+  const std::string result = reply->Str();
+  return reply->Ok() ? utf8::ToWide(result) : std::wstring();
+}
+
 bool RemoteLLMProvider::ScoreText(const std::wstring& context, const std::wstring& text,
                                   double* total, std::vector<double>* per_char) {
   // 只有本機模型能算機率，其他種類不必問推理行程
