@@ -1161,7 +1161,22 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   } else if (ss.focus < 0) {
     return false;  // 本來就在句尾
   } else if (keycode == key::kEnd || ss.focus + 1 >= count) {
-    // 回到句尾：取消框選，接著打字
+    // 回到句尾：取消框選，接著打字。框選時把前面幾段選好了（Rime 只會給後面的候選）：
+    // 先放開，沒換過字就回到 Rime 原本的整句與候選清單（例如多個整句候選）；
+    // 換過字（和 Rime 的整句不同）就照框選時的樣子選回去，保留換好的字
+    const int focus = ss.focus;
+    const std::wstring shown = zhuyin_preview::Join(ss.preview_units);
+    api_->clear_composition(session_id);
+    api_->set_input(session_id, input.c_str());
+    std::wstring sentence;
+    RIME_STRUCT(RimeContext, ctx);
+    if (api_->get_context(session_id, &ctx)) {
+      if (ctx.commit_text_preview)
+        sentence = utf8::ToWide(ctx.commit_text_preview);
+      api_->free_context(&ctx);
+    }
+    if (sentence != shown)
+      FocusSyllable(ss, focus);
     api_->set_caret_pos(session_id, input.size());
     ss.focus = -1;
     return true;

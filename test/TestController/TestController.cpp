@@ -190,7 +190,10 @@ int main(int argc, char** argv) {
                       std::ios::binary);
     out << "patch:\n"
            "  \"punctuator/full_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n"
-           "  \"punctuator/half_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n";
+           "  \"punctuator/half_shape/~\": { commit: \"\xEF\xBD\x9E\" }\n"
+           // 與設定的「長句的整句候選」相同：候選窗前面列出多個整句
+           "  translator/max_sentences: 5\n"
+           "  translator/sentence_cutoff_threshold: 100\n";
   }
   RimeApi* api = rime_get_api();
   RIME_STRUCT(RimeTraits, traits);
@@ -344,6 +347,69 @@ int main(int argc, char** argv) {
     t.Key(key::kEnd);
     CHECK(ss.focus == -1);
     t.Key(key::kEscape);
+    CHECK(!t.Composing());
+  }
+
+  // 逐字選字後沒換字就回到句尾：恢復原本的整句與候選清單（框選時選好的前段要放開）
+  {
+    // Rime 目前這段的前 10 個候選（不管選單有沒有展開）
+    auto candidates = [&] {
+      std::vector<std::string> list;
+      RimeCandidateListIterator it = {0};
+      if (api->candidate_list_begin(t.Rime(), &it)) {
+        while (list.size() < 10 && api->candidate_list_next(&it))
+          list.push_back(it.candidate.text ? it.candidate.text : "");
+        api->candidate_list_end(&it);
+      }
+      return list;
+    };
+    t.Type("rup wu0 wu0 fu4cp3cl3");  // 今天天氣很好（不按空白：選單照常顯示）
+    const std::wstring before = t.preedit.text;
+    const auto list = candidates();
+    t.Key(key::kLeft);
+    t.Key(key::kLeft);
+    t.Key(key::kLeft);
+    CHECK(ss.focus == 3);
+    t.Key(key::kEnd);
+    CHECK(ss.focus == -1);
+    CHECK(t.preedit.text == before);
+    CHECK(candidates() == list);
+    // → 一路移到句尾也一樣
+    t.Key(key::kLeft);
+    t.Key(key::kLeft);
+    t.Key(key::kRight);
+    t.Key(key::kRight);
+    CHECK(ss.focus == -1);
+    CHECK(candidates() == list);
+    // 框選時換過字：回到句尾後保留換好的字
+    t.Key(key::kLeft);
+    t.Key(key::kLeft);  // 框住「很」
+    CHECK(ss.focus == 4);
+    const std::wstring framed = t.preedit.text;
+    int other = -1;
+    {
+      RIME_STRUCT(RimeContext, ctx);
+      if (api->get_context(t.Rime(), &ctx)) {
+        for (int i = 0; i < ctx.menu.num_candidates && other < 0; ++i)
+          if (std::string(ctx.menu.candidates[i].text) != "很")
+            other = i;
+        api->free_context(&ctx);
+      }
+    }
+    CHECK(other >= 0);
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.SelectCandidate(1, (size_t)other);
+    }
+    t.Respond();
+    const std::wstring changed = t.preedit.text;
+    CHECK(changed != framed && changed.size() == framed.size());
+    t.Key(key::kLeft);
+    t.Key(key::kEnd);
+    CHECK(ss.focus == -1);
+    CHECK(t.preedit.text == changed);
+    for (int i = 0; i < 5 && t.Composing(); ++i)
+      t.Key(key::kEscape);
     CHECK(!t.Composing());
   }
 
