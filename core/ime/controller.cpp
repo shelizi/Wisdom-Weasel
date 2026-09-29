@@ -995,6 +995,14 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   }
   if (!FocusSyllable(ss, target))
     return false;  // 對不上（例如省略聲調的連打），交回 Rime 原本的游標移動
+  // 框字時只換這一個字：整句的 LLM 候選（補全、推薦、校正）不適用，收起來並作廢排隊中的請求。
+  // 不然單字候選後面接著整句，候選窗被撐寬，Tab 也會套用整句
+  if (prediction_mode_ || completion_active_ || prediction_->HasCandidates()) {
+    completion_active_ = false;
+    prediction_mode_ = false;
+    prediction_->Cancel();
+    ForgetSuggestions(ss);
+  }
   if (!ss.focus_used) {
     ss.focus_used = true;
     ++Stats(session_id).focus_uses;
