@@ -38,7 +38,9 @@ foreach ($f in $files) {
   $target = "$dest\$($f.name)"
   if (Test-Path $target) {
     Remove-Item "$target.old" -Force -ErrorAction SilentlyContinue
-    Move-Item $target "$target.old" -Force
+    # the previous .old may still be loaded (an app holding the old IME dll, a settings window left open): set it aside under a unique name
+    $aside = if (Test-Path "$target.old") { "$target.$(Get-Date -Format yyyyMMddHHmmss).old" } else { "$target.old" }
+    Move-Item $target $aside -Force
   }
   Copy-Item $f.src $target -Force
 }
