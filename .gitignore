@@ -67,3 +67,4 @@ bench/__pycache__/
 /output/llama/
 /output/llama-mac/
 /build-mac
+__pycache__/
