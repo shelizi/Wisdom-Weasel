@@ -62,8 +62,9 @@ bool ApplyRimeBoost(Platform& platform, RimeLeversApi* api, RimeSwitcherSettings
                     bool enable, std::string* error);
 bool ApplyTypoCorrection(Platform& platform, bool enable, std::string* error);
 bool ApplyGrammar(Platform& platform, bool enable, std::string* error);
-// 整句重排：三個注音方案加上 translator/max_sentences（關閉時拿掉）
-bool ApplyRerankSentences(Platform& platform, bool enable, std::string* error);
+// 長句的整句候選：三個注音方案列出 count 個整句（translator/max_sentences 與放寬的
+// sentence_cutoff_threshold）；count <= 1 時拿掉，回到 Rime 預設
+bool ApplySentenceCandidates(Platform& platform, int count, std::string* error);
 bool GrammarEnabled(Platform& platform);  // 注音方案裡有我們加的區塊
 fs::path GrammarPath(Platform& platform);
 bool GrammarReady(Platform& platform);  // 模型檔已下載

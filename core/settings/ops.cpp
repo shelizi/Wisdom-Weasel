@@ -489,18 +489,20 @@ bool PatchSchemaGrammar(const fs::path& file, bool enable, std::string* error) {
                           {"grammar:", "translator/contextual_suggestions"}, error);
 }
 
-// 整句重排：Rime 給出前幾個整句（librime 1.17 translator/max_sentences），輸入法再用本機模型重排。
-// 候選窗也會多出這些整句候選
-bool PatchSchemaSentences(const fs::path& file, bool enable, std::string* error) {
+// 長句的整句候選（librime 1.17 translator/max_sentences）：候選窗前面列出 count 個完整整句，
+// 不然第二名起都是句首的詞。分數比最好的一句低很多的整句 Rime 預設會濾掉（sentence_cutoff_threshold），
+// bopomofo_express 常常只剩一句，所以一起放寬。整句重排也用這些整句
+bool PatchSchemaSentences(const fs::path& file, int count, std::string* error) {
   std::vector<std::string> block;
-  if (enable)
+  if (count > 1)
     block = {
-        std::string(kSentencesBegin) + "：整句重排用的整句候選（小狼毫設定自動管理）",
-        "  translator/max_sentences: 10",
+        std::string(kSentencesBegin) + "：長句列出多個整句候選（小狼毫設定自動管理）",
+        "  translator/max_sentences: " + std::to_string(count),
+        "  translator/sentence_cutoff_threshold: 100",
         kSentencesEnd,
     };
-  return PatchSchemaBlock(file, kSentencesBegin, kSentencesEnd, block, {"translator/max_sentences"},
-                          error);
+  return PatchSchemaBlock(file, kSentencesBegin, kSentencesEnd, block,
+                          {"translator/max_sentences", "translator/sentence_cutoff_threshold"}, error);
 }
 
 // 三個注音方案都改；關閉時只還原已有的檔案
@@ -575,8 +577,18 @@ bool ApplyGrammar(Platform& platform, bool enable, std::string* error) {
   return PatchAllZhuyin(platform, enable, error, PatchSchemaGrammar);
 }
 
-bool ApplyRerankSentences(Platform& platform, bool enable, std::string* error) {
-  return PatchAllZhuyin(platform, enable, error, PatchSchemaSentences);
+bool ApplySentenceCandidates(Platform& platform, int count, std::string* error) {
+  const fs::path user_dir = platform.UserDataDir();
+  bool ok = true;
+  for (const char* schema : kZhuyinSchemas) {
+    const fs::path file = user_dir / (std::string(schema) + ".custom.yaml");
+    std::error_code ec;
+    if (count <= 1 && !fs::exists(file, ec))
+      continue;
+    if (!PatchSchemaSentences(file, count, error))
+      ok = false;
+  }
+  return ok;
 }
 
 bool GrammarEnabled(Platform& platform) {

@@ -1,6 +1,12 @@
 import { h, section, card, checkbox, button, select, input, note, confirm, lines } from '../ui.js';
 import { profileSelect } from './profiles.js';
 
+const kSentenceCounts = [
+  { value: '0', label: '關閉（Rime 預設）' },
+  { value: '3', label: '3 句' },
+  { value: '5', label: '5 句' },
+  { value: '10', label: '10 句' },
+];
 const kRerankModes = [
   { value: 'off', label: '關閉' },
   { value: 'shadow', label: '只統計（不顯示，先驗證效果）' },
@@ -127,10 +133,20 @@ export default {
           desc: '打字停頓時，比較整句裡同音字的通順度。使用智慧預測或注音校正已載入的本機模型（API 模型不支援）。',
         }),
         card({
+          title: '長句的整句候選',
+          desc: 'Rime 預設只有第一個候選是整句，第二名起是句首的詞（方便從句首一段一段選），句子越長越顯得短。'
+            + '打開後，候選窗前面會列出幾個完整的整句（多半只差一兩個字），句首的詞會移到後面。'
+            + '開啟整句重排時至少列 10 句。套用後會重新部署。',
+          control: select(kSentenceCounts, c.sentences, (v) => {
+            c.sentences = v;
+            ctx.markDirty('llm');
+          }, { width: '160px' }),
+        }),
+        card({
           title: '整句重排',
           desc: 'Rime 先給出符合注音的前 10 個整句，本機模型依前文挑最通順的一句；比 Rime 第一句好超過門檻才推薦（Tab 套用）。'
             + '候選一律來自 Rime，模型只負責排序。建議先選「只統計」用一陣子，在下面的選字統計看「整句重排」欄（改對／會改）再決定要不要顯示；'
-            + '顯示時取代上面的同音字推薦。開關時會重新部署，注音方案的候選窗也會多出幾個整句候選。',
+            + '顯示時取代上面的同音字推薦。開關時會重新部署，候選窗會列出至少 10 個整句候選（見上面的「長句的整句候選」）。',
           control: select(kRerankModes, c.rerank, (v) => {
             c.rerank = v;
             ctx.markDirty('llm');

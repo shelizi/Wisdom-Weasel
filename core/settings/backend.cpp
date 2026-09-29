@@ -297,10 +297,10 @@ struct Backend::State {
       if (!error.empty())
         add_error("注音排序：", error);
     }
-    if (c.contains("rerank_sentences")) {
+    if (c.contains("sentences") && c["sentences"].is_number_integer()) {
       std::string error;
-      if (!ApplyRerankSentences(platform, c["rerank_sentences"].get<bool>(), &error))
-        add_error("整句重排：", error);
+      if (!ApplySentenceCandidates(platform, c["sentences"].get<int>(), &error))
+        add_error("整句候選：", error);
     }
     if (c.contains("typo_rime")) {
       std::string error;

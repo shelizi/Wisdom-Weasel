@@ -242,6 +242,8 @@ function loadForm(llm, defaults) {
       rescore: bool(get(llm, 'choice/rescore'), false),
       rerank: ['off', 'shadow', 'on'].includes(str(get(llm, 'choice/rerank'))) ? str(get(llm, 'choice/rerank')) : 'off',
       rerank_margin: str(get(llm, 'choice/rerank_margin')) || '2',
+      sentences: String([0, 3, 5, 10].includes(int(get(llm, 'choice/sentence_candidates'), 0))
+        ? int(get(llm, 'choice/sentence_candidates'), 0) : 0),
       min_confidence: str(get(llm, 'choice/min_confidence')) || '0.5',
     },
     typo: {
@@ -282,6 +284,7 @@ export function buildLlm() {
   set(llm, 'choice/rerank', form.choice.rerank);
   const rerankMargin = parseFloat(trim(form.choice.rerank_margin));
   set(llm, 'choice/rerank_margin', Number.isFinite(rerankMargin) && rerankMargin >= 0 ? rerankMargin : 2);
+  set(llm, 'choice/sentence_candidates', Number(form.choice.sentences) || 0);
   // 0～0.9；空白或不合理時用預設
   const minConfidence = parseFloat(trim(form.choice.min_confidence));
   set(llm, 'choice/min_confidence',
@@ -335,6 +338,12 @@ export function validate() {
   return null;
 }
 
+// 方案要列幾個整句候選：使用者選的數量；開整句重排時至少 10 句（重排從這些整句挑）
+function sentenceCount(form) {
+  const n = Number(form.choice.sentences) || 0;
+  return form.choice.rerank !== 'off' ? Math.max(n, 10) : n;
+}
+
 // 啟動或套用後：以儲存的設定重設表單
 export function loadLlm(llm) {
   state.llm = llm || {};
@@ -344,7 +353,7 @@ export function loadLlm(llm) {
   state.use = use;
   state.loaded.rime_boost = bool(get(state.llm, 'personal/rime_boost'), false);
   state.loaded.typo_rime = state.form.typo.rime;
-  state.loaded.rerank = state.form.choice.rerank;
+  state.loaded.sentences = sentenceCount(state.form);
 }
 
 // 套用：收集變更的部分
@@ -359,9 +368,9 @@ export function collectChanges() {
     const boost = form.personal.enabled && form.personal.rime_boost;
     if (boost !== state.loaded.rime_boost) changes.rime_boost = boost;
     if (form.typo.rime !== state.loaded.typo_rime) changes.typo_rime = form.typo.rime;
-    // 整句重排要 Rime 給多個整句：開關有變才改方案
-    const sentences = form.choice.rerank !== 'off';
-    if (sentences !== (state.loaded.rerank !== 'off')) changes.rerank_sentences = sentences;
+    // 整句候選（與整句重排要的整句）：數量有變才改方案
+    const sentences = sentenceCount(form);
+    if (sentences !== state.loaded.sentences) changes.sentences = sentences;
   }
   if (dirty.has('grammar') && form.choice.grammar !== state.loaded.grammar) changes.grammar = form.choice.grammar;
   return changes;
