@@ -19,6 +19,6 @@ struct WebSettingsOptions {
   std::wstring selftest_phase;
 };
 
-// 0：正常關閉；-1：無法使用 WebView2（呼叫端可改開舊的設定視窗）
+// 0：正常關閉；-1：無法使用 WebView2 或找不到設定網頁（已告訴使用者）
 int RunWebSettings(Configurator* configurator,
                    const WebSettingsOptions& options);

@@ -1,5 +1,5 @@
 import { section, card, checkbox, button, textarea } from '../ui.js';
-import { profileSelect } from './profiles.js';
+import { profileInfo } from './profiles.js';
 
 export default {
   id: 'typo',
@@ -30,9 +30,9 @@ export default {
       section('LLM 整句校正',
         card({
           title: '校正使用的模型',
+          desc: '各功能使用的模型集中在「語言模型」頁設定。',
           disabled: off,
-          control: [profileSelect(ctx, 'typo', { disabled: off }),
-            button('管理模型…', () => ctx.go('models', { profile: ctx.state.use.typo }))],
+          control: profileInfo(ctx, 'typo', { disabled: off }),
         }),
         card({
           title: '校正提示詞',

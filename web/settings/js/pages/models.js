@@ -1,6 +1,6 @@
 import { h, section, card, checkbox, button, buttons, select, input, note, listbox, confirm, lines } from '../ui.js';
 import { newProfile, profileLabel, trim } from '../state.js';
-import { profileUsage } from './profiles.js';
+import { kModelUses, profileSelect, profileUsage } from './profiles.js';
 
 let scanned = [];        // 模型檔下拉選單的選項（完整路徑）
 let files = null;        // 模型資料夾裡的檔案
@@ -145,7 +145,7 @@ export default {
           changed();
           ctx.rerender();
         })),
-        h('div', { class: 'muted' }, 'Base 模型適合續寫預測；精煉需要能照指示回答的 Instruct（對話）模型。精煉用的模型和預測或校正已載入的是同一組（同一個檔、同樣類型）時直接借用，不再載入一份；否則精煉時另外載入一次，完成後釋放。'),
+        h('div', { class: 'muted' }, 'Base 模型適合續寫預測與評分；精煉需要能照指示回答的 Instruct（對話）模型。'),
       ];
       const apiNote = note(apiResult && apiResult.index === index ? apiResult.text
         : '例如 https://api.openai.com/v1/chat/completions，或 Ollama 的 http://localhost:11434/v1/chat/completions。金鑰以明碼存在 weasel.custom.yaml。',
@@ -237,8 +237,28 @@ export default {
     };
     this.jobNote = note(jobText);
 
+    // 各功能使用的模型
+    // 評分選了和預測或校正同一組：會另外載入一份，建議改選「借用」
+    const scorerWarning = () => {
+      const { use, form } = state;
+      const i = use.scorer;
+      if (i < 0 || i >= profiles.length || profiles[i].remote) return '';
+      const same = (form.predict.enabled && use.predict === i) || (form.typo.llm && use.typo === i);
+      return same ? '\n注意：和智慧預測或校正選了同一組，會再載入一份；選「借用」可以省記憶體。' : '';
+    };
+    const uses = kModelUses.map((u) => card({
+      title: u.label,
+      desc: (u.on(state.form) ? '' : '（「' + u.page + '」頁目前沒有開啟）\n') + u.desc + (u.which === 'scorer' ? scorerWarning() : ''),
+      control: profileSelect(ctx, u.which),
+    }));
+
     return [
-      section(null, h('p', { class: 'muted' }, '設定可用的模型；「智慧預測」、「注音校正」與「個人詞庫」的精煉可以各自選用其中一組。')),
+      section(null, h('p', { class: 'muted' }, '在下面的「模型設定」建立可用的模型，再替各功能選用其中一組；多個功能可以共用同一組。')),
+      section('各功能使用的模型', uses,
+        h('div', { class: 'note' }, lines('本機模型的共用：智慧預測與 LLM 整句校正選同一組（同一個檔、同樣類型）時共用一份，不重複載入（智慧預測要開著）。'
+          + '\n評分選「借用」時直接用智慧預測或注音校正已載入的模型；選了某一組就另外載入一份（即使和預測同一組）。'
+          + '\n精煉的模型已被智慧預測或注音校正載入時直接借用，否則精煉時另外載入一次，完成後釋放。'
+          + '\n個人詞庫的「過濾不通順的輸入」用評分、預測或校正已載入的本機模型，不另外載入。'))),
       section('模型設定',
         h('div', { class: 'grid two' },
           h('div', {}, list, h('div', { class: 'spacer' }),

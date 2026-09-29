@@ -254,6 +254,16 @@ struct Backend::State {
     return llm.is_object() ? llm : json::object();
   }
 
+  // 開發：dev_console/enabled（沒設定時輸入法預設開啟）
+  json DevJson() {
+    RimeConfig config = {0};
+    api->settings_get_config(style, &config);
+    Bool console = true;
+    if (!rime->config_get_bool(&config, "dev_console/enabled", &console))
+      console = true;
+    return {{"console", !!console}};
+  }
+
   json GrammarJson() {
     std::error_code ec;
     const auto size = fs::file_size(GrammarPath(platform), ec);
@@ -322,7 +332,10 @@ struct Backend::State {
         }
       }
     }
-    if (style_changed || llm_changed) {
+    const bool dev_changed = c.contains("dev_console") && c["dev_console"].is_boolean();
+    if (dev_changed)
+      api->customize_bool(style, "dev_console/enabled", c["dev_console"].get<bool>());
+    if (style_changed || llm_changed || dev_changed) {
       api->save_settings(style);
       saved = true;
     }
@@ -341,7 +354,8 @@ struct Backend::State {
     return {{"deployed", true},
             {"message", errors.empty() ? "已套用。" : "已套用；" + errors},
             {"llm", LLMJson()},
-            {"grammar", GrammarJson()}};
+            {"grammar", GrammarJson()},
+            {"dev", DevJson()}};
   }
 
   void StartModelJob(const std::string& src, const fs::path& dest, bool download) {
@@ -444,6 +458,7 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
             {"style", s.StyleJson()},
             {"llm", s.LLMJson()},
             {"grammar", s.GrammarJson()},
+            {"dev", s.DevJson()},
             {"defaults",
              {{"correct_instruction", s.options.correct_instruction},
               {"api_url", std::string(kDefaultApiUrl)},
@@ -555,6 +570,16 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     Emit emit = s.emit;
     auto cancel = s.bench_cancel;
     s.bench_job = std::thread([&s, emit, cancel, profiles, options, predict, correct]() {
+      // 先請輸入法放掉它的模型（預測、校正、評分），測試的模型才有完整的顯示卡記憶體，
+      // 反應時間也不會被輸入法的推理拖慢。輸入法放完會寫 llm_paused.txt；沒在執行就不用等
+      const fs::path paused = s.platform.UserDataDir() / "llm_paused.txt";
+      std::error_code ec;
+      fs::remove(paused, ec);
+      if (s.platform.SendPersonalCommand(9)) {
+        emit("bench", {{"state", "pause"}, {"message", "暫停輸入法的模型…"}});
+        for (int i = 0; i < 100 && !*cancel && !fs::exists(paused, ec); ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
       try {
         settings_bench::Run(profiles, options, predict, correct, *cancel,
                             [&emit](const json& e) { emit("bench", e); });
@@ -562,6 +587,7 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
       } catch (const std::exception& e) {
         emit("bench", {{"state", "error"}, {"message", e.what()}});
       }
+      s.platform.SendPersonalCommand(10);  // 輸入法重新載入模型
       s.bench_running = false;
     });
     return {{"started", true}, {"predict", predict.size()}, {"correct", correct.size()}};

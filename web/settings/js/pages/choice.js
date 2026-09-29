@@ -1,5 +1,5 @@
 import { h, section, card, checkbox, button, select, input, note, confirm, lines } from '../ui.js';
-import { profileSelect } from './profiles.js';
+import { profileInfo } from './profiles.js';
 
 const kSentenceCounts = [
   { value: '0', label: '關閉（Rime 預設）' },
@@ -130,7 +130,7 @@ export default {
             c.rescore = v;
             ctx.markDirty('llm');
           }),
-          desc: '打字停頓時，比較整句裡同音字的通順度。使用智慧預測或注音校正已載入的本機模型（API 模型不支援）。',
+          desc: '打字停頓時，比較整句裡同音字的通順度。用下面「整句重排」的評分模型（只能用本機模型）。',
         }),
         card({
           title: '長句的整句候選',
@@ -153,10 +153,8 @@ export default {
             ctx.rerender();
           }, { width: '240px' }),
           below: [
-            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '評分模型'),
-              profileSelect(ctx, 'scorer', { disabled: c.rerank === 'off' && !c.rescore })),
-            h('div', { class: 'note' }, '建議用小的 Base 模型（例如 Qwen3-0.6B-Base）：在開放繁中測試集上，Top-1 從約 57～64% 提升到 70～74%，改錯不到 2%。'
-              + '沒選時借用智慧預測或注音校正已載入的本機模型。'),
+            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' && !c.rescore ? 'muted' : '' }, '評分模型（推薦也用）'),
+              profileInfo(ctx, 'scorer', { disabled: c.rerank === 'off' && !c.rescore })),
             h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '門檻'),
               input(c.rerank_margin, (v) => { c.rerank_margin = v; ctx.markDirty('llm'); },
                 { width: '80px', disabled: c.rerank === 'off' }),

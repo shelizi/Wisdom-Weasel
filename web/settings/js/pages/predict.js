@@ -1,5 +1,5 @@
 import { h, section, card, toggle, checkbox, button, textarea, input, note, listbox } from '../ui.js';
-import { profileSelect } from './profiles.js';
+import { profileInfo } from './profiles.js';
 
 let testInput = '今天天氣很好，我們一起去';
 let loadedText = '';
@@ -106,10 +106,9 @@ export default {
       section('模型',
         card({
           title: '預測使用的模型',
-          desc: '在「語言模型」頁設定可用的模型。',
+          desc: '各功能使用的模型集中在「語言模型」頁設定。',
           disabled: off,
-          control: [profileSelect(ctx, 'predict', { disabled: off }),
-            button('管理模型…', () => ctx.go('models', { profile: ctx.state.use.predict }))],
+          control: profileInfo(ctx, 'predict', { disabled: off }),
           below: loadedEl,
         })),
       section('提示詞',

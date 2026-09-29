@@ -178,7 +178,9 @@ export default {
 
   onEvent(ctx, e) {
     if (!run) return;
-    if (e.state === 'load') {
+    if (e.state === 'pause') {
+      statusText = e.message;
+    } else if (e.state === 'load') {
       run.load[e.profile] = e;
       const name = run.profiles[e.profile].name;
       statusText = e.ok ? '測試中：' + name + '（載入 ' + e.ms + ' ms）' : name + '：' + e.error;
@@ -293,7 +295,7 @@ export default {
     return [
       section('要測試的模型',
         card({
-          desc: '用「語言模型」頁的設定與目前表單的提示詞、本機模型執行設定（不必先套用）。設定程式會自己載入模型，測完就釋放；本機模型會暫時多佔一份記憶體。API 模型每一題都會送出請求。',
+          desc: '用「語言模型」頁的設定與目前表單的提示詞、本機模型執行設定（不必先套用）。設定程式會自己載入模型，測完就釋放。測試期間輸入法會先放掉它的模型（預測、校正與推薦暫時不出現，精煉也暫停），測完自動重新載入。API 模型每一題都會送出請求。',
           below: profiles.length
             ? h('div', {}, ...profiles.map((p, i) => h('div', {}, checkbox(chosen.has(i), profileLabel(p), (v) => {
               if (v) chosen.add(i);

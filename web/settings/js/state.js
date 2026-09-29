@@ -1,5 +1,4 @@
 // 設定的狀態：從 Rime 設定讀進表單、存回時轉成 llm 設定。
-// 邏輯與原本的設定視窗（SettingsDialog）相同，存出來的 weasel.custom.yaml 也相同。
 // Rime 的純量沒有型別，讀進來都是字串；存回時布林與數字交給 Rime 轉成文字。
 
 export const state = {
@@ -11,7 +10,8 @@ export const state = {
   loaded: {},         // 目前已套用的值（判斷要不要改方案檔）
   schemas: [],        // [{id, name, selected}]，已選的在前
   style: null,        // {active, fonts}
-  dirty: new Set(),   // schemas / style / llm / grammar
+  dev: { console: true },  // 開發：開發終端（dev_console/enabled）
+  dirty: new Set(),   // schemas / style / llm / grammar / dev
 };
 
 // ---------------------------------------------------------------------------
@@ -325,10 +325,10 @@ export function validate() {
   const valid = (i) => (i >= 0 && i < profiles.length ? i : -1);
   const llmOn = form.predict.enabled;
   const predict = valid(use.predict);
-  if (llmOn && predict < 0) return { page: 'predict', message: '請選擇預測使用的模型（可在「語言模型」頁新增）。' };
+  if (llmOn && predict < 0) return { page: 'models', message: '請在「各功能使用的模型」選擇智慧預測使用的模型。' };
   const typoLlm = form.typo.llm;
   const typo = valid(use.typo);
-  if (typoLlm && typo < 0) return { page: 'typo', message: '請選擇注音校正使用的模型（可在「語言模型」頁新增）。' };
+  if (typoLlm && typo < 0) return { page: 'models', message: '請在「各功能使用的模型」選擇 LLM 整句校正使用的模型。' };
   for (const index of [llmOn ? predict : -1, valid(use.refine), typoLlm ? typo : -1]) {
     if (index < 0) continue;
     const p = profiles[index];
@@ -373,5 +373,6 @@ export function collectChanges() {
     if (sentences !== state.loaded.sentences) changes.sentences = sentences;
   }
   if (dirty.has('grammar') && form.choice.grammar !== state.loaded.grammar) changes.grammar = form.choice.grammar;
+  if (dirty.has('dev') && state.dev.console !== state.loaded.dev_console) changes.dev_console = state.dev.console;
   return changes;
 }

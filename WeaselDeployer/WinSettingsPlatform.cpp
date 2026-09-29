@@ -57,11 +57,6 @@ fs::path DoFileDialog(HWND owner,
 
 }  // namespace
 
-WinSettingsPlatform& WinSettingsPlatform::Shared() {
-  static WinSettingsPlatform platform(nullptr);
-  return platform;
-}
-
 fs::path WinSettingsPlatform::UserDataDir() {
   return WeaselUserDataPath();
 }

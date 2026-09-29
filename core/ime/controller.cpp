@@ -63,6 +63,28 @@ void PopChar(std::wstring& s) {
 
 }  // namespace
 
+// 重新載入設定時要載入的模型：LoadConfig 在服務端的鎖下讀好設定，模型載入執行緒照著載入
+struct Controller::ModelPlan {
+  uint64_t generation = 0;
+  bool paused = false;  // 模型測試暫停：什麼都不載入，舊模型放完寫 llm_paused.txt
+  // 智慧預測（模型的設定由推理行程自己讀設定檔）
+  bool predict = false;
+  std::string provider_type;
+  std::wstring predict_label;  // 設定畫面顯示的模型；空的用 provider 的名稱
+  // LLM 整句校正
+  bool typo = false;
+  std::string typo_type;  // llamacpp／openai；空的是沒選模型
+  bool typo_same_as_predict = false;
+  std::wstring typo_prompt;
+  LLMLocalModelSpec typo_spec;
+  std::string typo_api_url, typo_api_key, typo_model;
+  bool typo_no_think = false;
+  int typo_think_tokens = 2048;
+  // 推薦、整句重排的評分模型（沒指定時借預測或校正的，不在這裡載入）
+  bool scorer = false;
+  LLMLocalModelSpec scorer_spec;
+};
+
 Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
     : api_(api), frontend_(frontend), options_(std::move(options)) {
   homophones_ = std::make_unique<HomophoneFinder>(api_);
@@ -96,6 +118,14 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
 }
 
 Controller::~Controller() {
+  // 模型載入執行緒：正在載入的等它載完（不會再換上），還沒開始的丟掉
+  {
+    std::lock_guard<std::mutex> lock(loader_mutex_);
+    loader_stop_ = true;
+  }
+  loader_cv_.notify_all();
+  if (loader_thread_.joinable())
+    loader_thread_.join();
   learn_filter_.reset();  // 評分會用到模型與推理鎖，先停
   // 精煉可能正在借用模型（用到推理鎖與模型）：先停，不能等成員解構（prediction_ 會先被釋放）
   if (refiner_)
@@ -109,17 +139,14 @@ Controller::~Controller() {
 // 設定與模型
 
 void Controller::LoadConfig(RimeConfig* config) {
-  // 先釋放舊模型（重新部署時），避免新舊模型同時佔用記憶體，或關閉 LLM 後舊模型仍駐留。
-  // 作廢排隊中的預測，並等進行中的推理結束，避免背景執行緒用到已釋放的模型
-  // （精煉借用模型中也會中斷讓出來）
+  // 先放掉舊模型（重新部署時），避免新舊模型同時佔用記憶體，或關閉 LLM 後舊模型仍駐留。
+  // 作廢排隊中的預測，並等進行中的推理結束，避免背景執行緒用到舊模型
+  // （精煉借用模型中也會中斷讓出來）。關掉舊的推理行程與載入新模型都交給模型載入執行緒
+  auto plan = std::make_unique<ModelPlan>();
   ++model_wanted_;
   prediction_->Cancel();
   std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
-  typo_llm_ = nullptr;  // 可能指向 llm_provider_，先放掉
-  typo_owned_.reset();
-  scorer_owned_.reset();
-  llm_provider_.reset();
-  loaded_model_.clear();
+  std::vector<std::unique_ptr<LLMProvider>> retired = TakeModels();
   // 兩種自動觸發時機可分別關閉（未設定時預設開啟）；關閉後仍可按 ` 鍵手動觸發
   Bool flag = true;
   after_commit_ = !api_->config_get_bool(config, "llm/predict_after_commit", &flag) || flag;
@@ -262,6 +289,9 @@ void Controller::LoadConfig(RimeConfig* config) {
           using Result = PersonalRefiner::SharedChatResult;
           const uint64_t kIdleMs = 10000;
           const uint64_t wanted = model_wanted_;
+          // 模型測試中：不借也不自己載入（這次精煉失敗，之後排程再試）
+          if (models_paused_)
+            return Result::kFailed;
           if (base::MonotonicMs() - last_key_ms_ < kIdleMs)
             return Result::kBusy;
           // 推理鎖：不能一直等（重新載入設定時會持鎖等精煉停下來）
@@ -348,43 +378,92 @@ void Controller::LoadConfig(RimeConfig* config) {
     if (api_->config_get_string(config, "llm/provider_type", type_buf, 64))
       provider_type = type_buf;
     // 依 provider_type 建立 provider；模型在獨立的推理行程裡執行，當掉不影響打字
-    if (provider_type == "llamacpp" || provider_type == "hf_constraint")
-      llm_provider_ = std::make_unique<RemoteLLMProvider>(provider_type);
-    else
-      llm_provider_ = std::make_unique<RemoteLLMProvider>("openai");  // 預設用 OpenAI 相容 API
+    plan->predict = true;
+    plan->provider_type =
+        provider_type == "llamacpp" || provider_type == "hf_constraint" ? provider_type : "openai";
     LOG(INFO) << "LLM Provider type: " << provider_type;
-    if (llm_provider_->LoadConfig(options_.config_id)) {
-      LOG(INFO) << "LLM Provider initialized successfully: " << llm_provider_->GetProviderName();
-      // 記下目前載入的模型，供設定畫面顯示
-      char model_buf[1024] = {0};
-      char url_buf[1024] = {0};
-      if (provider_type == "llamacpp" &&
-          api_->config_get_string(config, "llm/llamacpp/model_path", model_buf, sizeof(model_buf) - 1)) {
-        loaded_model_ = utf8::ToWide(model_buf);
-      } else if (provider_type == "openai") {
-        // 顯示為「OpenAI 相容 API：模型（網址）」
-        api_->config_get_string(config, "llm/openai/model", model_buf, sizeof(model_buf) - 1);
-        api_->config_get_string(config, "llm/openai/api_url", url_buf, sizeof(url_buf) - 1);
-        loaded_model_ = L"OpenAI 相容 API：" + utf8::ToWide(model_buf) + L"（" + utf8::ToWide(url_buf) + L"）";
-      } else {
-        loaded_model_ = utf8::ToWide(llm_provider_->GetProviderName());
-      }
-    } else {
-      LOG(ERROR) << "LLM Provider initialization failed (llm/provider_type: " << provider_type
-                 << "); check llm/* in weasel.yaml";
-      llm_provider_.reset();
+    // 載入後設定畫面顯示的模型（空的話用 provider 的名稱）
+    char model_buf[1024] = {0};
+    char url_buf[1024] = {0};
+    if (provider_type == "llamacpp" &&
+        api_->config_get_string(config, "llm/llamacpp/model_path", model_buf, sizeof(model_buf) - 1)) {
+      plan->predict_label = utf8::ToWide(model_buf);
+    } else if (provider_type == "openai") {
+      // 顯示為「OpenAI 相容 API：模型（網址）」
+      api_->config_get_string(config, "llm/openai/model", model_buf, sizeof(model_buf) - 1);
+      api_->config_get_string(config, "llm/openai/api_url", url_buf, sizeof(url_buf) - 1);
+      plan->predict_label = L"OpenAI 相容 API：" + utf8::ToWide(model_buf) + L"（" + utf8::ToWide(url_buf) + L"）";
     }
   } else {
     LOG(INFO) << "LLM is disabled or not configured (llm/enabled)";
   }
   // 注音整句校正的模型：不受「智慧預測」開關影響
-  LoadTypoProvider(config);
-  LoadScorerProvider(config);
+  PlanTypo(config, plan.get());
+  PlanScorer(config, plan.get());
+
+  // 重新部署後恢復模型測試暫停的模型（設定程式沒送恢復就結束時，也不會一直停用）
+  if (models_paused_) {
+    models_paused_ = false;
+    std::error_code ec;
+    fs::remove(options_.user_dir / "llm_paused.txt", ec);
+  }
+  last_plan_ = std::make_unique<ModelPlan>(*plan);
+  PostModels(std::move(plan), std::move(retired));
 }
 
-void Controller::LoadTypoProvider(RimeConfig* config) {
-  typo_llm_ = nullptr;
-  typo_owned_.reset();
+std::vector<std::unique_ptr<LLMProvider>> Controller::TakeModels() {
+  std::vector<std::unique_ptr<LLMProvider>> retired;
+  typo_llm_ = nullptr;  // 可能指向 llm_provider_，先放掉
+  retired.push_back(std::move(typo_owned_));
+  retired.push_back(std::move(scorer_owned_));
+  retired.push_back(std::move(llm_provider_));
+  loaded_model_.clear();
+  return retired;
+}
+
+void Controller::PostModels(std::unique_ptr<ModelPlan> plan,
+                            std::vector<std::unique_ptr<LLMProvider>> retired) {
+  plan->generation = ++model_generation_;
+  // 還沒開始載入的上一份直接換掉
+  {
+    std::lock_guard<std::mutex> lock(loader_mutex_);
+    for (auto& old : retired)
+      loader_retired_.push_back(std::move(old));
+    loader_plan_ = std::move(plan);
+    if (!loader_thread_.joinable())
+      loader_thread_ = std::thread([this] { ModelLoaderLoop(); });
+  }
+  loader_cv_.notify_one();
+}
+
+// 設定程式的模型測試：放掉所有模型，讓測試載入的模型有完整的顯示卡記憶體
+void Controller::PauseModels() {
+  models_paused_ = true;
+  ++model_wanted_;  // 精煉借用中的模型也要讓出來
+  prediction_->Cancel();
+  std::vector<std::unique_ptr<LLMProvider>> retired;
+  {
+    std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
+    retired = TakeModels();
+  }
+  auto plan = std::make_unique<ModelPlan>();
+  plan->paused = true;
+  PostModels(std::move(plan), std::move(retired));
+  Log(L"[LLM] 模型測試中：暫停輸入法的模型");
+}
+
+void Controller::ResumeModels() {
+  if (!models_paused_)
+    return;
+  models_paused_ = false;
+  std::error_code ec;
+  fs::remove(options_.user_dir / "llm_paused.txt", ec);
+  if (last_plan_)
+    PostModels(std::make_unique<ModelPlan>(*last_plan_), {});
+  Log(L"[LLM] 模型測試結束：重新載入輸入法的模型");
+}
+
+void Controller::PlanTypo(RimeConfig* config, ModelPlan* plan) {
   if (!typo_on_)
     return;
   auto read = [&](const char* key) {
@@ -414,8 +493,11 @@ void Controller::LoadTypoProvider(RimeConfig* config) {
   else
     think_tokens = 2048;
 
-  // 和智慧預測是同一個模型：共用，避免同一個模型載入兩次
-  if (llm_provider_ && llm_provider_->IsAvailable()) {
+  plan->typo = true;
+  plan->typo_type = type;
+  plan->typo_prompt = utf8::ToWide(prompt);
+  // 和智慧預測是同一個模型：共用，避免同一個模型載入兩次（智慧預測載入成功時）
+  {
     const std::string provider_type = read("llm/provider_type");
     std::string predict_type = read("llm/llamacpp/model_type");
     std::transform(predict_type.begin(), predict_type.end(), predict_type.begin(), ::tolower);
@@ -425,14 +507,10 @@ void Controller::LoadTypoProvider(RimeConfig* config) {
     const bool same_api = type == "openai" && provider_type == "openai" &&
                           api_url == read("llm/openai/api_url") &&
                           api_key == read("llm/openai/api_key") && model == read("llm/openai/model");
-    if (same_local || same_api) {
-      typo_llm_ = llm_provider_.get();
-      LOG(INFO) << "Typo correction shares the prediction model.";
-      return;
-    }
+    plan->typo_same_as_predict = same_local || same_api;
   }
   if (type == "llamacpp" && !model_path.empty()) {
-    LLMLocalModelSpec spec;
+    LLMLocalModelSpec& spec = plan->typo_spec;
     spec.model_path = model_path;
     spec.instruct = model_type != "base";
     // 前文 + 一句話 2048 就夠；開啟思考時再加上思考額度（不限制時給 8192）
@@ -446,25 +524,18 @@ void Controller::LoadTypoProvider(RimeConfig* config) {
       spec.n_gpu_layers = value;
     if (api_->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
       spec.n_threads = value;
-    auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
-    if (provider->LoadModelDirect(spec, 0.0)) {
-      provider->SetPromptPrefix(utf8::ToWide(prompt));
-      typo_owned_ = std::move(provider);
-    } else {
-      LOG(ERROR) << "Typo correction: failed to load model " << model_path;
-    }
   } else if (type == "openai" && !api_url.empty()) {
-    auto provider = std::make_unique<RemoteLLMProvider>("openai");
-    provider->ConfigureDirect(api_url, api_key, model, utf8::ToWide(prompt), no_think, think_tokens);
-    typo_owned_ = std::move(provider);
+    plan->typo_api_url = api_url;
+    plan->typo_api_key = api_key;
+    plan->typo_model = model;
+    plan->typo_no_think = no_think;
+    plan->typo_think_tokens = think_tokens;
   } else {
-    LOG(WARNING) << "Typo correction: no model selected (llm/typo/type)";
+    plan->typo_type.clear();  // 沒選模型
   }
-  typo_llm_ = typo_owned_.get();
 }
 
-void Controller::LoadScorerProvider(RimeConfig* config) {
-  scorer_owned_.reset();
+void Controller::PlanScorer(RimeConfig* config, ModelPlan* plan) {
   if (!rescore_on_ && rerank_mode_ == 0)
     return;
   auto read = [&](const char* key) {
@@ -477,7 +548,8 @@ void Controller::LoadScorerProvider(RimeConfig* config) {
     return;  // 沒指定：借預測或校正已載入的本機模型
   std::string model_type = read("llm/choice/scorer/model_type");
   std::transform(model_type.begin(), model_type.end(), model_type.begin(), ::tolower);
-  LLMLocalModelSpec spec;
+  plan->scorer = true;
+  LLMLocalModelSpec& spec = plan->scorer_spec;
   spec.model_path = model_path;
   spec.instruct = model_type != "base";
   spec.n_ctx = 1024;  // 前文 30 字加最多幾十句短句
@@ -487,13 +559,109 @@ void Controller::LoadScorerProvider(RimeConfig* config) {
     spec.n_gpu_layers = value;
   if (api_->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
     spec.n_threads = value;
-  auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
-  if (provider->LoadModelDirect(spec, 0.0)) {
-    scorer_owned_ = std::move(provider);
-    LOG(INFO) << "Scorer model loaded: " << model_path;
-  } else {
-    LOG(ERROR) << "Scorer: failed to load model " << model_path;
+}
+
+void Controller::ModelLoaderLoop() {
+  for (;;) {
+    std::unique_ptr<ModelPlan> plan;
+    std::vector<std::unique_ptr<LLMProvider>> retired;
+    {
+      std::unique_lock<std::mutex> lock(loader_mutex_);
+      loader_cv_.wait(lock, [this] { return loader_stop_ || loader_plan_; });
+      if (loader_stop_)
+        return;
+      plan = std::move(loader_plan_);
+      retired.swap(loader_retired_);
+    }
+    retired.clear();  // 先關掉舊的推理行程，避免新舊模型同時佔用記憶體
+    if (plan->paused) {
+      // 告訴設定程式模型都放掉了（它等這個檔案才開始測試）
+      if (!PlanStale(*plan))
+        std::ofstream(options_.user_dir / "llm_paused.txt", std::ios::binary | std::ios::trunc) << "paused=1\n";
+      continue;
+    }
+    LoadModels(*plan);
   }
+}
+
+// 設定又重新載入了（或要結束）：這份計畫的結果不用換上
+bool Controller::PlanStale(const ModelPlan& plan) {
+  std::lock_guard<std::mutex> lock(loader_mutex_);
+  return loader_stop_ || plan.generation != model_generation_;
+}
+
+void Controller::LoadModels(ModelPlan& plan) {
+  const uint64_t t0 = base::MonotonicMs();
+  std::unique_ptr<LLMProvider> predict, typo, scorer;
+  std::wstring label;
+  if (plan.predict && !PlanStale(plan)) {
+    auto provider = std::make_unique<RemoteLLMProvider>(plan.provider_type);
+    if (provider->LoadConfig(options_.config_id)) {
+      LOG(INFO) << "LLM Provider initialized successfully: " << provider->GetProviderName();
+      label = plan.predict_label.empty() ? utf8::ToWide(provider->GetProviderName()) : plan.predict_label;
+      predict = std::move(provider);
+    } else {
+      LOG(ERROR) << "LLM Provider initialization failed (llm/provider_type: " << plan.provider_type
+                 << "); check llm/* in weasel.yaml";
+    }
+  }
+  bool typo_shares = false;
+  if (plan.typo && !PlanStale(plan)) {
+    if (plan.typo_same_as_predict && predict && predict->IsAvailable()) {
+      typo_shares = true;
+      LOG(INFO) << "Typo correction shares the prediction model.";
+    } else if (plan.typo_type == "llamacpp") {
+      auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
+      if (provider->LoadModelDirect(plan.typo_spec, 0.0)) {
+        provider->SetPromptPrefix(plan.typo_prompt);
+        typo = std::move(provider);
+      } else {
+        LOG(ERROR) << "Typo correction: failed to load model " << plan.typo_spec.model_path;
+      }
+    } else if (plan.typo_type == "openai") {
+      auto provider = std::make_unique<RemoteLLMProvider>("openai");
+      provider->ConfigureDirect(plan.typo_api_url, plan.typo_api_key, plan.typo_model, plan.typo_prompt,
+                                plan.typo_no_think, plan.typo_think_tokens);
+      typo = std::move(provider);
+    } else {
+      LOG(WARNING) << "Typo correction: no model selected (llm/typo/type)";
+    }
+  }
+  if (plan.scorer && !PlanStale(plan)) {
+    auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
+    if (provider->LoadModelDirect(plan.scorer_spec, 0.0)) {
+      scorer = std::move(provider);
+      LOG(INFO) << "Scorer model loaded: " << plan.scorer_spec.model_path;
+    } else {
+      LOG(ERROR) << "Scorer: failed to load model " << plan.scorer_spec.model_path;
+    }
+  }
+
+  // 換上：和 LoadConfig 一樣先拿服務端的鎖再拿推理鎖。服務端的鎖不能一直等（解構時會持鎖等
+  // 這條執行緒結束），拿不到就看結果還要不要；不要的模型在鎖外面釋放（關推理行程要時間）
+  std::unique_lock<std::mutex> api_lock(frontend_->ApiMutex(), std::defer_lock);
+  while (!api_lock.try_lock()) {
+    if (PlanStale(plan))
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (PlanStale(plan)) {
+    api_lock.unlock();
+    return;
+  }
+  ++model_wanted_;
+  prediction_->Cancel();
+  {
+    std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
+    // 換下來的（SetPredictionModel 放的）交給這條執行緒在鎖外釋放
+    predict.swap(llm_provider_);
+    typo.swap(typo_owned_);
+    scorer.swap(scorer_owned_);
+    typo_llm_ = typo_shares ? llm_provider_.get() : typo_owned_.get();
+    loaded_model_ = label;
+  }
+  api_lock.unlock();
+  LOG(INFO) << "Models ready in " << base::MonotonicMs() - t0 << " ms.";
 }
 
 bool Controller::ScoringWanted() const {
@@ -1721,6 +1889,13 @@ void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixe
 void Controller::PersonalCommand(int command) {
   if (command == 8) {
     choice_store_->Reset();
+    return;
+  }
+  if (command == 9 || command == 10) {
+    if (command == 9)
+      PauseModels();
+    else
+      ResumeModels();
     return;
   }
   if (!personal_ || !refiner_) {
