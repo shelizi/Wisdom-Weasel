@@ -1,5 +1,4 @@
 // 設定的狀態：從 Rime 設定讀進表單、存回時轉成 llm 設定。
-// 邏輯與原本的設定視窗（SettingsDialog）相同，存出來的 weasel.custom.yaml 也相同。
 // Rime 的純量沒有型別，讀進來都是字串；存回時布林與數字交給 Rime 轉成文字。
 
 export const state = {

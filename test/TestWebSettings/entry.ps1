@@ -1,5 +1,5 @@
-﻿# 設定程式的進入點開的是哪種視窗：不帶參數與 /dict 是網頁版（WisdomWebSettings），
-# /legacy 是原本的設定視窗（#32770）。先跑過 run.ps1（沿用它建的沙盒）。
+﻿# 設定程式的進入點開的是網頁版設定視窗（WisdomWebSettings）：不帶參數與 /dict。
+# 先跑過 run.ps1（沿用它建的沙盒）。
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path "$PSScriptRoot\..\.."
 $w = Join-Path $root 'msbuild\TestWebSettings'
@@ -32,7 +32,7 @@ public static class EntryWin {
   }
 }
 '@
-$expected = [ordered]@{ '' = 'WisdomWebSettings'; '/dict' = 'WisdomWebSettings'; '/legacy' = '#32770' }
+$expected = [ordered]@{ '' = 'WisdomWebSettings'; '/dict' = 'WisdomWebSettings' }
 $failed = 0
 foreach ($arg in $expected.Keys) {
   # Windows PowerShell 5.1 不接受空的 ArgumentList

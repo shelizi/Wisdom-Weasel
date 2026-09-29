@@ -1,11 +1,6 @@
 ﻿#include "stdafx.h"
 #include "WeaselDeployer.h"
 #include "Configurator.h"
-#include "SwitcherSettingsDialog.h"
-#include "UIStyleSettings.h"
-#include "UIStyleSettingsDialog.h"
-#include "SettingsDialog.h"
-#include "DictManagementDialog.h"
 #include <WeaselConstants.h>
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
@@ -53,41 +48,20 @@ void Configurator::Initialize() {
   rime_api->deployer_initialize(NULL);
 }
 
-int Configurator::Run(bool installing, int start_page) {
+bool Configurator::IsFirstRun() {
   RimeModule* levers = rime_get_api()->find_module("levers");
-  if (!levers)
-    return 1;
-  RimeLeversApi* api = (RimeLeversApi*)levers->get_api();
+  RimeLeversApi* api = levers ? (RimeLeversApi*)levers->get_api() : nullptr;
   if (!api)
-    return 1;
-
-  RimeSwitcherSettings* switcher_settings = api->switcher_settings_init();
-  UIStyleSettings ui_style_settings;
-
-  // 安裝時只有首次執行才顯示設定視窗（與原本逐一詢問的行為一致）
-  const bool skip_settings =
-      installing &&
-      !api->is_first_run((RimeCustomSettings*)switcher_settings) &&
-      !api->is_first_run(ui_style_settings.settings());
-
-  // 輸入方案、外觀、LLM 智慧預測合併在同一個視窗；套用時在視窗內直接重新部署
-  bool deployed = false;
-  if (!skip_settings &&
-      api->load_settings((RimeCustomSettings*)switcher_settings) &&
-      api->load_settings(ui_style_settings.settings())) {
-    SettingsDialog dialog(switcher_settings, &ui_style_settings,
-                          [this] { UpdateWorkspace(true); });
-    dialog.SetStartPage(start_page);
-    dialog.DoModal();
-    deployed = dialog.deployed();
-  }
-
-  api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
-
-  if (installing && !deployed) {
-    return UpdateWorkspace(false);
-  }
-  return 0;
+    return false;
+  // 與設定視窗（core/settings）用同樣的設定檔與產生者
+  RimeSwitcherSettings* switcher = api->switcher_settings_init();
+  RimeCustomSettings* style =
+      api->custom_settings_init("weasel", "Weasel::UIStyleSettings");
+  const bool first = api->is_first_run((RimeCustomSettings*)switcher) ||
+                     api->is_first_run(style);
+  api->custom_settings_destroy((RimeCustomSettings*)switcher);
+  api->custom_settings_destroy(style);
+  return first;
 }
 
 int Configurator::UpdateWorkspace(bool report_errors) {
@@ -124,52 +98,7 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   }
 
   CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
-  }
-  return 0;
-}
-
-int Configurator::DictManagement() {
-  // 使用者詞典管理已整合到設定視窗的「詞庫管理」頁（操作時才讓輸入法暫停）
-  return Run(false, SettingsDialog::kPageDict);
-}
-
-// 原本獨立的「用戶詞典管理」視窗（保留備用）
-int Configurator::LegacyDictManagement() {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  if (!hMutex) {
-    LOG(ERROR) << "Error creating WeaselDeployerMutex.";
-    return 1;
-  }
-  if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    LOG(WARNING) << "another deployer process is running; aborting operation.";
-    CloseHandle(hMutex);
-    // MessageBox(NULL, L"正在執行另一項部署任務，請稍候再試。", L"【小狼毫】",
-    // MB_OK | MB_ICONINFORMATION);
-    MSG_BY_IDS(IDS_STR_DEPLOYING_WAIT, IDS_STR_WEASEL,
-               MB_OK | MB_ICONINFORMATION);
-    return 1;
-  }
-
-  weasel::Client client;
-  if (client.Connect()) {
-    LOG(INFO) << "Turning WeaselServer into maintenance mode.";
-    client.StartMaintenance();
-  }
-
-  {
-    RimeApi* rime = rime_get_api();
-    if (RIME_API_AVAILABLE(rime, run_task)) {
-      rime->run_task("installation_update");  // setup user data sync dir
-    }
-    DictManagementDialog dlg;
-    dlg.DoModal();
-  }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
+  deployed_ = true;
 
   if (client.Connect()) {
     LOG(INFO) << "Resuming service.";

@@ -30,21 +30,6 @@
     <ClInclude Include="Configurator.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="SwitcherSettingsDialog.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="UIStyleSettingsDialog.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="UIStyleSettings.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="DictManagementDialog.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="FontSettingDialog.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -54,18 +39,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Configurator.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="SwitcherSettingsDialog.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="UIStyleSettingsDialog.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="UIStyleSettings.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DictManagementDialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\RimeWithWeasel\WeaselUtility.cpp">
@@ -78,9 +51,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\core\third_party\monocypher\monocypher.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="FontSettingDialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

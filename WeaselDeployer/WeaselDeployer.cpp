@@ -6,12 +6,14 @@
 #include "WeaselDeployer.h"
 #include "Configurator.h"
 #include "WebSettings.h"
-#include "SettingsDialog.h"
 #include <ShellScalingApi.h>
 
 CAppModule _Module;
 
 static int Run(LPTSTR lpCmdLine);
+
+// 設定視窗「詞庫管理」頁的編號（web/settings/js/app.js 的 pages 順序）
+static const int kPageDict = 7;
 
 int APIENTRY _tWinMain(HINSTANCE hInstance,
                        HINSTANCE hPrevInstance,
@@ -94,18 +96,13 @@ static int Run(LPTSTR lpCmdLine) {
     return 0;
   }
 
-  // 設定視窗預設是網頁版；無法使用 WebView2 時改開原本的設定視窗
+  // 設定視窗（網頁版）；page 是 web/settings/js/app.js 的分頁編號
   auto settings = [&configurator](int page) {
     WebSettingsOptions options;
     options.start_page = page;
     const int result = RunWebSettings(&configurator, options);
-    return result == -1 ? configurator.Run(false, page) : result;
+    return result == -1 ? 1 : result;
   };
-
-  // 原本的設定視窗（過渡期保留）
-  if (!wcscmp(L"/legacy", lpCmdLine)) {
-    return configurator.Run(false);
-  }
 
   // 網頁版設定：/websettings [--page N] [--screenshot 檔案 --theme 1|2 --size
   // 寬 高]
@@ -128,10 +125,7 @@ static int Run(LPTSTR lpCmdLine) {
     }
     LocalFree(argv);
     const int result = RunWebSettings(&configurator, options);
-    // 無法使用 WebView2：改開原本的設定視窗
-    if (result == -1 && options.screenshot.empty() && options.selftest.empty())
-      return configurator.Run(false, options.start_page);
-    return result;
+    return result == -1 ? 1 : result;
   }
 
   bool deployment_scheduled = !wcscmp(L"/deploy", lpCmdLine);
@@ -139,15 +133,10 @@ static int Run(LPTSTR lpCmdLine) {
     return configurator.UpdateWorkspace();
   }
 
-  // 原本獨立的用戶詞典管理視窗
-  if (!wcscmp(L"/dict_legacy", lpCmdLine)) {
-    return configurator.LegacyDictManagement();
-  }
-
   // 用戶詞典管理：網頁版設定的「詞庫管理」頁
   bool dict_management = !wcscmp(L"/dict", lpCmdLine);
   if (dict_management) {
-    return settings(SettingsDialog::kPageDict);
+    return settings(kPageDict);
   }
 
   bool sync_user_dict = !wcscmp(L"/sync", lpCmdLine);
@@ -155,9 +144,12 @@ static int Run(LPTSTR lpCmdLine) {
     return configurator.SyncUserData();
   }
 
-  // 安裝時的第一次設定仍用原本的設定視窗（它依是否第一次執行決定要不要顯示）
+  // 安裝：第一次安裝才開設定視窗；沒在視窗裡套用（或沒開視窗）就直接部署
   bool installing = !wcscmp(L"/install", lpCmdLine);
-  if (installing)
-    return configurator.Run(true);
+  if (installing) {
+    if (configurator.IsFirstRun())
+      settings(0);
+    return configurator.deployed() ? 0 : configurator.UpdateWorkspace(false);
+  }
   return settings(0);
 }

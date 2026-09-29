@@ -8,7 +8,7 @@ class Configurator;
 
 class WinSettingsPlatform : public settings::Platform {
  public:
-  // configurator 用來重新部署；舊的設定視窗不重新部署，可以是 nullptr
+  // configurator 用來重新部署；可以是 nullptr（不重新部署）
   explicit WinSettingsPlatform(Configurator* configurator)
       : configurator_(configurator) {}
 
@@ -43,9 +43,6 @@ class WinSettingsPlatform : public settings::Platform {
 
   int GetPreference(const std::string& key, int fallback) override;
   void SetPreference(const std::string& key, int value) override;
-
-  // 舊的設定視窗（不重新部署）共用的實例
-  static WinSettingsPlatform& Shared();
 
  private:
   Configurator* configurator_;
