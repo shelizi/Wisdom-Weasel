@@ -24,10 +24,14 @@ struct DevConsole::Queue {
 static const size_t kMaxQueuedBytes = 4 * 1024 * 1024;
 
 void DevConsole::StartWriter() {
-  m_queue = std::make_shared<Queue>();
-  m_queue->output = m_hConsoleOutput;
+  auto queue = std::make_shared<Queue>();
+  queue->output = m_hConsoleOutput;
+  {
+    std::lock_guard<std::mutex> lock(m_queue_mutex);
+    m_queue = queue;
+  }
   // 執行緒持有佇列的 shared_ptr：關閉時不等它（寫入可能正卡在主控台），直接分離
-  std::thread([q = m_queue]() {
+  std::thread([q = queue]() {
     std::unique_lock<std::mutex> lock(q->mutex);
     for (;;) {
       q->cv.wait(lock, [&] { return q->stop || !q->lines.empty(); });
@@ -55,14 +59,18 @@ void DevConsole::StartWriter() {
 }
 
 void DevConsole::StopWriter() {
-  if (!m_queue)
+  std::shared_ptr<Queue> queue;
+  {
+    std::lock_guard<std::mutex> lock(m_queue_mutex);
+    queue.swap(m_queue);
+  }
+  if (!queue)
     return;
   {
-    std::lock_guard<std::mutex> lock(m_queue->mutex);
-    m_queue->stop = true;
+    std::lock_guard<std::mutex> lock(queue->mutex);
+    queue->stop = true;
   }
-  m_queue->cv.notify_all();
-  m_queue.reset();
+  queue->cv.notify_all();
 }
 
 DevConsole::DevConsole()
@@ -87,7 +95,23 @@ bool DevConsole::Initialize() {
     // 配置项不存在或为false，不启用开发终端
     return false;
   }
+  m_enabled = false;  // Open 成功才算啟用
+  return Open();
+}
 
+void DevConsole::Reload() {
+  const bool was_enabled = m_enabled;
+  if (!LoadConfig())
+    return;
+  const bool wanted = m_enabled;
+  m_enabled = was_enabled;
+  if (wanted && !was_enabled)
+    Open();
+  else if (!wanted && was_enabled)
+    Close();
+}
+
+bool DevConsole::Open() {
   // 分配控制台窗口
   if (!AllocateConsole()) {
     // AllocConsole失败，可能是GUI应用无法分配控制台
@@ -101,6 +125,7 @@ bool DevConsole::Initialize() {
     return false;
   }
   StartWriter();
+  m_enabled = true;
 
   // 设置控制台标题
   std::wstring title = L"Weasel 开发终端 - 调试日志";
@@ -109,10 +134,16 @@ bool DevConsole::Initialize() {
   // 设置控制台编码为UTF-8
   SetConsoleOutputCP(65001);  // UTF-8
 
+  // 拿掉關閉按鈕：直接關主控台視窗會結束整個輸入法服務（要關請到設定的「開發」頁）
+  if (m_console_allocated) {
+    if (HWND window = GetConsoleWindow())
+      DeleteMenu(GetSystemMenu(window, FALSE), SC_CLOSE, MF_BYCOMMAND);
+  }
+
   // 输出欢迎信息
   WriteLine("========================================");
   WriteLine("Weasel 开发终端已启动");
-  WriteLine("实时显示调试日志输出");
+  WriteLine("实时显示调试日志输出（在设定的「開發」页关闭）");
   WriteLine("========================================");
   WriteLine("");
 
@@ -225,21 +256,28 @@ void DevConsole::RestoreStdout() {
 }
 
 void DevConsole::Write(const std::string& message) {
-  if (!m_enabled || !m_queue || message.empty()) {
+  if (!m_enabled || message.empty()) {
     return;
   }
+  std::shared_ptr<Queue> queue;
+  {
+    std::lock_guard<std::mutex> lock(m_queue_mutex);
+    queue = m_queue;
+  }
+  if (!queue)
+    return;
 
   {
-    std::lock_guard<std::mutex> lock(m_queue->mutex);
-    m_queue->lines.push_back(message);
-    m_queue->bytes += message.size();
-    while (m_queue->bytes > kMaxQueuedBytes && m_queue->lines.size() > 1) {
-      m_queue->bytes -= m_queue->lines.front().size();
-      m_queue->lines.pop_front();
-      ++m_queue->dropped;
+    std::lock_guard<std::mutex> lock(queue->mutex);
+    queue->lines.push_back(message);
+    queue->bytes += message.size();
+    while (queue->bytes > kMaxQueuedBytes && queue->lines.size() > 1) {
+      queue->bytes -= queue->lines.front().size();
+      queue->lines.pop_front();
+      ++queue->dropped;
     }
   }
-  m_queue->cv.notify_one();
+  queue->cv.notify_one();
 }
 
 void DevConsole::Close() {
@@ -250,8 +288,8 @@ void DevConsole::Close() {
     WriteLine("========================================");
   }
 
+  m_enabled = false;
   StopWriter();
   RestoreStdout();
   FreeConsole();
-  m_enabled = false;
 }

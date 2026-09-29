@@ -10,7 +10,8 @@ export const state = {
   loaded: {},         // 目前已套用的值（判斷要不要改方案檔）
   schemas: [],        // [{id, name, selected}]，已選的在前
   style: null,        // {active, fonts}
-  dirty: new Set(),   // schemas / style / llm / grammar
+  dev: { console: true },  // 開發：開發終端（dev_console/enabled）
+  dirty: new Set(),   // schemas / style / llm / grammar / dev
 };
 
 // ---------------------------------------------------------------------------
@@ -372,5 +373,6 @@ export function collectChanges() {
     if (sentences !== state.loaded.sentences) changes.sentences = sentences;
   }
   if (dirty.has('grammar') && form.choice.grammar !== state.loaded.grammar) changes.grammar = form.choice.grammar;
+  if (dirty.has('dev') && state.dev.console !== state.loaded.dev_console) changes.dev_console = state.dev.console;
   return changes;
 }

@@ -1,8 +1,10 @@
 #pragma once
 
 #include <Windows.h>
+#include <atomic>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include "../core/base/devlog.h"
@@ -17,6 +19,8 @@ class DevConsole : public DevLog {
   // 初始化开发终端（从配置文件读取是否启用）
   // 返回true表示成功启用，false表示未启用或初始化失败
   bool Initialize();
+  // 重新部署後：照設定（dev_console/enabled）開啟或關閉，不必重新啟動輸入法
+  void Reload();
 
   // 检查是否已启用
   bool IsEnabled() const override { return m_enabled; }
@@ -30,7 +34,10 @@ class DevConsole : public DevLog {
   void Close();
 
  private:
-  bool m_enabled;
+  // 開啟主控台視窗並開始寫入
+  bool Open();
+
+  std::atomic<bool> m_enabled;
   bool m_console_allocated;
   HANDLE m_hConsoleOutput;
   HANDLE m_hConsoleInput;
@@ -40,6 +47,7 @@ class DevConsole : public DevLog {
   // 而按鍵處理握著服務端的鎖，其他應用程式就跟著凍結
   struct Queue;
   std::shared_ptr<Queue> m_queue;
+  std::mutex m_queue_mutex;  // 保護 m_queue：執行中開關時，其他執行緒可能正在寫
   void StartWriter();
   void StopWriter();
 

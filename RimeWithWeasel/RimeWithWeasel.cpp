@@ -113,12 +113,14 @@ void _RefreshTrayIcon(const RimeSessionId session_id,
   static char app_name[256] = {0};
   auto ret = rime_api->get_property(session_id, "client_app", app_name,
                                     sizeof(app_name) - 1);
+  // 在另一條執行緒更新、而且不等它：更新系統匣圖示要等檔案總管回應，檔案總管這時可能
+  // 正在等輸入法回應（它也是輸入法的客戶端），在這裡等會卡住所有應用程式
   if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
-    auto th = std::make_unique<ScopedThread>([=]() {
+    std::thread([=]() {
       ::Sleep(100);
       if (_UpdateUICallback)
         _UpdateUICallback();
-    });
+    }).detach();
   else if (_UpdateUICallback)
     _UpdateUICallback();
 }
@@ -186,6 +188,10 @@ void RimeWithWeaselHandler::Initialize() {
       m_show_notifications_time = 1200;
     _LoadAppOptions(&config, m_app_options);
 
+    // 重新部署後：開發終端照設定（dev_console/enabled）開啟或關閉。
+    // 啟動時 m_dev_console 還沒設定，由 WeaselServerApp 自己初始化
+    if (m_dev_console)
+      m_dev_console->Reload();
     // LLM 預測、整句校正、推薦與個人詞庫（控制器讀 llm/*；m_dev_console
     // 此時可能還沒設定）
     m_controller->LoadConfig(&config);

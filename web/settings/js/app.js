@@ -10,9 +10,10 @@ import models from './pages/models.js';
 import personal from './pages/personal.js';
 import dict from './pages/dict.js';
 import bench from './pages/bench.js';
+import dev from './pages/dev.js';
 
-// 順序與原本設定視窗的分頁相同（--page 參數用的編號）
-const pages = [schemas, style, predict, typo, choice, models, personal, dict, bench];
+// 順序就是 --page 參數與 /dict 用的編號（WeaselDeployer.cpp 的 kPageDict）；新的頁加在最後
+const pages = [schemas, style, predict, typo, choice, models, personal, dict, bench, dev];
 const params = new URLSearchParams(location.search);
 let current = null;
 let applying = false;
@@ -148,6 +149,8 @@ async function apply() {
       state.selectedProfile = selectedProfile;
       state.form.choice.grammar = state.loaded.grammar = result.grammar.enabled;
       state.init.grammar = result.grammar;
+      if (result.dev) state.dev = { ...result.dev };
+      state.loaded.dev_console = state.dev.console;
       if (changes.schemas) state.init.schemas.list = state.schemas.map((s) => ({ ...s }));
       if (changes.style) state.init.style = { ...state.init.style, active: state.style.active, fonts: { ...state.style.fonts } };
     }
@@ -195,6 +198,8 @@ async function boot() {
     state.style = { active: init.style.active, fonts: { ...init.style.fonts } };
     loadLlm(init.llm);
     state.form.choice.grammar = state.loaded.grammar = init.grammar.enabled;
+    state.dev = { console: true, ...init.dev };
+    state.loaded.dev_console = state.dev.console;
     const start = Math.max(0, Math.min(pages.length - 1, Number(params.get('page') || 0)));
     show(pages[start]);
     updateButtons();

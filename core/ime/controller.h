@@ -10,6 +10,7 @@
 #include <rime_api.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -92,7 +93,8 @@ class Controller {
   void SetContextHistory(ContextHistory* history) { history_ = history; }
   ContextHistory* History() const { return history_; }
 
-  // 讀前端設定檔（Options::config_id）的 llm/*，載入模型與個人詞庫（重新部署時也呼叫）
+  // 讀前端設定檔（Options::config_id）的 llm/*，載入模型與個人詞庫（重新部署時也呼叫）。
+  // 模型在背景載入：回傳時還沒載好，載好之前預測、校正與推薦不出現
   void LoadConfig(RimeConfig* config);
   // 停用或重新部署前：停止精煉並存檔（在背景做，不在這裡等）
   void Retire();
@@ -126,16 +128,32 @@ class Controller {
   PredictionSet Predictions() const;
 
   // 設定程式的指令：1 更新狀態 2 精煉 3 重新精煉全部 4 清除 5 匯出詞彙
-  // 6 套用修改並匯出 7 產生 Rime 詞典 8 重設選字統計；狀態寫在 personal/status.txt
+  // 6 套用修改並匯出 7 產生 Rime 詞典 8 重設選字統計；狀態寫在 personal/status.txt。
+  // 9 暫停模型（設定程式的模型測試：放掉所有模型、精煉不載入模型，放完寫 llm_paused.txt）
+  // 10 恢復（照最近一次的設定重新載入）；重新部署也會恢復
   void PersonalCommand(int command);
   // 設定程式的「測試模型」：讀 llm_test_request.txt，在背景預測並寫 llm_test_response.txt
   void LLMTest();
 
  private:
+  struct ModelPlan;
+
   bool TypoAvailable() const;
   bool PredictionAvailable() const;  // LLM 或個人詞庫至少一個可用（且總開關開啟）
   LLMProvider* RescoreProvider() const;
-  void LoadTypoProvider(RimeConfig* config);
+  // 讀校正、評分要用的模型（在 LoadConfig 裡）；載入交給背景的 LoadModels
+  void PlanTypo(RimeConfig* config, ModelPlan* plan);
+  void PlanScorer(RimeConfig* config, ModelPlan* plan);
+  // 背景：照 LoadConfig 讀好的設定啟動推理行程、載入模型，載好再換上
+  void ModelLoaderLoop();
+  void LoadModels(ModelPlan& plan);
+  bool PlanStale(const ModelPlan& plan);
+  // 交給模型載入執行緒：先釋放 retired（換下來的舊模型），再照 plan 載入
+  void PostModels(std::unique_ptr<ModelPlan> plan, std::vector<std::unique_ptr<LLMProvider>> retired);
+  // 放下目前的模型（在推理鎖下），回傳要釋放的
+  std::vector<std::unique_ptr<LLMProvider>> TakeModels();
+  void PauseModels();
+  void ResumeModels();
   void UpdateContextKey(uint64_t id);
 
   bool HandleMixedInput(uint64_t id, SessionState& ss, int keycode, int mask, bool* respond);
@@ -158,7 +176,6 @@ class Controller {
   void CountShadow(SessionState& ss, const std::wstring& text);
   // 推薦或整句重排要用本機模型評分
   bool ScoringWanted() const;
-  void LoadScorerProvider(RimeConfig* config);
   void OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionSet& set);
   // 信心校準：把顯示中的推薦／校正記成樣本（taken 是選了哪一種，都沒選是 kPrediction）
   void RecordSuggestions(SessionState& ss, CandidateKind taken);
@@ -204,6 +221,17 @@ class Controller {
   std::unique_ptr<LLMProvider> scorer_owned_;
   LLMProvider* typo_llm_ = nullptr;  // 可能指向 llm_provider_
   std::wstring loaded_model_;        // 目前載入的模型（設定畫面顯示用）
+  // 模型載入執行緒：啟動推理行程、載入模型要好幾秒，不能在服務端的鎖下做（所有應用程式都在等）。
+  // LoadConfig 放一份計畫進來（只留最新的），載好後再拿鎖換上；設定又變了就丟掉舊的結果
+  std::thread loader_thread_;
+  std::mutex loader_mutex_;
+  std::condition_variable loader_cv_;
+  std::unique_ptr<ModelPlan> loader_plan_;
+  std::vector<std::unique_ptr<LLMProvider>> loader_retired_;  // 等著釋放的舊模型
+  bool loader_stop_ = false;
+  std::unique_ptr<ModelPlan> last_plan_;  // 最近一次設定要的模型（恢復時照著載入）
+  std::atomic<bool> models_paused_{false};  // 設定程式的模型測試中（精煉的執行緒也會讀）
+  std::atomic<uint64_t> model_generation_{0};  // LoadConfig 每次加一
 
   std::unique_ptr<PersonalLexicon> personal_;
   std::unique_ptr<PersonalRefiner> refiner_;
