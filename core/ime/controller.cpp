@@ -111,6 +111,9 @@ Controller::Controller(RimeApi* api, Frontend* frontend, Options options)
   };
   hooks.on_shadow = [this](uint64_t tag, uint64_t seq, const std::wstring& first,
                            const RerankResult& result) { OnShadow(tag, seq, first, result); };
+  hooks.on_scores = [this](uint64_t tag, uint64_t seq, const RerankResult& result) {
+    OnSentenceScores(tag, seq, result);
+  };
   hooks.confidence = [this](SuggestionKind kind, double gain) {
     return calibration_->Probability(kind, gain);
   };
@@ -175,6 +178,10 @@ void Controller::LoadConfig(RimeConfig* config) {
     api_->config_get_int(config, "llm/choice/rerank_sentences", &sentences);
     rerank_sentences_ = (size_t)(std::min)(63, (std::max)(2, sentences));
   }
+  // 候選窗在整句後面顯示機率（外觀設定；要本機模型評分）
+  flag = false;
+  show_probability_ = api_->config_get_bool(config, "llm/choice/show_probability", &flag) && flag;
+  sentence_probs_.clear();
   // 推薦／校正校準過的採用機率低於這個就不顯示（還沒校準時都顯示）；0 = 都顯示。
   // 預設 0.5：比較可能對才顯示（第一候選換成它才划算）
   {
@@ -536,7 +543,7 @@ void Controller::PlanTypo(RimeConfig* config, ModelPlan* plan) {
 }
 
 void Controller::PlanScorer(RimeConfig* config, ModelPlan* plan) {
-  if (!rescore_on_ && rerank_mode_ == 0)
+  if (!rescore_on_ && rerank_mode_ == 0 && !show_probability_)
     return;
   auto read = [&](const char* key) {
     char value[4096] = {0};
@@ -665,7 +672,7 @@ void Controller::LoadModels(ModelPlan& plan) {
 }
 
 bool Controller::ScoringWanted() const {
-  return (rescore_on_ || rerank_mode_ > 0) && RescoreProvider();
+  return (rescore_on_ || rerank_mode_ > 0 || show_probability_) && RescoreProvider();
 }
 
 void Controller::SetPredictionModel(std::unique_ptr<LLMProvider> model, bool enabled) {
@@ -1303,6 +1310,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
     return;
   SessionState& ss = *state;
   if (!composing) {
+    sentence_probs_.clear();
     ss.preview_input.clear();
     ss.preview_units.clear();
     ss.preview_lens.clear();
@@ -1420,8 +1428,9 @@ void Controller::TriggerPrediction(uint64_t id,
   // 推薦：打字中（有 Rime 轉換結果）才做
   const bool scoring = !completion_prefix.empty() && RescoreProvider();
   // 整句重排顯示時取代同音字推薦（兩者都標「推薦」）
-  const bool rerank = scoring && rerank_mode_ > 0;
+  const bool rerank = scoring && (rerank_mode_ > 0 || show_probability_);
   const bool rescore = scoring && rescore_on_ && rerank_mode_ != 2;
+  sentence_probs_.clear();  // 上一次的機率不再對應目前的輸入
   if (!llm_available && !personal_ && !correct && !rescore && !rerank) {
     LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
     return;
@@ -1455,6 +1464,7 @@ void Controller::TriggerPrediction(uint64_t id,
   request.rescore = rescore;
   request.rerank = rerank && rerank_mode_ == 2;
   request.rerank_shadow = rerank && rerank_mode_ == 1;
+  request.sentence_scores = rerank && show_probability_;
   request.rerank_options.margin = rerank_margin_;
   request.rerank_options.max_sentences = rerank_sentences_;
   request.zhuyin = zhuyin;
@@ -1541,6 +1551,37 @@ void Controller::OnShadow(uint64_t id, uint64_t seq, const std::wstring& first,
   ss->shadow_best = result.index > 0 ? result.best : std::wstring();
   ss->shadow_gain = result.gain;
   ss->shadow_would_change = !result.text.empty();
+}
+
+void Controller::OnSentenceScores(uint64_t id, uint64_t seq, const RerankResult& result) {
+  std::lock_guard<std::mutex> api_lock(frontend_->ApiMutex());
+  if (!prediction_->IsCurrent(seq) || !frontend_->Session(id))
+    return;
+  const std::vector<double> probs = SentenceProbabilities(result.scores);
+  sentence_probs_.clear();
+  for (size_t i = 0; i < result.texts.size() && i < probs.size(); ++i) {
+    if (!std::isnan(probs[i]))
+      sentence_probs_[result.texts[i]] = probs[i];
+  }
+  if (Logging()) {
+    std::wstring line = L"[LLM] 整句機率：";
+    for (size_t i = 0; i < result.texts.size() && i < probs.size(); ++i)
+      line += (i ? L"、" : L"") + result.texts[i] + L" " +
+              (std::isnan(probs[i]) ? std::wstring(L"?") : std::to_wstring((int)std::lround(probs[i] * 100)) + L"%");
+    Log(line);
+  }
+  if (!sentence_probs_.empty())
+    frontend_->Refresh(id);  // 候選窗補上機率
+}
+
+bool Controller::SentenceProbability(const std::wstring& text, double* probability) const {
+  if (!show_probability_)
+    return false;
+  const auto it = sentence_probs_.find(text);
+  if (it == sentence_probs_.end())
+    return false;
+  *probability = it->second;
+  return true;
 }
 
 void Controller::CountShadow(SessionState& ss, const std::wstring& text) {
@@ -1828,6 +1869,7 @@ std::string Controller::ChoiceProfile(RimeSessionId session_id) {
   add(rescore_on_ && rerank_mode_ != 2 && RescoreProvider(), "推薦");
   add(rerank_mode_ == 2 && RescoreProvider(), "整句重排");
   add(rerank_mode_ == 1 && RescoreProvider(), "整句重排（shadow）");
+  add(show_probability_ && RescoreProvider(), "整句機率");
   add(TypoAvailable(), "LLM 校正");
   add(PredictionAvailable() && while_typing_, "智慧預測");
   if (settings.empty())

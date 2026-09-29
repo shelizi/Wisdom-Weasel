@@ -197,7 +197,7 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
     return;
   const bool rescore = req.rescore && !req.prefix.empty();
   const bool correct = req.correct && !req.zhuyin.empty() && !req.prefix.empty();
-  const bool rerank = (req.rerank || req.rerank_shadow) && !req.prefix.empty();
+  const bool rerank = (req.rerank || req.rerank_shadow || req.sentence_scores) && !req.prefix.empty();
   if (!req.predict && !correct && !rescore && !rerank)
     return;
   std::wstring context = req.history + req.prefix;
@@ -222,10 +222,12 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
         if (LLMProvider* scorer = models().rescore)
           result = RerankSentences(scorer, tail, sentences, req.rerank_options);
       }
+      if (req.sentence_scores && !result.scores.empty() && state->hooks.on_scores && current())
+        state->hooks.on_scores(req.tag, seq, result);
       if (req.rerank_shadow) {
         if (state->hooks.on_shadow && current())
           state->hooks.on_shadow(req.tag, seq, sentences[0], result);
-      } else if (!result.text.empty() && result.text != sentences[0] &&
+      } else if (req.rerank && !result.text.empty() && result.text != sentences[0] &&
                  suggest(result.text, CandidateKind::kRerank, result.gain)) {
         if (!publish({}))
           return;

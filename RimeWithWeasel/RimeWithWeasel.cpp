@@ -9,6 +9,7 @@
 #include "../core/ime/controller.h"
 #include "../core/ime/prediction_engine.h"
 
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -533,6 +534,16 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
       cinfo.comments[i].str =
           escape_string(u8tow(ctx.menu.candidates[i].comment));
     }
+    // 整句的機率（外觀設定開啟、本機模型評過這句時）
+    double probability = 0;
+    if (m_controller->SentenceProbability(u8tow(ctx.menu.candidates[i].text),
+                                          &probability)) {
+      const int percent = (int)std::lround(probability * 100);
+      std::wstring& comment = cinfo.comments[i].str;
+      comment += (comment.empty() ? L"" : L" ") +
+                 (percent < 1 ? std::wstring(L"<1%")
+                              : std::to_wstring(percent) + L"%");
+    }
     if (RIME_STRUCT_HAS_MEMBER(ctx, ctx.select_labels) && ctx.select_labels) {
       cinfo.labels[i].str = escape_string(u8tow(ctx.select_labels[i]));
     } else if (ctx.menu.select_keys) {
@@ -666,7 +677,10 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   // - 有LLM候选词时：无论是否TSF，都需要获取，以便在_UI中合并Rime+LLM候选
   bool has_llm_candidates = false;
 
-  has_llm_candidates = m_controller->ShowingPredictions();
+  // 整句機率是停頓後才算好的：TSF 的候選窗只在按鍵回應時更新，要跟 LLM 候選一樣
+  // 由服務端候選窗顯示（下一次按鍵時機率清掉，服務端候選窗跟著收起）
+  has_llm_candidates = m_controller->ShowingPredictions() ||
+                       m_controller->HasSentenceProbabilities();
 
   bool need_context = !is_tsf || has_llm_candidates;
 

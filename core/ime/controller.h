@@ -122,6 +122,11 @@ class Controller {
   // 混打：把混打內容接在 Rime 的組字區前面（rime 為 nullptr 表示 Rime 沒有組字）
   static Preedit WithMixedText(const SessionState& ss, const Preedit* rime);
 
+  // 候選窗在整句後面顯示的機率（llm/choice/show_probability）：本機模型評過的 Rime 整句
+  // 彼此比較的機率。沒開、還沒評完或不是評過的句子回傳 false
+  bool SentenceProbability(const std::wstring& text, double* probability) const;
+  bool HasSentenceProbabilities() const { return show_probability_ && !sentence_probs_.empty(); }
+
   // LLM 候選（接在 Rime 候選後面顯示）
   bool PredictionMode() const { return prediction_mode_; }
   bool ShowingPredictions() const;  // 預測模式中且有候選
@@ -172,6 +177,7 @@ class Controller {
   // 整句重排：Rime 對目前輸入的整句候選（第一句是使用者看到的轉換）
   bool RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring>* sentences);
   void OnShadow(uint64_t id, uint64_t seq, const std::wstring& first, const RerankResult& result);
+  void OnSentenceScores(uint64_t id, uint64_t seq, const RerankResult& result);
   // 送出時對照 shadow 的結果（選字統計與校準）
   void CountShadow(SessionState& ss, const std::wstring& text);
   // 推薦或整句重排要用本機模型評分
@@ -206,6 +212,8 @@ class Controller {
   // llm/choice/rerank：整句重排（Rime Top-K 由本機模型重排）。0 關、1 shadow（只算不顯示）、2 顯示
   int rerank_mode_ = 0;
   double rerank_margin_ = 2.0;     // llm/choice/rerank_margin
+  bool show_probability_ = false;  // llm/choice/show_probability：候選窗顯示整句機率
+  std::map<std::wstring, double> sentence_probs_;  // 目前輸入的整句 → 機率（服務端的鎖下讀寫）
   size_t rerank_sentences_ = 10;   // llm/choice/rerank_sentences：最多評幾句
   bool choice_log_ = false;        // llm/choice/log：記錄選字過程（加密）
   size_t context_max_chars_ = 100;      // llm/context/max_chars：給模型的前文最多幾個字

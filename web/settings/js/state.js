@@ -245,6 +245,7 @@ function loadForm(llm, defaults) {
       sentences: String([0, 3, 5, 10].includes(int(get(llm, 'choice/sentence_candidates'), 0))
         ? int(get(llm, 'choice/sentence_candidates'), 0) : 0),
       min_confidence: str(get(llm, 'choice/min_confidence')) || '0.5',
+      show_probability: bool(get(llm, 'choice/show_probability'), false),
     },
     typo: {
       // 兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
@@ -285,6 +286,7 @@ export function buildLlm() {
   const rerankMargin = parseFloat(trim(form.choice.rerank_margin));
   set(llm, 'choice/rerank_margin', Number.isFinite(rerankMargin) && rerankMargin >= 0 ? rerankMargin : 2);
   set(llm, 'choice/sentence_candidates', Number(form.choice.sentences) || 0);
+  set(llm, 'choice/show_probability', form.choice.show_probability);
   // 0～0.9；空白或不合理時用預設
   const minConfidence = parseFloat(trim(form.choice.min_confidence));
   set(llm, 'choice/min_confidence',

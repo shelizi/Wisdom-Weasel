@@ -67,6 +67,7 @@ struct PredictionRequest {
   double min_confidence = 0;           // 推薦／校正校準過的採用機率低於這個就不顯示（0 = 都顯示）
   bool rerank = false;                 // 整句重排：比 Rime 第一句通順的整句當推薦（需要 prefix）
   bool rerank_shadow = false;          // 整句重排只算不顯示，結果交給 on_shadow（驗證用）
+  bool sentence_scores = false;        // 評 Rime 的整句並交給 on_scores（候選窗顯示機率）
   RerankOptions rerank_options;
   unsigned delay_ms = 0;               // 防抖：等這麼久後若已有更新的請求就放棄
 };
@@ -91,6 +92,8 @@ class PredictionEngine {
     std::function<void(uint64_t tag, uint64_t seq, const std::wstring& first,
                        const RerankResult& result)>
         on_shadow;
+    // 背景執行緒：整句的分數（RerankResult::texts／scores）；呼叫端加鎖後用 IsCurrent(seq) 確認
+    std::function<void(uint64_t tag, uint64_t seq, const RerankResult& result)> on_scores;
     // 背景執行緒：把 gain 換成校準過的採用機率（呼叫端自己加鎖）；沒有或還沒校準回傳 NaN
     std::function<double(SuggestionKind kind, double gain)> confidence;
   };
