@@ -90,13 +90,14 @@ export default {
     const remove = async () => {
       const { use } = state;
       let message = '確定要刪除「' + p.name + '」嗎？';
-      if (use.predict === index || use.refine === index || use.typo === index)
+      if (use.predict === index || use.refine === index || use.typo === index || use.scorer === index)
         message += '\n\n這組設定正在使用中，刪除後請另外選擇模型。';
       if (!(await confirm(message, { title: '刪除模型設定', danger: true, ok: '刪除' }))) return;
       const shift = (i) => (i === index ? -1 : i > index ? i - 1 : i);
       use.predict = shift(use.predict);
       use.refine = shift(use.refine);
       use.typo = shift(use.typo);
+      use.scorer = shift(use.scorer);
       profiles.splice(index, 1);
       state.selectedProfile = Math.min(index, profiles.length - 1);
       changed();

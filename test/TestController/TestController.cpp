@@ -393,6 +393,29 @@ int main(int argc, char** argv) {
     t.commits.clear();
   }
 
+  // 逐字選字時收起整句的 LLM 候選（否則單字候選後面接著長句，候選窗被撐寬，Tab
+  // 也會套用整句）
+  {
+    t.Type("rup wu0 ");  // ㄐㄧㄣ ㄊㄧㄢ
+    CHECK(WaitFor([&] {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      return controller.ShowingPredictions();
+    }));
+    t.Key(key::kLeft);
+    CHECK(ss.focus == 1);
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(400));  // 排隊中的補全也不會再出現
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      CHECK(!controller.ShowingPredictions() && !controller.PredictionMode());
+    }
+    t.Key(key::kEscape);
+    if (t.Composing())
+      t.Key(key::kEscape);
+    CHECK(!t.Composing());
+    t.commits.clear();
+  }
+
   // ` 鍵：組字中立即預測（不等停頓）；雙擊清空前文
   {
     std::this_thread::sleep_for(std::chrono::milliseconds(600));
@@ -426,16 +449,19 @@ int main(int argc, char** argv) {
         L"拆解\t沒請它看的片段\t沒請 它看的 片段\n"
         L"拆解\t我明天下午要去台北開會\t我明天 下午\n"
         L"拆解\t應該是設定檔的路徑\t應該 是 設定檔 的 路徑\n"  // 單獨的字接到前一個部分
-        L"拆解\t一石二鳥\t一石二鳥\n",                          // 沒拆
-        {L"我明天下午要去台北開會", L"謝謝大家的幫忙", L"今天天氣很好", L"應該是設定檔的路徑",
-         L"一石二鳥"});
+        L"拆解\t一石二鳥\t一石二鳥\n",                         // 沒拆
+        {L"我明天下午要去台北開會", L"謝謝大家的幫忙", L"今天天氣很好",
+         L"應該是設定檔的路徑", L"一石二鳥"});
     CHECK(splits.size() == 3);
     if (splits.size() == 3) {
       CHECK(splits[0].first == L"我明天下午要去台北開會");
       CHECK(splits[0].second ==
-            (std::vector<std::wstring>{L"我", L"明天下午", L"要去", L"台北", L"開會"}));
-      CHECK(splits[1].second == (std::vector<std::wstring>{L"謝謝", L"大家的", L"幫忙"}));
-      CHECK(splits[2].second == (std::vector<std::wstring>{L"應該是", L"設定檔的", L"路徑"}));
+            (std::vector<std::wstring>{L"我", L"明天下午", L"要去", L"台北",
+                                       L"開會"}));
+      CHECK(splits[1].second ==
+            (std::vector<std::wstring>{L"謝謝", L"大家的", L"幫忙"}));
+      CHECK(splits[2].second ==
+            (std::vector<std::wstring>{L"應該是", L"設定檔的", L"路徑"}));
     }
   }
 
@@ -443,20 +469,25 @@ int main(int argc, char** argv) {
   {
     using namespace settings_bench;
     std::vector<std::wstring> errors;
-    const auto p = ParsePredictCases(L"# 註解\n謝謝你的|幫忙\n\n路上小｜心\n少一欄\n", &errors);
+    const auto p = ParsePredictCases(
+        L"# 註解\n謝謝你的|幫忙\n\n路上小｜心\n少一欄\n", &errors);
     CHECK(p.size() == 2 && p[1].context == L"路上小" && p[1].expected == L"心");
     CHECK(errors.size() == 1);
     errors.clear();
-    const auto c = ParseCorrectCases(L"|ㄐㄧㄣ ㄊㄧㄢ|今天|今天\n前文，|ㄗㄞˋ ㄐㄧㄢˋ|在見|再見\n", &errors);
-    CHECK(errors.empty() && c.size() == 2 && c[0].context.empty() && c[1].context == L"前文，");
+    const auto c = ParseCorrectCases(
+        L"|ㄐㄧㄣ ㄊㄧㄢ|今天|今天\n前文，|ㄗㄞˋ ㄐㄧㄢˋ|在見|再見\n", &errors);
+    CHECK(errors.empty() && c.size() == 2 && c[0].context.empty() &&
+          c[1].context == L"前文，");
     // 候選多接了字也算；只是開頭時要兩個字以上；超出 top 的不算
     CHECK(PredictionHit({L"幫忙了"}, L"幫忙", 1));
     CHECK(PredictionHit({L"快樂"}, L"快樂喔", 1));
     CHECK(!PredictionHit({L"快"}, L"快樂", 5));
     CHECK(PredictionHit({L"心"}, L"心", 1));
-    CHECK(!PredictionHit({L"a", L"幫忙"}, L"幫忙", 1) && PredictionHit({L"a", L"幫忙"}, L"幫忙", 5));
+    CHECK(!PredictionHit({L"a", L"幫忙"}, L"幫忙", 1) &&
+          PredictionHit({L"a", L"幫忙"}, L"幫忙", 5));
     // 校正：不改（空字串）只有初稿本來就對時才算對
-    CHECK(CorrectionOk(L"", c[0]) && CorrectionOk(L"今天", c[0]) && !CorrectionOk(L"金天", c[0]));
+    CHECK(CorrectionOk(L"", c[0]) && CorrectionOk(L"今天", c[0]) &&
+          !CorrectionOk(L"金天", c[0]));
     CHECK(CorrectionOk(L"再見", c[1]) && !CorrectionOk(L"", c[1]));
   }
 
@@ -470,15 +501,16 @@ int main(int argc, char** argv) {
     PersonalRefiner refiner(&lexicon);
     std::vector<std::string> systems;
     int busy = 1;
-    refiner.SetSharedChat([&](const LLMLocalModelSpec& spec, const std::string& system,
-                              const std::string&, int, std::string* output, std::wstring*) {
+    refiner.SetSharedChat([&](const LLMLocalModelSpec& spec,
+                              const std::string& system, const std::string&,
+                              int, std::string* output, std::wstring*) {
       CHECK(spec.model_path == "shared.gguf");
       if (busy-- > 0)
         return PersonalRefiner::SharedChatResult::kBusy;
       systems.push_back(system);
-      *output = systems.size() == 1
-                    ? U8(L"刪除\t亂碼亂碼\n")
-                    : U8(L"拆解\t我明天下午要去台北開會\t我 明天下午 要去 台北 開會\n");
+      *output = systems.size() == 1 ? U8(L"刪除\t亂碼亂碼\n")
+                                    : U8(L"拆解\t我明天下午要去台北開會\t我 "
+                                         L"明天下午 要去 台北 開會\n");
       return PersonalRefiner::SharedChatResult::kOk;
     });
     PersonalRefiner::Config config;

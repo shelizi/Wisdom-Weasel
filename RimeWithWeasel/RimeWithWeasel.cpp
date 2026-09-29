@@ -508,8 +508,6 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
   // 後台預測執行緒會替換候選，這裡取快照再使用
   const ime::PredictionSet llm_set = m_controller->Predictions();
   const std::vector<std::wstring>& llm_candidates = llm_set.candidates;
-  const size_t correction_count = llm_set.corrections,
-               recommend_count = llm_set.recommends;
   size_t llm_candidate_count = llm_candidates.size();
 
   // 先清空候选词信息，避免重复添加
@@ -570,9 +568,7 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
 
       // 推荐、整句校正的候选分别标示「推薦」「校正」，其余为空注释
       Text comment;
-      comment.str = i < recommend_count                      ? L"推薦"
-                    : i < recommend_count + correction_count ? L"校正"
-                                                             : L"";
+      comment.str = llm_set.Comment(i);
       cinfo.comments.push_back(comment);
 
       if (m_dev_console && m_dev_console->IsEnabled()) {

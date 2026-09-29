@@ -13,7 +13,9 @@ target("WeaselDeployer")
   -- 模型測試：自己啟動推理行程（WisdomLLMHost）載入模型
   add_files("$(projectdir)/core/llm/RemoteLLMProvider.cpp", "$(projectdir)/core/llm/LLMProvider.cpp",
             "$(projectdir)/core/llm_ipc/client.cpp", "$(projectdir)/core/platform/win/process_win.cpp",
-            "$(projectdir)/core/ime/text_rules.cpp")
+            "$(projectdir)/core/ime/text_rules.cpp",
+            -- 選字策略頁顯示信心校準
+            "$(projectdir)/core/ime/calibration.cpp")
   add_files("$(projectdir)/PerMonitorHighDPIAware.manifest")
   add_ldflags("/DEBUG /OPT:ICF /LARGEADDRESSAWARE /ERRORREPORT:QUEUE")
   before_build(function(target)

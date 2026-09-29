@@ -4,6 +4,7 @@
 #include "../llm_ipc/client.h"
 #include "../base/utf8.h"
 #include <logging.h>
+#include <cmath>
 
 
 namespace {
@@ -154,6 +155,32 @@ bool RemoteLLMProvider::ScoreText(const std::wstring& context, const std::wstrin
   if (per_char)
     *per_char = std::move(chars);
   return true;
+}
+
+bool RemoteLLMProvider::ScoreBatch(const std::wstring& context,
+                                   const std::vector<std::wstring>& texts,
+                                   std::vector<double>* totals) {
+  totals->assign(texts.size(), std::numeric_limits<double>::quiet_NaN());
+  if (kind_ != "llamacpp" || !IsAvailable() || texts.empty())
+    return false;
+  Writer request(Op::kScoreBatch, 0);
+  request.Str(utf8::FromWide(context));
+  std::vector<std::string> list;
+  for (const auto& t : texts)
+    list.push_back(utf8::FromWide(t));
+  request.StrList(list);
+  auto reply = client_->Call(std::move(request), Cancelled, kInferenceTimeout);
+  if (!reply)
+    return false;
+  std::vector<double> values = reply->F64List();
+  // 舊版推理行程不認得這個請求（回覆是空的）：逐一評分
+  if (!reply->Ok() || values.size() != texts.size())
+    return !LLMCancelled() && LLMProvider::ScoreBatch(context, texts, totals);
+  *totals = std::move(values);
+  for (double v : *totals)
+    if (!std::isnan(v))
+      return true;
+  return false;
 }
 
 RemoteLLMProvider::ChatResult RemoteLLMProvider::ChatShared(const LLMLocalModelSpec& spec,

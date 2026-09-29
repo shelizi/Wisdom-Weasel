@@ -116,6 +116,17 @@ struct Host {
         out.F64List(per_char);
         break;
       }
+      case Op::kScoreBatch: {
+        const std::wstring context = utf8::ToWide(in.Str());
+        std::vector<std::wstring> texts;
+        for (const auto& t : in.StrList())
+          texts.push_back(utf8::ToWide(t));
+        std::vector<double> totals(texts.size(), std::numeric_limits<double>::quiet_NaN());
+        if (provider && in.Ok())
+          provider->ScoreBatch(context, texts, &totals);
+        out.F64List(totals);
+        break;
+      }
       case Op::kIsAvailable:
         out.Flag(provider && provider->IsAvailable());
         break;

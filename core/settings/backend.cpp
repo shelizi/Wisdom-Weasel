@@ -14,6 +14,7 @@
 
 #include "../net/http.h"
 #include "../base/utf8.h"
+#include "../ime/calibration.h"
 #include "bench.h"
 #include "ops.h"
 
@@ -295,6 +296,11 @@ struct Backend::State {
       ApplyRimeBoost(platform, api, switcher, c["rime_boost"].get<bool>(), &error);
       if (!error.empty())
         add_error("注音排序：", error);
+    }
+    if (c.contains("sentences") && c["sentences"].is_number_integer()) {
+      std::string error;
+      if (!ApplySentenceCandidates(platform, c["sentences"].get<int>(), &error))
+        add_error("整句候選：", error);
     }
     if (c.contains("typo_rime")) {
       std::string error;
@@ -696,8 +702,20 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
                       {"changed", r.changed},
                       {"recommended", r.recommended},
                       {"llm", r.llm},
+                      {"rerank", r.rerank},
                       {"detail", r.detail}});
     return rows;
+  }
+  if (method == "calibration.get") {
+    // 推薦／校正的信心校準（輸入法寫的 weasel_calibration.txt）
+    ime::CalibrationStore store(platform.UserDataDir());
+    json lines = json::array();
+    for (const auto kind : {ime::SuggestionKind::kRecommend, ime::SuggestionKind::kCorrection}) {
+      const std::string text = store.Summary(kind);
+      if (!text.empty())
+        lines.push_back(text);
+    }
+    return lines;
   }
   if (method == "stats.reset") {
     ResetChoiceStats(platform);

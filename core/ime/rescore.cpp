@@ -11,10 +11,9 @@ namespace ime {
 std::wstring RescoreSentence(LLMProvider* scorer,
                              const std::wstring& context,
                              const std::vector<std::wstring>& units,
-                             const std::vector<std::vector<std::wstring>>& homophones) {
-  const double kMargin = 0.5;      // 推薦門檻
-  const size_t kPositions = 4;     // 最多檢查幾個位置
-  const size_t kAlternatives = 5;  // 每個位置最多試幾個同音字
+                             const std::vector<std::vector<std::wstring>>& homophones,
+                             double* gain,
+                             const RescoreOptions& options) {
   // 只看完整的字：遇到還在拼的注音就停，後面照原樣接回去
   size_t n = 0;
   while (n < units.size() && units[n].size() >= 1 && units[n][0] >= 0x3400 &&
@@ -36,8 +35,8 @@ std::wstring RescoreSentence(LLMProvider* scorer,
       order.emplace_back(per_char[w], i);
   }
   std::sort(order.begin(), order.end());
-  if (order.size() > kPositions)
-    order.resize(kPositions);
+  if (order.size() > options.positions)
+    order.resize(options.positions);
   struct Change {
     double gain;
     size_t pos;
@@ -45,12 +44,12 @@ std::wstring RescoreSentence(LLMProvider* scorer,
   };
   std::vector<Change> changes;
   for (const auto& [lp, pos] : order) {
-    Change best{kMargin, pos, L""};
+    Change best{options.margin, pos, L""};
     size_t tried = 0;
     for (const auto& alt : homophones[pos]) {
       if (alt == base[pos])
         continue;
-      if (++tried > kAlternatives || LLMCancelled())
+      if (++tried > options.alternatives || LLMCancelled())
         break;
       std::vector<std::wstring> variant = base;
       variant[pos] = alt;
@@ -89,6 +88,8 @@ std::wstring RescoreSentence(LLMProvider* scorer,
   if (g_dev_console && g_dev_console->IsEnabled())
     g_dev_console->WriteLine(L"[LLM] 推薦：" + base_text + L" → " + zhuyin_preview::Join(current) +
                              L"（改善 " + std::to_wstring(current_total - base_total) + L"）");
+  if (gain)
+    *gain = current_total - base_total;
   return zhuyin_preview::Join(current) + rest;
 }
 

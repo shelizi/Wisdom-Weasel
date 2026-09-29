@@ -4,7 +4,8 @@
 // 依「組合」（版本＋當時的設定）分開累計。
 //
 // weasel_stats.txt 每行：日期 \t 組合代碼 \t 送出 \t 字數 \t 換字 \t LLM 出現 \t LLM 採用 \t
-//   校正採用 \t Backspace \t 送出後刪除 \t 逐字選字 \t 推薦出現 \t 推薦套用
+//   校正採用 \t Backspace \t 送出後刪除 \t 逐字選字 \t 推薦出現 \t 推薦套用 \t
+//   重排評估 \t 重排會改 \t 重排改對 \t 重排改錯（原本就對）
 // weasel_stats_profiles.txt 每行：組合代碼 \t 版本 \t 編譯時間 \t 版本說明 \t 設定 \t 第一次出現
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +26,11 @@ struct ChoiceStats {
   int64_t focus_uses = 0;         // 用逐字選字（←/→ 框字）的次數
   int64_t recommend_offered = 0;  // 出現「推薦」的次數（每次組字最多算一次）
   int64_t recommend_used = 0;     // 按 Tab 套用推薦的次數
+  // 整句重排 shadow 模式（只算不顯示）：送出時對照
+  int64_t shadow_total = 0;        // 送出時有重排結果的次數
+  int64_t shadow_changed = 0;      // 其中重排會換掉 Rime 第一句的次數
+  int64_t shadow_rerank_right = 0;  // 會換，而且使用者送出的就是重排的句子
+  int64_t shadow_rime_right = 0;    // 會換，但使用者送出的是 Rime 第一句（換了就錯）
 };
 
 // 本地日期 YYYY-MM-DD，days_ago 天前

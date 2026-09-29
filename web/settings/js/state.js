@@ -7,7 +7,7 @@ export const state = {
   llm: {},            // 目前儲存的 llm 設定（存檔時以它為底，保留介面上沒有的項目）
   form: null,         // 各頁表單
   profiles: [],       // 模型設定
-  use: { predict: -1, refine: -1, typo: -1 },  // 各功能選用的模型設定（profiles 的索引）
+  use: { predict: -1, refine: -1, typo: -1, scorer: -1 },  // 各功能選用的模型設定（profiles 的索引）
   loaded: {},         // 目前已套用的值（判斷要不要改方案檔）
   schemas: [],        // [{id, name, selected}]，已選的在前
   style: null,        // {active, fonts}
@@ -104,7 +104,7 @@ function loadProfiles(llm, defaultApiUrl) {
       think_tokens: think === '' ? 2048 : Math.max(0, int(think, 0)),
     }));
   }
-  let predict = -1, refine = -1, typo = -1;
+  let predict = -1, refine = -1, typo = -1, scorer = -1;
   if (!profiles.length) {
     // 舊設定轉換：本機模型、預測用的 API、精煉用的 API 各一組
     const provider = lower(get(llm, 'provider_type'));
@@ -145,9 +145,10 @@ function loadProfiles(llm, defaultApiUrl) {
     predict = find(get(llm, 'predict_profile'));
     refine = find(get(llm, 'personal/refine/profile'));
     typo = find(get(llm, 'typo/profile'));
+    scorer = find(get(llm, 'choice/scorer/profile'));
   }
   if (typo < 0) typo = predict;  // 還沒選過：預設和智慧預測用同一個模型
-  return { profiles, use: { predict, refine, typo } };
+  return { profiles, use: { predict, refine, typo, scorer } };
 }
 
 function saveProfiles(llm, profiles, use) {
@@ -211,6 +212,12 @@ function saveProfiles(llm, profiles, use) {
   set(llm, 'typo/model', typo >= 0 && c.remote ? c.model : '');
   set(llm, 'typo/disable_thinking', typo >= 0 && c.no_think);
   set(llm, 'typo/think_tokens', c.think_tokens);
+  // 評分（推薦、整句重排）：只能用本機模型；沒選時借預測或校正已載入的本機模型
+  const scorerIndex = valid(use.scorer);
+  const sc = scorerIndex >= 0 && !profiles[scorerIndex].remote ? profiles[scorerIndex] : null;
+  set(llm, 'choice/scorer/profile', sc ? keyOf(scorerIndex) : '');
+  set(llm, 'choice/scorer/model_path', sc ? toYamlPath(sc.model_path) : '');
+  set(llm, 'choice/scorer/model_type', sc ? sc.model_type : '');
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +240,11 @@ function loadForm(llm, defaults) {
     choice: {
       log: bool(get(llm, 'choice/log'), false),
       rescore: bool(get(llm, 'choice/rescore'), false),
+      rerank: ['off', 'shadow', 'on'].includes(str(get(llm, 'choice/rerank'))) ? str(get(llm, 'choice/rerank')) : 'off',
+      rerank_margin: str(get(llm, 'choice/rerank_margin')) || '2',
+      sentences: String([0, 3, 5, 10].includes(int(get(llm, 'choice/sentence_candidates'), 0))
+        ? int(get(llm, 'choice/sentence_candidates'), 0) : 0),
+      min_confidence: str(get(llm, 'choice/min_confidence')) || '0.5',
     },
     typo: {
       // 兩個開關各自獨立；舊設定 llm/typo_correction（off / rime / llm，llm 含 Rime 容錯）
@@ -269,6 +281,14 @@ export function buildLlm() {
   set(llm, 'predict_while_typing', form.predict.while_typing);
   set(llm, 'choice/log', form.choice.log);
   set(llm, 'choice/rescore', form.choice.rescore);
+  set(llm, 'choice/rerank', form.choice.rerank);
+  const rerankMargin = parseFloat(trim(form.choice.rerank_margin));
+  set(llm, 'choice/rerank_margin', Number.isFinite(rerankMargin) && rerankMargin >= 0 ? rerankMargin : 2);
+  set(llm, 'choice/sentence_candidates', Number(form.choice.sentences) || 0);
+  // 0～0.9；空白或不合理時用預設
+  const minConfidence = parseFloat(trim(form.choice.min_confidence));
+  set(llm, 'choice/min_confidence',
+    Number.isFinite(minConfidence) && minConfidence >= 0 && minConfidence <= 0.9 ? minConfidence : 0.5);
   saveProfiles(llm, profiles, use);
   // 提示詞（兩種模式共用）：統一換行為 \n；改存 llm/prompt，移除舊的 llamacpp/prompt_prefix
   set(llm, 'prompt', trim(form.predict.prompt.replace(/\r/g, '')));
@@ -318,6 +338,12 @@ export function validate() {
   return null;
 }
 
+// 方案要列幾個整句候選：使用者選的數量；開整句重排時至少 10 句（重排從這些整句挑）
+function sentenceCount(form) {
+  const n = Number(form.choice.sentences) || 0;
+  return form.choice.rerank !== 'off' ? Math.max(n, 10) : n;
+}
+
 // 啟動或套用後：以儲存的設定重設表單
 export function loadLlm(llm) {
   state.llm = llm || {};
@@ -327,6 +353,7 @@ export function loadLlm(llm) {
   state.use = use;
   state.loaded.rime_boost = bool(get(state.llm, 'personal/rime_boost'), false);
   state.loaded.typo_rime = state.form.typo.rime;
+  state.loaded.sentences = sentenceCount(state.form);
 }
 
 // 套用：收集變更的部分
@@ -341,6 +368,9 @@ export function collectChanges() {
     const boost = form.personal.enabled && form.personal.rime_boost;
     if (boost !== state.loaded.rime_boost) changes.rime_boost = boost;
     if (form.typo.rime !== state.loaded.typo_rime) changes.typo_rime = form.typo.rime;
+    // 整句候選（與整句重排要的整句）：數量有變才改方案
+    const sentences = sentenceCount(form);
+    if (sentences !== state.loaded.sentences) changes.sentences = sentences;
   }
   if (dirty.has('grammar') && form.choice.grammar !== state.loaded.grammar) changes.grammar = form.choice.grammar;
   return changes;
