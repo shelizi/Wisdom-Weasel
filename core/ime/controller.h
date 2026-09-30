@@ -237,6 +237,9 @@ class Controller {
   bool show_probability_ = false;  // llm/choice/show_probability：候選窗顯示整句機率
   std::map<std::wstring, double> sentence_probs_;  // 目前輸入的整句 → 機率（服務端的鎖下讀寫）
   size_t rerank_sentences_ = 10;   // llm/choice/rerank_sentences：最多評幾句
+  size_t rerank_context_ = 30;     // llm/choice/rerank_context：給模型的前文最多幾個字
+  double rerank_alpha_ = 0.0;      // llm/choice/rerank_alpha：長度正規化（0 = 不正規化）
+  double rerank_personal_ = 0.0;   // llm/choice/rerank_personal：個人詞庫加分的權重（0 = 不用）
   bool choice_log_ = false;        // llm/choice/log：記錄選字過程（加密）
   size_t context_max_chars_ = 100;      // llm/context/max_chars：給模型的前文最多幾個字
   unsigned context_idle_minutes_ = 10;  // llm/context/idle_minutes：視窗閒置多久後舊前文失效

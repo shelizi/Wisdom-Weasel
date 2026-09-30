@@ -254,6 +254,14 @@ static void TestChoiceLog(const fs::path& dir) {
   const std::string plain = ime::FormatChoiceRecord(r);
   CHECK(plain ==
         "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 ");
+  {
+    // 整句重排評過分：Rime 當時的整句（U+001E 分隔；句子裡的分隔字元換成空白）與分數
+    ime::ChoiceRecord shown = r;
+    shown.shown = {L"金天", L"今\x1E天"};
+    shown.shown_scores = {-12.5, -8.25};
+    CHECK(ime::FormatChoiceRecord(shown) ==
+          "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 \t金天\x1E今 天\t-12.5000,-8.2500");
+  }
 
   // 加密附加兩筆，讀回來逐筆解開
   const fs::path personal = dir / "personal";

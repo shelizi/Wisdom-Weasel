@@ -92,7 +92,8 @@ class PredictionEngine {
     std::function<void(uint64_t tag, uint64_t seq, const std::wstring& first,
                        const RerankResult& result)>
         on_shadow;
-    // 背景執行緒：整句的分數（RerankResult::texts／scores）；呼叫端加鎖後用 IsCurrent(seq) 確認
+    // 背景執行緒：整句的分數（RerankResult::texts／scores；評過分就交回，不只是 sentence_scores）；
+    // 呼叫端加鎖後用 IsCurrent(seq) 確認
     std::function<void(uint64_t tag, uint64_t seq, const RerankResult& result)> on_scores;
     // 背景執行緒：把 gain 換成校準過的採用機率（呼叫端自己加鎖）；沒有或還沒校準回傳 NaN
     std::function<double(SuggestionKind kind, double gain)> confidence;

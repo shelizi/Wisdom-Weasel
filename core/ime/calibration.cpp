@@ -185,7 +185,7 @@ void CalibrationStore::Load() {
   }
 }
 
-void CalibrationStore::Record(SuggestionKind kind, double gain, bool accepted) {
+void CalibrationStore::Record(SuggestionKind kind, double gain, bool accepted, const std::string& features) {
   if (!std::isfinite(gain))
     return;
   std::lock_guard<std::mutex> lock(mutex_);
@@ -193,8 +193,12 @@ void CalibrationStore::Record(SuggestionKind kind, double gain, bool accepted) {
   calibrators_[(int)kind].Add(gain, accepted);
   std::ofstream out(dir_ / kFile, std::ios::binary | std::ios::app);
   char line[64];
-  std::snprintf(line, sizeof(line), "%s\t%.4f\t%d\n", SuggestionKindName(kind), gain, accepted ? 1 : 0);
-  out << line;
+  std::snprintf(line, sizeof(line), "%s\t%.4f\t%d", SuggestionKindName(kind), gain, accepted ? 1 : 0);
+  std::string clean = features;
+  for (auto& c : clean)
+    if (c == '\t' || c == '\r' || c == '\n')
+      c = ' ';
+  out << line << (clean.empty() ? "" : "\t") << clean << "\n";
 }
 
 double CalibrationStore::Probability(SuggestionKind kind, double gain) {

@@ -221,6 +221,15 @@ void Controller::LoadConfig(RimeConfig* config) {
     int sentences = 10;
     api_->config_get_int(config, "llm/choice/rerank_sentences", &sentences);
     rerank_sentences_ = (size_t)(std::min)(63, (std::max)(2, sentences));
+    int context = 30;
+    api_->config_get_int(config, "llm/choice/rerank_context", &context);
+    rerank_context_ = (size_t)(std::min)(200, (std::max)(0, context));
+    double alpha = 0.0;
+    api_->config_get_double(config, "llm/choice/rerank_alpha", &alpha);
+    rerank_alpha_ = (std::min)(1.0, (std::max)(0.0, alpha));
+    double personal = 0.0;
+    api_->config_get_double(config, "llm/choice/rerank_personal", &personal);
+    rerank_personal_ = (std::min)(10.0, (std::max)(0.0, personal));
   }
   // 簡體輸出：送出時用 OpenCC 轉換（tw2s 只換字；tw2sp 連兩岸用詞一起換）。
   // 字典檔很小，這裡直接載入；重新部署後回到設定的預設（快速鍵、系統匣的切換到這裡為止）
@@ -1406,6 +1415,23 @@ std::wstring Controller::ComposingSentence(RimeSessionId session_id) {
 
 namespace {
 
+// 整句重排推薦的特徵：在 Rime 裡的名次、評了幾句、字數、最好與第二好的分數差
+std::string RerankFeatures(const std::vector<std::wstring>& texts, const std::vector<double>& scores,
+                           const std::wstring& chosen) {
+  const auto it = std::find(texts.begin(), texts.end(), chosen);
+  if (it == texts.end())
+    return std::string();
+  std::vector<double> sorted;
+  for (double s : scores)
+    if (std::isfinite(s))
+      sorted.push_back(s);
+  std::sort(sorted.rbegin(), sorted.rend());
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "rank=%d n=%d chars=%d gap=%.2f", (int)(it - texts.begin()) + 1, (int)texts.size(),
+                (int)zhuyin_preview::SplitChars(chosen).size(), sorted.size() >= 2 ? sorted[0] - sorted[1] : 0.0);
+  return buf;
+}
+
 // 有兩個以上的漢字才值得請模型改寫（單字、標點、英文直接用 OpenCC）
 bool WorthLocalizing(const std::wstring& text) {
   int han = 0;
@@ -1682,6 +1708,8 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
       ss.focus_used = ss.recommend_offered = false;
       ForgetSuggestions(ss);
       ss.shadow_pending = false;
+      ss.shown_sentences.clear();
+      ss.shown_scores.clear();
       ss.default_text.clear();
       ss.default_zhuyin.clear();
     }
@@ -1828,6 +1856,13 @@ void Controller::TriggerPrediction(uint64_t id,
   request.sentence_scores = rerank && show_probability_;
   request.rerank_options.margin = rerank_margin_;
   request.rerank_options.max_sentences = rerank_sentences_;
+  request.rerank_options.context_chars = rerank_context_;
+  request.rerank_options.length_alpha = rerank_alpha_;
+  request.rerank_options.personal_weight = personal_ ? rerank_personal_ : 0.0;
+  // 在推理鎖下呼叫（重排時）：個人詞庫只會在推理鎖下換掉
+  request.rerank_options.personal = [this](const std::wstring& text) {
+    return personal_ ? personal_->SentenceScore(text) : 0.0;
+  };
   request.zhuyin = zhuyin;
   // 校正只看組字區的內容：組字區裡已確定的部分（混打、標點）當前文，不帶之前送出的文字
   request.typo_context = ss->mixed_text;
@@ -1916,7 +1951,13 @@ void Controller::OnShadow(uint64_t id, uint64_t seq, const std::wstring& first,
 
 void Controller::OnSentenceScores(uint64_t id, uint64_t seq, const RerankResult& result) {
   std::lock_guard<std::mutex> api_lock(frontend_->ApiMutex());
-  if (!prediction_->IsCurrent(seq) || !frontend_->Session(id))
+  SessionState* ss = frontend_->Session(id);
+  if (!prediction_->IsCurrent(seq) || !ss)
+    return;
+  // 選字紀錄：記下 Rime 當時的前幾個整句與模型分數
+  ss->shown_sentences = result.texts;
+  ss->shown_scores = result.lm_scores;
+  if (!show_probability_)
     return;
   const std::vector<double> probs = SentenceProbabilities(result.scores);
   sentence_probs_.clear();
@@ -1963,7 +2004,8 @@ void Controller::CountShadow(SessionState& ss, const std::wstring& text) {
   }
   // 校準：分數最高的另一句是不是使用者要的（打開顯示時，校準已經有樣本）
   if (!ss.shadow_best.empty() && std::isfinite(ss.shadow_gain))
-    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, text == ss.shadow_best);
+    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, text == ss.shadow_best,
+                         RerankFeatures(ss.shown_sentences, ss.shown_scores, ss.shadow_best));
 }
 
 void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionSet& set) {
@@ -1983,8 +2025,10 @@ void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionS
   if (ss && prediction_mode_) {
     ss->recommend_gain = ss->correction_gain = ss->rerank_gain = NoConfidence();
     for (size_t i = 0; i < set.candidates.size(); ++i) {
-      if (set.Kind(i) == CandidateKind::kRerank)
+      if (set.Kind(i) == CandidateKind::kRerank) {
         ss->rerank_gain = set.Gain(i);
+        ss->rerank_features = RerankFeatures(ss->shown_sentences, ss->shown_scores, set.candidates[i]);
+      }
       else if (set.IsRecommend(i))
         ss->recommend_gain = set.Gain(i);
       else if (set.IsCorrection(i))
@@ -2000,12 +2044,14 @@ void Controller::RecordSuggestions(SessionState& ss, CandidateKind taken) {
   if (!std::isnan(ss.correction_gain))
     calibration_->Record(SuggestionKind::kCorrection, ss.correction_gain, taken == CandidateKind::kCorrection);
   if (!std::isnan(ss.rerank_gain))
-    calibration_->Record(SuggestionKind::kRerank, ss.rerank_gain, taken == CandidateKind::kRerank);
+    calibration_->Record(SuggestionKind::kRerank, ss.rerank_gain, taken == CandidateKind::kRerank,
+                         ss.rerank_features);
   ForgetSuggestions(ss);
 }
 
 void Controller::ForgetSuggestions(SessionState& ss) {
   ss.recommend_gain = ss.correction_gain = ss.rerank_gain = NoConfidence();
+  ss.rerank_features.clear();
 }
 
 void Controller::ExitPredictionMode(uint64_t id) {
@@ -2283,6 +2329,13 @@ void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixe
   record.zhuyin = ss.default_zhuyin;
   record.default_text = ss.default_text;
   record.text = text;
+  // 評過分的整句要是這次送出前的輸入（第一句就是預設轉換），不然是打字中途的舊結果
+  if (!ss.shown_sentences.empty() && ss.shown_sentences[0] == ss.default_text) {
+    record.shown = ss.shown_sentences;
+    record.shown_scores = ss.shown_scores;
+  }
+  ss.shown_sentences.clear();
+  ss.shown_scores.clear();
   AppendChoiceRecord(options_.user_dir / "personal", record);
 }
 

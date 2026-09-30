@@ -218,6 +218,27 @@ double PersonalLexicon::WordScore(const std::wstring& word) const {
   return it == words_.end() ? 0 : Decayed(it->second, Now());
 }
 
+double PersonalLexicon::SentenceScore(const std::wstring& text, int64_t at) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (words_.empty())
+    return 0;
+  const int64_t now = at > 0 ? at : Now();
+  double total = 0;
+  for (size_t i = 0; i < text.size();) {
+    size_t matched = 0;
+    for (size_t len = (std::min)((size_t)8, text.size() - i); len >= 2; --len) {
+      auto it = words_.find(text.substr(i, len));
+      if (it != words_.end()) {
+        total += std::log1p((std::max)(0.0, Decayed(it->second, now)));
+        matched = len;
+        break;
+      }
+    }
+    i += matched ? matched : 1;
+  }
+  return total;
+}
+
 std::vector<std::wstring> PersonalLexicon::NextAfter(const std::wstring& window,
                                                      size_t max_count) const {
   const int64_t now = Now();
@@ -803,6 +824,11 @@ std::vector<PersonalLexicon::RawRecord> PersonalLexicon::ReadRawLog(const fs::pa
     records.push_back(std::move(r));
   }
   return records;
+}
+
+void PersonalLexicon::Replay(const RawRecord& record) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  RecordLocked(record.window, record.text, record.time, record.rejected);
 }
 
 void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {

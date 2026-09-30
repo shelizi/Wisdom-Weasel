@@ -30,6 +30,7 @@
 #include "../../core/ime/rime_helpers.h"
 #include "../../core/ime/text_rules.h"
 #include "../../core/llm/RemoteLLMProvider.h"
+#include "../../core/personal/PersonalLexicon.h"
 
 #include <PersonalCrypto.h>
 
@@ -55,6 +56,7 @@ namespace {
 struct Case {
   std::wstring context, zhuyin, draft, truth;
   bool from_log = false;
+  int64_t time = 0;  // 選字紀錄的送出時間（Unix 秒）
   // 推薦用：每個音節的字與同音字
   Strings units;
   std::vector<Strings> homophones;
@@ -66,6 +68,7 @@ struct Case {
   // Rime（沙盒，沒有選字記憶）打這串注音的結果
   std::wstring rime_draft;
   Strings sentences;  // 整句候選（字數和注音相同），依 Rime 的順序
+  Strings logged_sentences;  // 選字紀錄裡使用者自己的 Rime（有選字記憶）當時的 Top-K；有的話取代沙盒的
   double rime_ms = 0;
 };
 
@@ -129,6 +132,9 @@ bool LoadLog(const fs::path& file, std::vector<Case>* cases, size_t* skipped) {
     c.zhuyin = Trim(f[4]);
     c.draft = f[5];
     c.truth = f[6];
+    c.time = std::wcstoll(f[0].c_str(), nullptr, 10);
+    if (f.size() >= 8 && !f[7].empty())
+      c.logged_sentences = Split(f[7], L'\x1E');
     c.from_log = true;
     c.source = "log";
     cases->push_back(std::move(c));
@@ -687,6 +693,248 @@ void ReportTopK(const std::vector<Case>& cases,
               Percentile(ms, 0.5), Percentile(ms, 0.95), Percentile(ms, 0.99));
 }
 
+// P5 前文長度 × P3 長度正規化的網格（用 ScoreBatch，同輸入法）：每種前文長度評分一次，
+// 各種 alpha 拿同一批分數重算（分數 ÷ 字數^alpha）。margin 依平均字數縮放到正規化後的尺度，
+// 用 2-fold 選（一半選、另一半報），報 Top-1、wrong-change 與延遲
+void ReportTopKGrid(const std::vector<Case>& cases, LLMProvider* scorer,
+                    const std::vector<size_t>& contexts, const std::vector<double>& alphas) {
+  struct Item {
+    const Case* c;
+    std::vector<double> lm;
+    std::vector<double> chars;
+  };
+  const double kMargins[] = {0, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 1e9};
+  std::printf("\n  前文長度 × 長度正規化（2-fold 選 margin；Top-1 / wrong-change / 選出的 margin / P50、P95 ms）\n");
+  for (size_t context : contexts) {
+    std::vector<Item> items;
+    std::vector<double> ms;
+    double total_chars = 0, sentences = 0;
+    for (const auto& c : cases) {
+      if (c.sentences.empty() || c.rime_draft.empty())
+        continue;
+      Item it{&c, {}, {}};
+      const std::vector<std::wstring> texts(
+          c.sentences.begin(), c.sentences.begin() + (std::min<size_t>)(c.sentences.size(), 10));
+      const auto t0 = std::chrono::steady_clock::now();
+      scorer->ScoreBatch(Tail(c.context, context), texts, &it.lm);
+      ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      if (it.lm.size() != texts.size())
+        continue;  // 評分失敗：跳過這題
+      for (const auto& t : texts) {
+        it.chars.push_back((double)(std::max)((size_t)1, zhuyin_preview::SplitChars(t).size()));
+        total_chars += it.chars.back();
+        ++sentences;
+      }
+      items.push_back(std::move(it));
+    }
+    const double mean_chars = sentences ? total_chars / sentences : 1;
+    for (double alpha : alphas) {
+      const double scale = 1.0 / std::pow(mean_chars, alpha);
+      auto pick = [&](const Item& it, double margin) -> const std::wstring& {
+        auto score = [&](size_t i) { return it.lm[i] / std::pow(it.chars[i], alpha); };
+        size_t best = 0;
+        for (size_t i = 1; i < it.lm.size() && i < it.chars.size(); ++i)
+          if (std::isfinite(it.lm[i]) && (!std::isfinite(it.lm[best]) || score(i) > score(best)))
+            best = i;
+        if (best && std::isfinite(it.lm[0]) && score(best) - score(0) > margin * scale &&
+            it.c->sentences[0] == it.c->rime_draft)
+          return it.c->sentences[best];
+        return it.c->rime_draft;
+      };
+      auto eval = [&](double margin, int fold, size_t* n, size_t* right, size_t* base_right, size_t* wrong) {
+        for (size_t i = 0; i < items.size(); ++i) {
+          if (fold >= 0 && (int)(Mix(i * 7919 + 3) % 2) != fold)
+            continue;
+          const Item& it = items[i];
+          const std::wstring& chosen = pick(it, margin);
+          ++*n;
+          *right += chosen == it.c->truth ? 1 : 0;
+          if (it.c->rime_draft == it.c->truth) {
+            ++*base_right;
+            *wrong += chosen != it.c->truth ? 1 : 0;
+          }
+        }
+      };
+      double picked[2] = {0, 0};
+      for (int f = 0; f < 2; ++f) {
+        double best = -1;
+        for (double m : kMargins) {
+          size_t n = 0, right = 0, base_right = 0, wrong = 0;
+          eval(m, 1 - f, &n, &right, &base_right, &wrong);
+          const double acc = n ? (double)right / n : 0;
+          if (acc > best) {
+            best = acc;
+            picked[f] = m;
+          }
+        }
+      }
+      size_t n = 0, right = 0, base_right = 0, wrong = 0;
+      for (int f = 0; f < 2; ++f)
+        eval(picked[f], f, &n, &right, &base_right, &wrong);
+      std::printf("    前文 %3zu 字、alpha %.1f：%.4f / %.4f / margin %g、%g / %.0f、%.0f ms（%zu 題）\n", context,
+                  alpha, n ? (double)right / n : 0, base_right ? (double)wrong / base_right : 0, picked[0],
+                  picked[1], Percentile(ms, 0.5), Percentile(ms, 0.95), n);
+    }
+  }
+}
+
+// 前文 KV 常駐的正確性：同一題逐句從頭算、快取失效後批次、前文相同再批次（沿用快取）、
+// 前文多幾個字（只解碼多出來的部分），分數都要一樣；也報快取帶來的延遲差異
+void CheckScoreCache(const std::vector<Case>& cases, LLMProvider* scorer, size_t limit) {
+  size_t n = 0, bad_single = 0, bad_cached = 0, bad_extended = 0;
+  double worst_single = 0, worst_cached = 0, worst_extended = 0;
+  std::vector<double> fresh_ms, cached_ms;
+  auto differ = [](const std::vector<double>& x, const std::vector<double>& y, double* worst) {
+    if (x.size() != y.size())
+      return true;
+    bool bad = false;
+    for (size_t i = 0; i < x.size(); ++i) {
+      if (std::isnan(x[i]) && std::isnan(y[i]))
+        continue;
+      const double d = std::fabs(x[i] - y[i]);
+      *worst = (std::max)(*worst, std::isnan(d) ? 1e9 : d);
+      bad = bad || !(d < 0.05);
+    }
+    return bad;
+  };
+  for (const auto& c : cases) {
+    if (n >= limit)
+      break;
+    if (c.sentences.size() < 2 || c.context.size() < 4)
+      continue;
+    ++n;
+    const std::vector<std::wstring> texts(c.sentences.begin(),
+                                          c.sentences.begin() + (std::min<size_t>)(c.sentences.size(), 10));
+    const std::wstring context = Tail(c.context, 30);
+    const std::wstring shorter = context.substr(0, context.size() - 2);
+    std::vector<double> single(texts.size());
+    for (size_t i = 0; i < texts.size(); ++i)
+      if (!scorer->ScoreText(context, texts[i], &single[i], nullptr))
+        single[i] = NAN;
+    std::vector<double> a, b, d;
+    auto t0 = std::chrono::steady_clock::now();
+    scorer->ScoreBatch(context, texts, &a);  // ScoreText 之後：快取已失效，從頭算
+    fresh_ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    t0 = std::chrono::steady_clock::now();
+    scorer->ScoreBatch(context, texts, &b);  // 前文相同：沿用
+    cached_ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    std::vector<double> e;
+    scorer->ScoreBatch(shorter, texts, &e);  // 前文變短：不能沿用，要重算
+    scorer->ScoreBatch(context, texts, &d);  // 前文多了兩個字：只解碼多出來的部分
+    bad_single += differ(single, a, &worst_single) ? 1 : 0;
+    bad_cached += differ(a, b, &worst_cached) ? 1 : 0;
+    bad_extended += differ(a, d, &worst_extended) ? 1 : 0;
+  }
+  std::printf("前文快取：%zu 題；批次從頭算 vs 逐句 不一致 %zu（最大差 %.4f）、沿用 vs 從頭算 %zu（%.4f）、"
+              "前文變長 vs 從頭算 %zu（%.4f）；批次 從頭算 P50 %.0f ms、沿用 P50 %.0f ms\n",
+              n, bad_single, worst_single, bad_cached, worst_cached, bad_extended, worst_extended,
+              Percentile(fresh_ms, 0.5), Percentile(cached_ms, 0.5));
+}
+
+// P4 個人詞庫進排序，不洩漏答案：選字紀錄依時間排序，每一題只用「比它早」的原始輸入紀錄重建詞庫
+// （個人詞庫是從送出的文字學的，直接用現在的詞庫會學到答案）。排序分數 = 模型分數 + w × 詞庫分數，
+// 各個 w 用同一批模型分數重算，margin 用 2-fold 選
+void ReportPersonalGrid(const std::vector<Case>& cases, LLMProvider* scorer, const fs::path& personal_dir,
+                        const std::vector<double>& weights) {
+  std::vector<PersonalLexicon::RawRecord> records;
+  std::vector<fs::path> logs;
+  {
+    PersonalLexicon probe(personal_dir);
+    logs = probe.ArchivedLogs();
+    logs.push_back(probe.ActiveLogPath());
+  }
+  for (const auto& log : logs)
+    for (auto& r : PersonalLexicon::ReadRawLog(log))
+      records.push_back(std::move(r));
+  std::stable_sort(records.begin(), records.end(),
+                   [](const auto& a, const auto& b) { return a.time < b.time; });
+  std::vector<const Case*> order;
+  for (const auto& c : cases)
+    if (c.from_log && c.time > 0 && c.sentences.size() >= 2 && !c.rime_draft.empty())
+      order.push_back(&c);
+  std::stable_sort(order.begin(), order.end(), [](const Case* a, const Case* b) { return a->time < b->time; });
+  std::printf("\n  個人詞庫進排序（不洩漏：只用比該題早的原始紀錄；原始紀錄 %zu 筆、選字紀錄 %zu 題）\n",
+              records.size(), order.size());
+  if (records.empty() || order.empty())
+    return;
+  const fs::path scratch_dir = fs::temp_directory_path() / "tunechoice-personal";
+  PersonalLexicon lexicon(scratch_dir);
+  lexicon.SetPersist(false);
+  struct Item {
+    const Case* c;
+    std::vector<double> lm, personal;
+  };
+  std::vector<Item> items;
+  size_t next = 0, with_words = 0;
+  for (const Case* c : order) {
+    // 同一秒（或之後）送出的就是這一題自己：不能學
+    while (next < records.size() && records[next].time < c->time - 1)
+      lexicon.Replay(records[next++]);
+    Item it{c, {}, {}};
+    const std::vector<std::wstring> texts(c->sentences.begin(),
+                                          c->sentences.begin() + (std::min<size_t>)(c->sentences.size(), 10));
+    scorer->ScoreBatch(Tail(c->context, 30), texts, &it.lm);
+    if (it.lm.size() != texts.size())
+      continue;
+    bool any = false;
+    for (const auto& t : texts) {
+      it.personal.push_back(lexicon.SentenceScore(t, c->time));
+      any = any || it.personal.back() > 0;
+    }
+    with_words += any ? 1 : 0;
+    items.push_back(std::move(it));
+  }
+  std::printf("    有常打的詞出現在候選裡：%zu／%zu 題\n", with_words, items.size());
+  const double kMargins[] = {0, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 1e9};
+  for (double w : weights) {
+    auto pick = [&](const Item& it, double margin) -> const std::wstring& {
+      auto score = [&](size_t i) { return it.lm[i] + w * it.personal[i]; };
+      size_t best = 0;
+      for (size_t i = 1; i < it.lm.size(); ++i)
+        if (std::isfinite(it.lm[i]) && (!std::isfinite(it.lm[best]) || score(i) > score(best)))
+          best = i;
+      if (best && std::isfinite(it.lm[0]) && score(best) - score(0) > margin &&
+          it.c->sentences[0] == it.c->rime_draft)
+        return it.c->sentences[best];
+      return it.c->rime_draft;
+    };
+    auto eval = [&](double margin, int fold, size_t* n, size_t* right, size_t* base_right, size_t* wrong) {
+      for (size_t i = 0; i < items.size(); ++i) {
+        if (fold >= 0 && (int)(Mix(i * 7919 + 3) % 2) != fold)
+          continue;
+        const std::wstring& chosen = pick(items[i], margin);
+        ++*n;
+        *right += chosen == items[i].c->truth ? 1 : 0;
+        if (items[i].c->rime_draft == items[i].c->truth) {
+          ++*base_right;
+          *wrong += chosen != items[i].c->truth ? 1 : 0;
+        }
+      }
+    };
+    double picked[2] = {0, 0};
+    for (int f = 0; f < 2; ++f) {
+      double best = -1;
+      for (double m : kMargins) {
+        size_t n = 0, right = 0, base_right = 0, wrong = 0;
+        eval(m, 1 - f, &n, &right, &base_right, &wrong);
+        const double acc = n ? (double)right / n : 0;
+        if (acc > best) {
+          best = acc;
+          picked[f] = m;
+        }
+      }
+    }
+    size_t n = 0, right = 0, base_right = 0, wrong = 0;
+    for (int f = 0; f < 2; ++f)
+      eval(picked[f], f, &n, &right, &base_right, &wrong);
+    size_t rn = 0, rr = 0, rb = 0, rw = 0;
+    eval(1e9, -1, &rn, &rr, &rb, &rw);
+    std::printf("    權重 %.2f：Top-1 %.4f（只用 Rime %.4f）/ wrong-change %.4f / margin %g、%g（%zu 題）\n", w,
+                n ? (double)right / n : 0, rn ? (double)rr / rn : 0, base_right ? (double)wrong / base_right : 0,
+                picked[0], picked[1], n);
+  }
+}
+
 // 全顯示時的分組結果：只用初稿、全顯示、wrong-change
 void ReportGroups(const std::vector<Outcome>& outcomes) {
   struct Sum {
@@ -739,6 +987,11 @@ int main(int argc, char** argv) {
   bool topk_rerank = false;
   bool batch = false;  // --topk-rerank 用 ScoreBatch  // P3 評估：LM 重排 Rime
                        // 的 Top-K 整句
+  size_t cache_check = 0;           // --cache-check N：檢查前文 KV 常駐的分數是否一致
+  std::string personal_dir;          // --personal <personal 資料夾>：P4 不洩漏的個人詞庫評估（配 --log）
+  std::vector<double> personal_grid;  // --personal-grid 0,0.5,1：個人詞庫的權重
+  std::vector<size_t> context_grid;  // --context-grid 0,10,30：前文長度網格（--topk-rerank --batch）
+  std::vector<double> alpha_grid;    // --alpha-grid 0,0.5,1：長度正規化網格
   std::string dump_topk;  // 開放測試集的 Rime Top-K 寫到檔案（給 teacher
                           // 試跑；不含選字紀錄）
   for (int i = 4; i < argc; ++i) {
@@ -770,6 +1023,23 @@ int main(int argc, char** argv) {
       topk_rerank = true;
     else if (a == "--batch")
       batch = true;
+    else if (a == "--personal")
+      personal_dir = next();
+    else if (a == "--personal-grid") {
+      std::stringstream list(next());
+      for (std::string v; std::getline(list, v, ',');)
+        personal_grid.push_back(std::atof(v.c_str()));
+    } else if (a == "--cache-check")
+      cache_check = (size_t)std::atoll(next().c_str());
+    else if (a == "--context-grid" || a == "--alpha-grid") {
+      std::stringstream list(next());
+      for (std::string v; std::getline(list, v, ',');) {
+        if (a == "--context-grid")
+          context_grid.push_back((size_t)std::atoll(v.c_str()));
+        else
+          alpha_grid.push_back(std::atof(v.c_str()));
+      }
+    }
     else if (a == "--dump-topk")
       dump_topk = next();
     else if (a == "--latency")
@@ -855,6 +1125,11 @@ int main(int argc, char** argv) {
       for (const auto& k : keys)
         input += k;
       Convert(api, session, input, keys.size(), &c);
+      if (!c.logged_sentences.empty()) {
+        c.sentences = c.logged_sentences;
+        c.rime_draft = c.logged_sentences[0];
+        c.source = "log-topk";  // 另外分組：這是真的 Rime（有選字記憶）的結果
+      }
       if (c.draft.empty())
         c.draft = c.rime_draft;
     }
@@ -937,6 +1212,28 @@ int main(int argc, char** argv) {
     return 1;
   }
   CachedScorer scorer(&provider);
+  if (!personal_dir.empty()) {
+    if (personal_grid.empty())
+      personal_grid = {0, 0.25, 0.5, 1, 2, 4};
+    ReportPersonalGrid(cases, &provider, personal_dir, personal_grid);
+    api->finalize();
+    return 0;
+  }
+  if (cache_check) {
+    CheckScoreCache(cases, &provider, cache_check);
+    api->finalize();
+    return 0;
+  }
+  if (topk_rerank && (!context_grid.empty() || !alpha_grid.empty())) {
+    if (context_grid.empty())
+      context_grid.push_back(30);
+    if (alpha_grid.empty())
+      alpha_grid.push_back(0);
+    ReportRime(cases);
+    ReportTopKGrid(cases, &provider, context_grid, alpha_grid);
+    api->finalize();
+    return 0;
+  }
   if (topk_rerank) {
     ReportRime(cases);
     ReportTopK(cases, batch ? static_cast<LLMProvider*>(&provider) : &scorer,

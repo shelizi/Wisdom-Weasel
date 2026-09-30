@@ -7,6 +7,19 @@ const kSentenceCounts = [
   { value: '5', label: '5 句' },
   { value: '10', label: '10 句' },
 ];
+// 介入程度：整句重排的門檻與信心校準的門檻一起設（原方案 §12）。數值依 TuneChoice 與使用者的校準樣本
+export const kInterventions = [
+  { value: 'conservative', label: '保守（很有把握才推薦）', margin: 12, min_confidence: 0.7 },
+  { value: 'balanced', label: '平衡', margin: 4, min_confidence: 0.5 },
+  { value: 'aggressive', label: '積極（常常推薦）', margin: 1, min_confidence: 0.3 },
+];
+
+function interventionOf(c) {
+  const m = parseFloat(c.rerank_margin), p = parseFloat(c.min_confidence);
+  const found = kInterventions.find((k) => k.margin === m && k.min_confidence === p);
+  return found ? found.value : 'custom';
+}
+
 const kRerankModes = [
   { value: 'off', label: '關閉' },
   { value: 'shadow', label: '只統計（不顯示，先驗證效果）' },
@@ -155,10 +168,31 @@ export default {
           below: [
             h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' && !c.rescore && !c.show_probability ? 'muted' : '' }, '評分模型（推薦與整句機率也用）'),
               profileInfo(ctx, 'scorer', { disabled: c.rerank === 'off' && !c.rescore && !c.show_probability })),
+            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '介入程度'),
+              select([...kInterventions, { value: 'custom', label: '自訂（下面的門檻）' }], interventionOf(c), (v) => {
+                const k = kInterventions.find((x) => x.value === v);
+                if (!k) return;
+                c.rerank_margin = String(k.margin);
+                c.min_confidence = String(k.min_confidence);
+                ctx.markDirty('llm');
+                ctx.rerender();
+              }, { width: '240px', disabled: c.rerank === 'off' })),
             h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '門檻'),
               input(c.rerank_margin, (v) => { c.rerank_margin = v; ctx.markDirty('llm'); },
                 { width: '80px', disabled: c.rerank === 'off' }),
-              h('span', { class: 'muted' }, '（整句 log 機率，預設 2；越大越保守）')),
+              h('span', { class: 'muted' }, '（整句 log 機率；越大越保守。信心門檻在下面的「信心校準」）')),
+            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '前文'),
+              input(c.rerank_context, (v) => { c.rerank_context = v; ctx.markDirty('llm'); },
+                { width: '60px', disabled: c.rerank === 'off' }),
+              h('span', { class: 'muted' }, '字（給模型看的前文長度，0～200）'),
+              h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '長度正規化'),
+              input(c.rerank_alpha, (v) => { c.rerank_alpha = v; ctx.markDirty('llm'); },
+                { width: '60px', disabled: c.rerank === 'off' }),
+              h('span', { class: 'muted' }, '（0～1；0 = 不正規化）')),
+            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '個人詞庫加分'),
+              input(c.rerank_personal, (v) => { c.rerank_personal = v; ctx.markDirty('llm'); },
+                { width: '60px', disabled: c.rerank === 'off' }),
+              h('span', { class: 'muted' }, '（0 = 不用；句子裡有你常打的詞就加分，每個詞加 權重 × log(1 + 詞分數)）')),
           ],
         }),
         card({
