@@ -264,6 +264,9 @@ function loadForm(llm, defaults) {
       sentences: String([0, 3, 5, 10].includes(int(get(llm, 'choice/sentence_candidates'), 0))
         ? int(get(llm, 'choice/sentence_candidates'), 0) : 0),
       min_confidence: str(get(llm, 'choice/min_confidence')) || '0.5',
+      rerank_context: String(int(get(llm, 'choice/rerank_context'), 30)),
+      rerank_alpha: str(get(llm, 'choice/rerank_alpha')) || '0',
+      rerank_personal: str(get(llm, 'choice/rerank_personal')) || '0',
       show_probability: bool(get(llm, 'choice/show_probability'), false),
     },
     typo: {
@@ -312,6 +315,11 @@ export function buildLlm() {
   const rerankMargin = parseFloat(trim(form.choice.rerank_margin));
   set(llm, 'choice/rerank_margin', Number.isFinite(rerankMargin) && rerankMargin >= 0 ? rerankMargin : 2);
   set(llm, 'choice/sentence_candidates', Number(form.choice.sentences) || 0);
+  set(llm, 'choice/rerank_context', Math.min(200, Math.max(0, int(form.choice.rerank_context, 30))));
+  const alpha = parseFloat(trim(form.choice.rerank_alpha));
+  set(llm, 'choice/rerank_alpha', Number.isFinite(alpha) ? Math.min(1, Math.max(0, alpha)) : 0);
+  const personalWeight = parseFloat(trim(form.choice.rerank_personal));
+  set(llm, 'choice/rerank_personal', Number.isFinite(personalWeight) ? Math.min(10, Math.max(0, personalWeight)) : 0);
   set(llm, 'choice/show_probability', form.choice.show_probability);
   set(llm, 'simplified/enabled', form.simplified.enabled);
   set(llm, 'simplified/config', form.simplified.config);
