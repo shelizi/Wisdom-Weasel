@@ -19,6 +19,7 @@ cl /nologo /std:c++17 /EHsc /W3 /utf-8 /MT /O2 /DNDEBUG /I"%ROOT%\include" ^
   TuneChoice.cpp ^
   "%C%\ime\rescore.cpp" "%C%\ime\calibration.cpp" "%C%\ime\candidate_reranker.cpp" "%C%\ime\text_rules.cpp" "%C%\ime\rime_helpers.cpp" ^
   "%C%\llm\RemoteLLMProvider.cpp" "%C%\llm\LLMProvider.cpp" "%C%\llm_ipc\client.cpp" ^
+  "%C%\personal\PersonalLexicon.cpp" ^
   "%C%\crypto\personal_crypto.cpp" "%C%\platform\win\key_store_win.cpp" "%C%\platform\win\process_win.cpp" ^
   "%C%\net\win\http_win.cpp" ^
   /Tc "%C%\third_party\monocypher\monocypher.c" ^

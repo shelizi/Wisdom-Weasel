@@ -39,8 +39,11 @@ class PersonalLexicon {
   static std::vector<std::pair<size_t, size_t>> UnitSpans(const std::wstring& text);
   // 詞目前的分數（不在詞庫裡為 0）
   double WordScore(const std::wstring& word) const;
-  // 整句重排的個人化特徵：從左到右找詞庫裡最長的詞（2～8 字），加總 log(1 + 分數)。沒有常打的詞為 0
-  double SentenceScore(const std::wstring& text) const;
+  // 整句重排的個人化特徵：從左到右找詞庫裡最長的詞（2～8 字），加總 log(1 + 分數)。沒有常打的詞為 0。
+  // at：衰減算到這個時間（Unix 秒；0 = 現在）
+  double SentenceScore(const std::wstring& text, int64_t at = 0) const;
+  // 離線評估用（TuneChoice）：不存檔的詞庫，依原始紀錄的時間重播一筆
+  void SetPersist(bool persist) { persist_ = persist; }
 
   // 目前視窗最後送出的詞之後，最常接的詞
   std::vector<std::wstring> NextAfter(const std::wstring& window, size_t max_count) const;
@@ -76,6 +79,7 @@ class PersonalLexicon {
   bool ArchiveActiveLog(std::filesystem::path* archived = nullptr);
   // 用原始紀錄從頭重建統計（依紀錄的真實時間計算衰減）。重建期間新送出的文字會在重建後補上
   void Rebuild(std::vector<RawRecord> records);
+  void Replay(const RawRecord& record);
 
   // 精煉結果：刪除的詞之後不再學習；合併的寫法之後都算到正確寫法
   void ApplyRefinement(const std::vector<std::wstring>& removals,

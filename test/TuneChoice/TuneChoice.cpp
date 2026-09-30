@@ -30,6 +30,7 @@
 #include "../../core/ime/rime_helpers.h"
 #include "../../core/ime/text_rules.h"
 #include "../../core/llm/RemoteLLMProvider.h"
+#include "../../core/personal/PersonalLexicon.h"
 
 #include <PersonalCrypto.h>
 
@@ -55,6 +56,7 @@ namespace {
 struct Case {
   std::wstring context, zhuyin, draft, truth;
   bool from_log = false;
+  int64_t time = 0;  // 選字紀錄的送出時間（Unix 秒）
   // 推薦用：每個音節的字與同音字
   Strings units;
   std::vector<Strings> homophones;
@@ -130,6 +132,7 @@ bool LoadLog(const fs::path& file, std::vector<Case>* cases, size_t* skipped) {
     c.zhuyin = Trim(f[4]);
     c.draft = f[5];
     c.truth = f[6];
+    c.time = std::wcstoll(f[0].c_str(), nullptr, 10);
     if (f.size() >= 8 && !f[7].empty())
       c.logged_sentences = Split(f[7], L'\x1E');
     c.from_log = true;
@@ -828,6 +831,110 @@ void CheckScoreCache(const std::vector<Case>& cases, LLMProvider* scorer, size_t
               Percentile(fresh_ms, 0.5), Percentile(cached_ms, 0.5));
 }
 
+// P4 個人詞庫進排序，不洩漏答案：選字紀錄依時間排序，每一題只用「比它早」的原始輸入紀錄重建詞庫
+// （個人詞庫是從送出的文字學的，直接用現在的詞庫會學到答案）。排序分數 = 模型分數 + w × 詞庫分數，
+// 各個 w 用同一批模型分數重算，margin 用 2-fold 選
+void ReportPersonalGrid(const std::vector<Case>& cases, LLMProvider* scorer, const fs::path& personal_dir,
+                        const std::vector<double>& weights) {
+  std::vector<PersonalLexicon::RawRecord> records;
+  std::vector<fs::path> logs;
+  {
+    PersonalLexicon probe(personal_dir);
+    logs = probe.ArchivedLogs();
+    logs.push_back(probe.ActiveLogPath());
+  }
+  for (const auto& log : logs)
+    for (auto& r : PersonalLexicon::ReadRawLog(log))
+      records.push_back(std::move(r));
+  std::stable_sort(records.begin(), records.end(),
+                   [](const auto& a, const auto& b) { return a.time < b.time; });
+  std::vector<const Case*> order;
+  for (const auto& c : cases)
+    if (c.from_log && c.time > 0 && c.sentences.size() >= 2 && !c.rime_draft.empty())
+      order.push_back(&c);
+  std::stable_sort(order.begin(), order.end(), [](const Case* a, const Case* b) { return a->time < b->time; });
+  std::printf("\n  個人詞庫進排序（不洩漏：只用比該題早的原始紀錄；原始紀錄 %zu 筆、選字紀錄 %zu 題）\n",
+              records.size(), order.size());
+  if (records.empty() || order.empty())
+    return;
+  const fs::path scratch_dir = fs::temp_directory_path() / "tunechoice-personal";
+  PersonalLexicon lexicon(scratch_dir);
+  lexicon.SetPersist(false);
+  struct Item {
+    const Case* c;
+    std::vector<double> lm, personal;
+  };
+  std::vector<Item> items;
+  size_t next = 0, with_words = 0;
+  for (const Case* c : order) {
+    // 同一秒（或之後）送出的就是這一題自己：不能學
+    while (next < records.size() && records[next].time < c->time - 1)
+      lexicon.Replay(records[next++]);
+    Item it{c, {}, {}};
+    const std::vector<std::wstring> texts(c->sentences.begin(),
+                                          c->sentences.begin() + (std::min<size_t>)(c->sentences.size(), 10));
+    scorer->ScoreBatch(Tail(c->context, 30), texts, &it.lm);
+    if (it.lm.size() != texts.size())
+      continue;
+    bool any = false;
+    for (const auto& t : texts) {
+      it.personal.push_back(lexicon.SentenceScore(t, c->time));
+      any = any || it.personal.back() > 0;
+    }
+    with_words += any ? 1 : 0;
+    items.push_back(std::move(it));
+  }
+  std::printf("    有常打的詞出現在候選裡：%zu／%zu 題\n", with_words, items.size());
+  const double kMargins[] = {0, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 1e9};
+  for (double w : weights) {
+    auto pick = [&](const Item& it, double margin) -> const std::wstring& {
+      auto score = [&](size_t i) { return it.lm[i] + w * it.personal[i]; };
+      size_t best = 0;
+      for (size_t i = 1; i < it.lm.size(); ++i)
+        if (std::isfinite(it.lm[i]) && (!std::isfinite(it.lm[best]) || score(i) > score(best)))
+          best = i;
+      if (best && std::isfinite(it.lm[0]) && score(best) - score(0) > margin &&
+          it.c->sentences[0] == it.c->rime_draft)
+        return it.c->sentences[best];
+      return it.c->rime_draft;
+    };
+    auto eval = [&](double margin, int fold, size_t* n, size_t* right, size_t* base_right, size_t* wrong) {
+      for (size_t i = 0; i < items.size(); ++i) {
+        if (fold >= 0 && (int)(Mix(i * 7919 + 3) % 2) != fold)
+          continue;
+        const std::wstring& chosen = pick(items[i], margin);
+        ++*n;
+        *right += chosen == items[i].c->truth ? 1 : 0;
+        if (items[i].c->rime_draft == items[i].c->truth) {
+          ++*base_right;
+          *wrong += chosen != items[i].c->truth ? 1 : 0;
+        }
+      }
+    };
+    double picked[2] = {0, 0};
+    for (int f = 0; f < 2; ++f) {
+      double best = -1;
+      for (double m : kMargins) {
+        size_t n = 0, right = 0, base_right = 0, wrong = 0;
+        eval(m, 1 - f, &n, &right, &base_right, &wrong);
+        const double acc = n ? (double)right / n : 0;
+        if (acc > best) {
+          best = acc;
+          picked[f] = m;
+        }
+      }
+    }
+    size_t n = 0, right = 0, base_right = 0, wrong = 0;
+    for (int f = 0; f < 2; ++f)
+      eval(picked[f], f, &n, &right, &base_right, &wrong);
+    size_t rn = 0, rr = 0, rb = 0, rw = 0;
+    eval(1e9, -1, &rn, &rr, &rb, &rw);
+    std::printf("    權重 %.2f：Top-1 %.4f（只用 Rime %.4f）/ wrong-change %.4f / margin %g、%g（%zu 題）\n", w,
+                n ? (double)right / n : 0, rn ? (double)rr / rn : 0, base_right ? (double)wrong / base_right : 0,
+                picked[0], picked[1], n);
+  }
+}
+
 // 全顯示時的分組結果：只用初稿、全顯示、wrong-change
 void ReportGroups(const std::vector<Outcome>& outcomes) {
   struct Sum {
@@ -881,6 +988,8 @@ int main(int argc, char** argv) {
   bool batch = false;  // --topk-rerank 用 ScoreBatch  // P3 評估：LM 重排 Rime
                        // 的 Top-K 整句
   size_t cache_check = 0;           // --cache-check N：檢查前文 KV 常駐的分數是否一致
+  std::string personal_dir;          // --personal <personal 資料夾>：P4 不洩漏的個人詞庫評估（配 --log）
+  std::vector<double> personal_grid;  // --personal-grid 0,0.5,1：個人詞庫的權重
   std::vector<size_t> context_grid;  // --context-grid 0,10,30：前文長度網格（--topk-rerank --batch）
   std::vector<double> alpha_grid;    // --alpha-grid 0,0.5,1：長度正規化網格
   std::string dump_topk;  // 開放測試集的 Rime Top-K 寫到檔案（給 teacher
@@ -914,7 +1023,13 @@ int main(int argc, char** argv) {
       topk_rerank = true;
     else if (a == "--batch")
       batch = true;
-    else if (a == "--cache-check")
+    else if (a == "--personal")
+      personal_dir = next();
+    else if (a == "--personal-grid") {
+      std::stringstream list(next());
+      for (std::string v; std::getline(list, v, ',');)
+        personal_grid.push_back(std::atof(v.c_str()));
+    } else if (a == "--cache-check")
       cache_check = (size_t)std::atoll(next().c_str());
     else if (a == "--context-grid" || a == "--alpha-grid") {
       std::stringstream list(next());
@@ -1097,6 +1212,13 @@ int main(int argc, char** argv) {
     return 1;
   }
   CachedScorer scorer(&provider);
+  if (!personal_dir.empty()) {
+    if (personal_grid.empty())
+      personal_grid = {0, 0.25, 0.5, 1, 2, 4};
+    ReportPersonalGrid(cases, &provider, personal_dir, personal_grid);
+    api->finalize();
+    return 0;
+  }
   if (cache_check) {
     CheckScoreCache(cases, &provider, cache_check);
     api->finalize();
