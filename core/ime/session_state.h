@@ -38,6 +38,8 @@ struct SessionState {
   // 這段組字最後一次整句重排評過的 Rime 整句與分數（選字紀錄用；組字結束清掉）
   std::vector<std::wstring> shown_sentences;
   std::vector<double> shown_scores;
+  // 顯示中的整句重排推薦的特徵（校準樣本附記，給之後的多特徵校準）
+  std::string rerank_features;
   bool shadow_would_change = false;  // 過了門檻，顯示模式會推薦
   std::wstring shadow_first;         // Rime 第一句
   std::wstring shadow_best;          // 分數最高的另一句（沒有是空字串）

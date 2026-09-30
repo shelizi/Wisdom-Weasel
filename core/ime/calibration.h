@@ -73,7 +73,9 @@ class CalibrationStore {
   explicit CalibrationStore(std::filesystem::path dir) : dir_(std::move(dir)) {}
 
   // 記一筆並附加到檔案
-  void Record(SuggestionKind kind, double gain, bool accepted);
+  // features：之後做多特徵校準（原方案 §25.8、P10）用的特徵，接在行尾（例如「rank=3 n=10 chars=6 gap=1.20」）。
+  // 目前的校準只讀前三欄
+  void Record(SuggestionKind kind, double gain, bool accepted, const std::string& features = std::string());
   // 校準過的採用機率；樣本不夠時是 NaN
   double Probability(SuggestionKind kind, double gain);
   // 設定程式顯示用：「推薦：N 筆、採用 x%、ECE y」；沒有樣本回傳空字串

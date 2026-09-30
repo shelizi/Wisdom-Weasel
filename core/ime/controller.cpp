@@ -1415,6 +1415,23 @@ std::wstring Controller::ComposingSentence(RimeSessionId session_id) {
 
 namespace {
 
+// 整句重排推薦的特徵：在 Rime 裡的名次、評了幾句、字數、最好與第二好的分數差
+std::string RerankFeatures(const std::vector<std::wstring>& texts, const std::vector<double>& scores,
+                           const std::wstring& chosen) {
+  const auto it = std::find(texts.begin(), texts.end(), chosen);
+  if (it == texts.end())
+    return std::string();
+  std::vector<double> sorted;
+  for (double s : scores)
+    if (std::isfinite(s))
+      sorted.push_back(s);
+  std::sort(sorted.rbegin(), sorted.rend());
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "rank=%d n=%d chars=%d gap=%.2f", (int)(it - texts.begin()) + 1, (int)texts.size(),
+                (int)zhuyin_preview::SplitChars(chosen).size(), sorted.size() >= 2 ? sorted[0] - sorted[1] : 0.0);
+  return buf;
+}
+
 // 有兩個以上的漢字才值得請模型改寫（單字、標點、英文直接用 OpenCC）
 bool WorthLocalizing(const std::wstring& text) {
   int han = 0;
@@ -1987,7 +2004,8 @@ void Controller::CountShadow(SessionState& ss, const std::wstring& text) {
   }
   // 校準：分數最高的另一句是不是使用者要的（打開顯示時，校準已經有樣本）
   if (!ss.shadow_best.empty() && std::isfinite(ss.shadow_gain))
-    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, text == ss.shadow_best);
+    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, text == ss.shadow_best,
+                         RerankFeatures(ss.shown_sentences, ss.shown_scores, ss.shadow_best));
 }
 
 void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionSet& set) {
@@ -2007,8 +2025,10 @@ void Controller::OnPredictionUpdate(uint64_t id, uint64_t seq, const PredictionS
   if (ss && prediction_mode_) {
     ss->recommend_gain = ss->correction_gain = ss->rerank_gain = NoConfidence();
     for (size_t i = 0; i < set.candidates.size(); ++i) {
-      if (set.Kind(i) == CandidateKind::kRerank)
+      if (set.Kind(i) == CandidateKind::kRerank) {
         ss->rerank_gain = set.Gain(i);
+        ss->rerank_features = RerankFeatures(ss->shown_sentences, ss->shown_scores, set.candidates[i]);
+      }
       else if (set.IsRecommend(i))
         ss->recommend_gain = set.Gain(i);
       else if (set.IsCorrection(i))
@@ -2024,12 +2044,14 @@ void Controller::RecordSuggestions(SessionState& ss, CandidateKind taken) {
   if (!std::isnan(ss.correction_gain))
     calibration_->Record(SuggestionKind::kCorrection, ss.correction_gain, taken == CandidateKind::kCorrection);
   if (!std::isnan(ss.rerank_gain))
-    calibration_->Record(SuggestionKind::kRerank, ss.rerank_gain, taken == CandidateKind::kRerank);
+    calibration_->Record(SuggestionKind::kRerank, ss.rerank_gain, taken == CandidateKind::kRerank,
+                         ss.rerank_features);
   ForgetSuggestions(ss);
 }
 
 void Controller::ForgetSuggestions(SessionState& ss) {
   ss.recommend_gain = ss.correction_gain = ss.rerank_gain = NoConfidence();
+  ss.rerank_features.clear();
 }
 
 void Controller::ExitPredictionMode(uint64_t id) {
