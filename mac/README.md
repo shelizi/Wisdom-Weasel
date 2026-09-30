@@ -127,6 +127,16 @@ keycode 與 modifiers 就是原本傳給 `process_key` 的值（Rime 的 keysym 
 
 **5. 其他**：失去焦點時 `focusOut(_:)`；應用程式要求送出／清除組字時改呼叫 `commitComposition(_:)`、`clearComposition(_:)`。
 
+**5a. 還沒接上的功能**（接上後，把 `core/settings/backend.cpp` 的 `PlatformJson()` 裡 mac 對應的項目改成 `true`，
+設定視窗才會顯示；在那之前設定視窗會把它們藏起來）
+
+- 整句機率（`sentence_probability`）：畫 Rime 候選時，每個候選呼叫 `commentForCandidate(_:)`，不是 nil 就接在該候選的註解後面。
+  機率在打字停頓後才算好，算好時會呼叫 addSession 的 refresh，這時要重畫 Rime 候選（`hasSentenceProbabilities()` 為 true）。
+- 繁簡切換的提示與選單（`simplified_menu`）：設定 `showTip`（例如在候選窗或游標旁顯示「简体输出／繁體輸出」一下）；
+  輸入法選單加一個「簡體輸出」，用 `simplifiedOutput` 讀寫並打勾。快速鍵已經在 `processKey` 裡處理，不必另外接。
+- 開發終端（`dev_console`）與送出時等在地化（`commit_wait`）：鼠鬚管不支援。所有輸入都在主執行緒，
+  送出時等模型會讓每個應用程式都打不了字，所以橋接層設 `wait_on_commit = false`，只用停頓時已經改好的句子。
+
 **6. 打包**（`squirrel/` 的 Makefile 與 Xcode 建置步驟會做）
 
 - `web/settings` 複製到 `Squirrel.app/Contents/Resources/web/settings`
@@ -141,3 +151,4 @@ keycode 與 modifiers 就是原本傳給 `process_key` 的值（Rime 的 keysym 
 - **輸入方案安裝**：鼠鬚管沒有附東風破，設定頁的「取得更多輸入方案」會提示用終端機安裝。
 - **本機 LLM**：llama.cpp 的 macOS 發行檔需要 macOS 13.3；13.0～13.2 上推理程式無法啟動（遠端 LLM 不受影響）。
 - **記憶壓縮**（`MemoryCompressor`）在 Windows 由服務設定；鼠鬚管端還沒接上，前文只保留最近的內容。
+- **簡體輸出**：要 OpenCC（`brew install opencc`，CMake 會找）；字典用鼠鬚管附的 `SharedSupport/opencc`。

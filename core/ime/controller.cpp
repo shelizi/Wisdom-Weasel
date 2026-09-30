@@ -1486,6 +1486,11 @@ bool Controller::WaitLocalized(const std::wstring& text, std::wstring* result) {
     return false;
   std::unique_lock<std::mutex> lock(localize_mutex_);
   auto found = [&] { return localized_.find(text); };
+  if (found() == localized_.end() && !options_.wait_on_commit) {
+    lock.unlock();
+    RequestLocalize(text, true);  // 同一句下次送出時就有
+    return false;
+  }
   if (found() == localized_.end()) {
     lock.unlock();
     RequestLocalize(text, true);

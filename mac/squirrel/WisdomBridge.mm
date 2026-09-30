@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -72,6 +73,15 @@ class MacFrontend : public ime::Frontend {
     if (redeploy)
       dispatch_async(dispatch_get_main_queue(), redeploy);
   }
+  void ShowTip(uint64_t id, const std::wstring& text) override {
+    void (^show)(NSString*) = bridge.showTip;
+    if (!show)
+      return;
+    NSString* tip = NS(text);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      show(tip);
+    });
+  }
   bool ReleaseSessions() override {
     // 呼叫端（精煉執行緒）持有鎖：不能等主執行緒，主執行緒可能正在等這把鎖
     BOOL (^release)(void) = bridge.releaseSessions;
@@ -115,6 +125,7 @@ class MacFrontend : public ime::Frontend {
   options.user_dir = U8(userDir);
   options.shared_dir = U8(sharedDir);
   options.config_id = "squirrel";
+  options.wait_on_commit = false;  // 所有輸入都在主執行緒：送出時不能等在地化
   NSString* version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
   options.version = U8(version ?: @"unknown");
   _controller = std::make_unique<ime::Controller>(rime_get_api(), _frontend.get(), options);
@@ -269,6 +280,33 @@ class MacFrontend : public ime::Frontend {
     [list addObject:c];
   }
   return list;
+}
+
+- (nullable NSString*)commentForCandidate:(NSString*)text {
+  if (!_controller)
+    return nil;
+  std::lock_guard<std::mutex> lock(_frontend->mutex);
+  double probability = 0;
+  if (!_controller->SentenceProbability(utf8::ToWide(U8(text)), &probability))
+    return nil;
+  const long percent = lround(probability * 100);
+  return percent < 1 ? @"<1%" : [NSString stringWithFormat:@"%ld%%", percent];
+}
+
+- (BOOL)hasSentenceProbabilities {
+  if (!_controller)
+    return NO;
+  std::lock_guard<std::mutex> lock(_frontend->mutex);
+  return _controller->HasSentenceProbabilities() ? YES : NO;
+}
+
+- (BOOL)simplifiedOutput {
+  return _controller && _controller->SimplifiedOutput() ? YES : NO;
+}
+
+- (void)setSimplifiedOutput:(BOOL)on {
+  if (_controller)
+    _controller->SetSimplifiedOutput(on);
 }
 
 - (BOOL)selectCandidate:(NSUInteger)index session:(RimeSessionId)session {

@@ -41,6 +41,8 @@ typedef NS_OPTIONS(NSUInteger, WisdomKeyResult) {
 // 不可呼叫橋接層、也不可等主執行緒。沒設定時直接呼叫 rime_api->cleanup_all_sessions()。
 // 之後鼠鬚管發現 session 不在（find_session 為 false）要重建並再 addSession
 @property(nonatomic, copy, nullable) BOOL (^releaseSessions)(void);
+// 短暫顯示一段提示（例如快速鍵切換繁簡輸出時的「简体输出／繁體輸出」；在主執行緒呼叫）
+@property(nonatomic, copy, nullable) void (^showTip)(NSString* tip);
 @property(nonatomic, copy, nullable) void (^startMaintenance)(void);
 @property(nonatomic, copy, nullable) void (^endMaintenance)(void);
 
@@ -67,6 +69,13 @@ typedef NS_OPTIONS(NSUInteger, WisdomKeyResult) {
 
 // LLM 候選（沒有時為空）；接在 Rime 候選之後，Tab、Shift+1~5 選取
 - (NSArray<WisdomCandidate*>*)predictionCandidates;
+// 整句機率（外觀設定的「在整句後面顯示機率」）：Rime 候選是評過的整句時回傳「62%」之類的註解，
+// 接在該候選的註解後面顯示；其他候選回傳 nil。分數是停頓後才算好的，算好時會呼叫 addSession 的 refresh
+- (nullable NSString*)commentForCandidate:(NSString*)text;
+// 有整句機率可以顯示（refresh 後用來決定要不要重畫 Rime 候選）
+- (BOOL)hasSentenceProbabilities;
+// 簡體輸出（輸入方案頁的「簡體輸出」）：選單切換用；重新部署後回到設定的預設
+@property(nonatomic) BOOL simplifiedOutput;
 // 候選窗點選第 index 個候選（Rime 候選之後接著 LLM 候選）；處理了 LLM 候選時回傳 YES
 - (BOOL)selectCandidate:(NSUInteger)index session:(RimeSessionId)session;
 - (void)commitComposition:(RimeSessionId)session;

@@ -86,6 +86,10 @@ class Controller {
     std::string version;
     std::string build_time;
     std::string build_subject;
+    // 簡體在地化還沒改好時，送出能不能等一下（llm/simplified/wait_ms）。
+    // 小狼毫可以：放開服務端的鎖，只有那個應用程式在等。鼠鬚管不行：所有輸入都在主執行緒，
+    // 等的時候每個應用程式都打不了字，所以只用停頓時已經改好的句子
+    bool wait_on_commit = true;
   };
 
   Controller(RimeApi* api, Frontend* frontend, Options options);

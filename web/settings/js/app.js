@@ -81,7 +81,7 @@ function themeSelector() {
 function renderNav() {
   nav.replaceChildren(
     h('div', { class: 'nav-title' }, '小狼毫設定'),
-    h('div', { class: 'nav-items' }, pages.map((page) =>
+    h('div', { class: 'nav-items' }, pages.filter((page) => !(page.hidden && page.hidden())).map((page) =>
       h('button', {
         class: 'nav-item' + (page === current ? ' active' : ''),
         onclick: () => show(page),

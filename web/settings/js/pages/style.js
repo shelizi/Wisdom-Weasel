@@ -1,5 +1,6 @@
 import { h, section, card, toggle, listbox } from '../ui.js';
 import { fontEditor } from './fonteditor.js';
+import { can } from '../state.js';
 
 const previews = new Map();
 let systemFonts = null;  // 系統字型清單（第一次顯示時讀取）
@@ -58,7 +59,7 @@ export default {
       section('配色',
         h('div', { class: 'grid two' }, list, h('div', { class: 'card preview-box' }, img))),
       section('字體', fontEditor(ctx, systemFonts)),
-      section('候選窗',
+      !can('sentence_probability') ? null : section('候選窗',
         card({
           title: '在整句後面顯示機率',
           desc: '打字停頓時，本機模型依前文比較 Rime 的前幾個整句，在候選窗的整句後面標示機率（例如「今天天氣很好 62%」，評過的整句加起來是 100%）。'
