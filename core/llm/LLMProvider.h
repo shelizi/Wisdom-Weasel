@@ -405,6 +405,11 @@ class LlamaCppProvider : public LLMProvider {
   std::string ApplyChatTemplate(const std::string& system_utf8, const std::string& user_utf8) const;
   // 丢弃预测用的 system prompt KV 缓存（改跑别的 prompt 前呼叫；下次预测会重新 prefill）
   void DropSystemPromptCache();
+  // 整句評分的前文 KV 常駐（ScoreBatch）：序列 0 留著上次的前文與它最後一個位置的 logits，
+  // 打字時前文不變（或只多了幾個字）就不重算。其他推理會動到 KV，一開始就讓它失效
+  std::vector<int32_t> m_score_prefix;
+  std::vector<float> m_score_last;
+  void DropScoreCache() { m_score_prefix.clear(); }
   // 批量采样：n_parallel 条序列并行，每条只生成一个词（最多 max_new_tokens 个 token）；与单次生成一样复用 system 的 KV cache。
   // think_budget：思考区块另外可用的 token（0 = 不思考，-1 = 不限制，受上下文大小限制）
   std::vector<std::string> GenerateCandidatesBatch(const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens, int think_budget = 0);

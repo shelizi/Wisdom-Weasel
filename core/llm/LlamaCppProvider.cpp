@@ -291,6 +291,7 @@ bool LlamaCppProvider::LoadConfig(const std::string& config_name) {
 }
 
 bool LlamaCppProvider::InitializeModel() {
+  DropScoreCache();  // 會動到 KV：整句評分的前文快取失效
 
   // 如果模型已加载，先清理
   if (m_model_loaded) {
@@ -449,6 +450,7 @@ void LlamaCppProvider::Cleanup() {
 }
 
 bool LlamaCppProvider::PrepareSystemPrompt(const std::string& system_prompt_utf8) {
+  DropScoreCache();  // 會動到 KV：整句評分的前文快取失效
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -539,6 +541,7 @@ bool LlamaCppProvider::PrepareSystemPrompt(const std::string& system_prompt_utf8
 
 std::string LlamaCppProvider::GenerateText(const std::string& prompt, size_t max_tokens,
                                            bool stop_at_newline) {
+  DropScoreCache();  // 會動到 KV：整句評分的前文快取失效
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -755,6 +758,7 @@ std::vector<std::string> LlamaCppProvider::GenerateCandidatesBatch(
     const std::string& system_prompt_utf8, const std::string& user_prompt_utf8, size_t n_parallel, int max_new_tokens,
     int think_budget) {
   std::vector<std::string> candidates;
+  DropScoreCache();  // 會動到 KV：整句評分的前文快取失效
 
   if (!m_model_loaded || !m_model || !m_context || !m_sampler || !m_memory || !m_vocab) {
     if (g_dev_console && g_dev_console->IsEnabled()) {
@@ -1174,6 +1178,7 @@ std::string LlamaCppProvider::ApplyChatTemplate(const std::string& system,
 
 bool LlamaCppProvider::ScoreText(const std::wstring& context, const std::wstring& text,
                                  double* total, std::vector<double>* per_char) {
+  DropScoreCache();  // 會動到 KV：整句評分的前文快取失效
   if (!IsAvailable() || text.empty())
     return false;
   llama_context* ctx = (llama_context*)m_context;
@@ -1321,26 +1326,46 @@ bool LlamaCppProvider::ScoreBatch(const std::wstring& context,
   }
   bool ok = !shared.empty();
   if (ok) {
-    DropSystemPromptCache();
-    llama_memory_seq_rm(mem, -1, -1, -1);
     const int n_vocab = llama_vocab_n_tokens(vocab);
-    // 1) 前文（序列 0），只要最後一個位置的 logits：它預測每個候選的第一個 token
-    llama_batch batch = llama_batch_init((int32_t)prefix.size(), 0, 1);
-    for (size_t j = 0; j < prefix.size(); ++j) {
-      batch.token[j] = prefix[j];
-      batch.pos[j] = (llama_pos)j;
-      batch.n_seq_id[j] = 1;
-      batch.seq_id[j][0] = 0;
-      batch.logits[j] = j + 1 == prefix.size();
+    // 上次留在序列 0 的前文：這次的前文完全相同（打字時前文通常不變）就沿用。
+    // 前文變長時不接著算：分段解碼的分數和一次解碼差到 0.5 左右（同一句在不同時候分數不同），
+    // 省下的又只有舊前文那幾十個 token（TuneChoice --cache-check）
+    const std::vector<int32_t> cached = std::move(m_score_prefix);
+    m_score_prefix.clear();
+    DropSystemPromptCache();
+    size_t keep = 0;
+    if (cached.size() == prefix.size() && m_score_last.size() == (size_t)n_vocab &&
+        std::equal(cached.begin(), cached.end(), prefix.begin()))
+      keep = cached.size();
+    if (keep) {
+      for (llama_seq_id s = 1; s <= (llama_seq_id)kMaxShared; ++s)
+        llama_memory_seq_rm(mem, s, -1, -1);
+    } else {
+      llama_memory_seq_rm(mem, -1, -1, -1);
     }
-    batch.n_tokens = (int32_t)prefix.size();
-    ok = llama_decode(ctx, batch) == 0;
     std::vector<float> last;
-    if (ok) {
-      const float* logits = llama_get_logits_ith(ctx, (int32_t)prefix.size() - 1);
-      last.assign(logits, logits + n_vocab);
+    if (keep == prefix.size()) {
+      last = m_score_last;
+    } else {
+      // 1) 前文（序列 0），只要最後一個位置的 logits：它預測每個候選的第一個 token
+      const size_t n_new = prefix.size() - keep;
+      llama_batch batch = llama_batch_init((int32_t)n_new, 0, 1);
+      for (size_t j = 0; j < n_new; ++j) {
+        batch.token[j] = prefix[keep + j];
+        batch.pos[j] = (llama_pos)(keep + j);
+        batch.n_seq_id[j] = 1;
+        batch.seq_id[j][0] = 0;
+        batch.logits[j] = j + 1 == n_new;
+      }
+      batch.n_tokens = (int32_t)n_new;
+      ok = llama_decode(ctx, batch) == 0;
+      if (ok) {
+        const float* logits = llama_get_logits_ith(ctx, (int32_t)n_new - 1);
+        last.assign(logits, logits + n_vocab);
+      }
+      llama_batch_free(batch);
     }
-    llama_batch_free(batch);
+    llama_batch batch;
     // 2) 前文複製給每個候選（unified KV：共用同一段，不多占空間）；3) 所有候選一次解碼
     if (ok) {
       for (size_t k = 0; k < shared.size(); ++k)
@@ -1373,7 +1398,16 @@ bool LlamaCppProvider::ScoreBatch(const std::wstring& context,
       }
       llama_batch_free(batch);
     }
-    llama_memory_seq_rm(mem, -1, -1, -1);
+    if (ok) {
+      // 只清掉候選的序列，前文留著給下一次（打字時前文通常不變）
+      for (size_t k = 0; k < shared.size(); ++k)
+        llama_memory_seq_rm(mem, (llama_seq_id)(k + 1), -1, -1);
+      m_score_prefix.assign(prefix.begin(), prefix.end());
+      m_score_last = std::move(last);
+    } else {
+      llama_memory_seq_rm(mem, -1, -1, -1);
+      m_score_last.clear();
+    }
   }
   // 共用失敗（例如遞迴架構不能複製序列）或不能共用的：逐一評
   if (!ok)
