@@ -1,5 +1,6 @@
 import { h, section, card, button, lines, toggle, select, input } from '../ui.js';
 import { profileInfo } from './profiles.js';
+import { can } from '../state.js';
 
 const kConversions = [
   { value: 'tw2s', label: '只換字（例如 裡 → 里）' },
@@ -22,20 +23,24 @@ function simplifiedSection(ctx) {
     card({
       title: '送出時轉成簡體',
       desc: '組字與候選照常顯示繁體（智慧預測、推薦與個人詞庫都用繁體），送進應用程式的文字才轉成簡體（OpenCC）。'
-        + '這裡是預設；打字時可以用快速鍵或系統匣選單的「簡體輸出」隨時切換，到下次套用設定或重新部署為止。',
+        + (can('simplified_menu')
+          ? '這裡是預設；打字時可以用快速鍵或系統匣選單的「簡體輸出」隨時切換，到下次套用設定或重新部署為止。'
+          : '這裡是預設；打字時可以用快速鍵隨時切換，到下次套用設定或重新部署為止。'),
       control: toggle(f.enabled, (v) => { f.enabled = v; changed(); }),
     }),
     card({
       title: '轉換方式',
       desc: '連用詞一起換偶爾會換錯（例如專有名詞），需要時再打開。'
-        + '用語言模型在地化時，打字停頓就先在背景改寫目前的句子，送出時直接用；還沒改好就等一下，等不到改用「連用詞一起換」。',
+        + (can('commit_wait')
+          ? '用語言模型在地化時，打字停頓就先在背景改寫目前的句子，送出時直接用；還沒改好就等一下，等不到改用「連用詞一起換」。'
+          : '用語言模型在地化時，打字停頓就先在背景改寫目前的句子，送出時直接用；還沒改好就改用「連用詞一起換」（送出時不等，其他應用程式才不會跟著停住）。'),
       control: select(kConversions, f.config, (v) => { f.config = v; changed(); ctx.rerender(); }, { width: '360px' }),
     }),
     f.config === 'llm' ? card({
       title: '在地化使用的模型',
       desc: '在「語言模型」頁的「各功能使用的模型」選擇。',
       control: profileInfo(ctx, 'localize'),
-      below: h('div', { class: 'row' }, h('span', {}, '送出時最多等'),
+      below: !can('commit_wait') ? null : h('div', { class: 'row' }, h('span', {}, '送出時最多等'),
         input(f.wait_ms, (v) => { f.wait_ms = v; changed(); }, { width: '80px' }),
         h('span', { class: 'muted' }, '毫秒（0～5000，預設 1000）；等的時候只有這個應用程式暫停，其他應用程式照常')),
     }) : null,

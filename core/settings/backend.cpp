@@ -254,6 +254,19 @@ struct Backend::State {
     return llm.is_object() ? llm : json::object();
   }
 
+  // 這個平台的前端做得到哪些事（設定視窗把做不到的選項藏起來）
+  static json PlatformJson() {
+#ifdef __APPLE__
+    // 鼠鬚管：候選窗是鼠鬚管自己畫的，整句機率、切換提示與選單要鼠鬚管那邊接上（見 mac/README.md）；
+    // 所有輸入都在主執行緒，送出時不能等在地化；沒有開發終端
+    return {{"os", "mac"}, {"dev_console", false}, {"sentence_probability", false},
+            {"simplified_menu", false}, {"commit_wait", false}};
+#else
+    return {{"os", "windows"}, {"dev_console", true}, {"sentence_probability", true},
+            {"simplified_menu", true}, {"commit_wait", true}};
+#endif
+  }
+
   // 開發：dev_console/enabled（沒設定時輸入法預設開啟）
   json DevJson() {
     RimeConfig config = {0};
@@ -459,6 +472,7 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
             {"llm", s.LLMJson()},
             {"grammar", s.GrammarJson()},
             {"dev", s.DevJson()},
+            {"platform", s.PlatformJson()},
             {"defaults",
              {{"correct_instruction", s.options.correct_instruction},
               {"api_url", std::string(kDefaultApiUrl)},

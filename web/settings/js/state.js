@@ -14,6 +14,12 @@ export const state = {
   dirty: new Set(),   // schemas / style / llm / grammar / dev
 };
 
+// 這個平台做得到的事（設定後端 init 的 platform）；沒有資料時當作都可以
+export function can(key) {
+  const platform = state.init && state.init.platform;
+  return !platform || platform[key] !== false;
+}
+
 // ---------------------------------------------------------------------------
 // 路徑與型別
 
