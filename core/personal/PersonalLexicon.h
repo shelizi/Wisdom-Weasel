@@ -39,6 +39,8 @@ class PersonalLexicon {
   static std::vector<std::pair<size_t, size_t>> UnitSpans(const std::wstring& text);
   // 詞目前的分數（不在詞庫裡為 0）
   double WordScore(const std::wstring& word) const;
+  // 整句重排的個人化特徵：從左到右找詞庫裡最長的詞（2～8 字），加總 log(1 + 分數)。沒有常打的詞為 0
+  double SentenceScore(const std::wstring& text) const;
 
   // 目前視窗最後送出的詞之後，最常接的詞
   std::vector<std::wstring> NextAfter(const std::wstring& window, size_t max_count) const;

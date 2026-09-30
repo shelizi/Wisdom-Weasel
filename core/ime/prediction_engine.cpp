@@ -204,6 +204,11 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
   std::wstring prefix = req.prefix;
   const std::wstring tail =
       req.history.size() > 30 ? req.history.substr(req.history.size() - 30) : req.history;
+  // 整句重排的前文長度另外設定（llm/choice/rerank_context；0 = 不給前文）
+  const size_t rerank_chars = req.rerank_options.context_chars;
+  const std::wstring rerank_tail = req.history.size() > rerank_chars
+                                       ? req.history.substr(req.history.size() - rerank_chars)
+                                       : req.history;
 
   // 2a) 整句重排：Rime 的整句候選由呼叫端查（要用 Rime），這時還沒拿推理鎖
   if (rerank && state->hooks.rerank_input && current()) {
@@ -220,9 +225,9 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
         if (!current())
           return;
         if (LLMProvider* scorer = models().rescore)
-          result = RerankSentences(scorer, tail, sentences, req.rerank_options);
+          result = RerankSentences(scorer, rerank_tail, sentences, req.rerank_options);
       }
-      if (req.sentence_scores && !result.scores.empty() && state->hooks.on_scores && current())
+      if (!result.scores.empty() && state->hooks.on_scores && current())
         state->hooks.on_scores(req.tag, seq, result);
       if (req.rerank_shadow) {
         if (state->hooks.on_shadow && current())

@@ -35,6 +35,9 @@ struct SessionState {
   double rerank_gain = std::numeric_limits<double>::quiet_NaN();
   // 整句重排的 shadow 模式：最後一次的結果（不顯示），送出時和使用者送出的句子對照
   bool shadow_pending = false;
+  // 這段組字最後一次整句重排評過的 Rime 整句與分數（選字紀錄用；組字結束清掉）
+  std::vector<std::wstring> shown_sentences;
+  std::vector<double> shown_scores;
   bool shadow_would_change = false;  // 過了門檻，顯示模式會推薦
   std::wstring shadow_first;         // Rime 第一句
   std::wstring shadow_best;          // 分數最高的另一句（沒有是空字串）

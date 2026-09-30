@@ -3,9 +3,12 @@
 // 選字紀錄（llm/choice/log 開啟時）：每次送出一筆，加密附加到 personal/choice_log.dat
 // （每筆前面是 4 位元組的長度）。
 // 內容：時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換 \t 送出的文字
+// 整句重排評過分時再加兩欄：\t Rime 當時的前幾個整句（以 U+001E 分隔） \t 它們的模型分數（逗號分隔）。
+// 這是使用者自己的 Rime（有選字記憶）的 Top-K，離線評估重排用（TuneChoice --log）
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace ime {
 
@@ -17,7 +20,11 @@ struct ChoiceRecord {
   std::wstring zhuyin;
   std::wstring default_text;  // 還沒換字前 Rime 的預設轉換
   std::wstring text;          // 送出的文字
+  std::vector<std::wstring> shown;  // 整句重排評過的 Rime 整句（第一句是預設轉換）；沒評過是空的
+  std::vector<double> shown_scores;  // 對應的模型分數（整句 log 機率）
 };
+
+constexpr wchar_t kChoiceListSeparator = L'\x1E';
 
 // 這次是怎麼選出來的
 const char* ChoiceMethod(bool mixed, bool correction, bool llm, bool focus, bool changed);

@@ -41,6 +41,20 @@ std::string FormatChoiceRecord(const ChoiceRecord& r) {
   std::ostringstream record;
   record << r.time << '\t' << app << '\t' << r.method << '\t' << clean(r.context) << '\t'
          << clean(r.zhuyin) << '\t' << clean(r.default_text) << '\t' << clean(r.text);
+  if (!r.shown.empty()) {
+    std::wstring shown;
+    for (const auto& s : r.shown) {
+      std::wstring t = s;
+      for (auto& c : t)
+        if (c == kChoiceListSeparator)
+          c = L' ';
+      shown += (shown.empty() ? L"" : std::wstring(1, kChoiceListSeparator)) + t;
+    }
+    record << '\t' << clean(shown) << '\t';
+    record.precision(4);
+    for (size_t i = 0; i < r.shown_scores.size(); ++i)
+      record << (i ? "," : "") << std::fixed << r.shown_scores[i];
+  }
   return record.str();
 }
 
