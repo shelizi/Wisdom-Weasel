@@ -174,7 +174,7 @@ function saveProfiles(llm, profiles, use) {
     set(llm, base + 'think_tokens', p.think_tokens);
   });
   const valid = (i) => (i >= 0 && i < profiles.length ? i : -1);
-  // 預測：展開到輸入法讀取的欄位
+  // 預測：展開到輸入法讀取的欄位（功能本身關掉時，輸入法不會載入）
   const predict = valid(use.predict);
   set(llm, 'predict_profile', predict >= 0 ? keyOf(predict) : '');
   if (predict >= 0) {
