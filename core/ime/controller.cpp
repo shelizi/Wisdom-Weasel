@@ -79,6 +79,14 @@ bool IsZhuyinSchema(const char* schema_id) {
   return schema_id && std::strncmp(schema_id, "bopomofo", 8) == 0;
 }
 
+// 注音方案才換成臺灣常用字。其他方案維持 Rime 的字。
+std::wstring TaiwanIfZhuyin(RimeApi* api, RimeSessionId session_id, std::wstring text) {
+  char schema[256] = {0};
+  if (api->get_current_schema(session_id, schema, sizeof(schema)) && IsZhuyinSchema(schema))
+    return PreferTaiwanForms(std::move(text));
+  return text;
+}
+
 // 去掉 UTF-16 代理對的前半（刪掉最後一個字時）
 void PopChar(std::wstring& s) {
   if (s.empty())
@@ -1070,11 +1078,31 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   Bool handled = api_->process_key(session_id, keycode, mask);
   for (size_t i = 1; i < backspaces; ++i)
     api_->process_key(session_id, keycode, mask);
+  // 聲調打在韻母前會讓整句造不出來，後面只剩注音。游標在句尾時把聲調移回去，
+  // 讓其餘的字仍按原來的音節選。框選單字時不動。
+  if (handled && !release && ss.focus < 0) {
+    char schema_id[256] = {0};
+    const char* raw = api_->get_input(session_id);
+    if (raw && *raw && api_->get_current_schema(session_id, schema_id, sizeof(schema_id)) &&
+        IsZhuyinSchema(schema_id) && api_->get_caret_pos(session_id) == std::strlen(raw)) {
+      const std::string input(raw);
+      std::string preview;
+      RIME_STRUCT(RimeContext, ctx);
+      if (api_->get_context(session_id, &ctx)) {
+        if (ctx.commit_text_preview)
+          preview = ctx.commit_text_preview;
+        api_->free_context(&ctx);
+      }
+      const std::string repaired = zhuyin_preview::RepairEarlyTone(input);
+      if (repaired != input && zhuyin_preview::UnconvertedTail(preview, input) >= 4)
+        api_->set_input(session_id, repaired.c_str());
+    }
+  }
   if (punct_in_composition) {
     RIME_STRUCT(RimeCommit, commit);
     if (api_->get_commit(session_id, &commit)) {
       if (commit.text)
-        ss.mixed_text += utf8::ToWide(commit.text);
+        ss.mixed_text += TaiwanIfZhuyin(api_, session_id, utf8::ToWide(commit.text));
       api_->free_commit(&commit);
     }
   }
@@ -1135,7 +1163,7 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
   auto commit_all = [&]() {
     std::wstring text = ss.mixed_text;
     if (composing)
-      text += TakeComposition(api_, session_id);
+      text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
     ss.mixed_text.clear();
     ss.mixed_english = false;
     ss.mixed_commit += text;
@@ -1156,7 +1184,7 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
       ss.mixed_english = false;
     } else {
       if (composing) {
-        ss.mixed_text += TakeComposition(api_, session_id);
+        ss.mixed_text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
         if (prediction_mode_ || completion_active_)
           ExitPredictionMode(id);
       }
@@ -1173,7 +1201,7 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
     if (release)
       return true;
     if (composing) {
-      ss.mixed_text += TakeComposition(api_, session_id);
+      ss.mixed_text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
       if (prediction_mode_ || completion_active_)
         ExitPredictionMode(id);
     }
@@ -1410,7 +1438,7 @@ std::wstring Controller::ComposingSentence(RimeSessionId session_id) {
   }
   while (!text.empty() && text.back() < 0x80)
     text.pop_back();
-  return text;
+  return TaiwanIfZhuyin(api_, session_id, std::move(text));
 }
 
 namespace {
@@ -1590,7 +1618,8 @@ void Controller::CommitComposition(uint64_t id) {
     return;
   if (ss->mixed_active()) {
     // 混打內容連同組字一起，在下一次回應時送出
-    ss->mixed_commit += ss->mixed_text + TakeComposition(api_, ss->session_id);
+    ss->mixed_commit += ss->mixed_text +
+                        TaiwanIfZhuyin(api_, ss->session_id, TakeComposition(api_, ss->session_id));
     ss->mixed_text.clear();
     ss->mixed_english = false;
   } else {
@@ -1651,6 +1680,7 @@ std::vector<std::wstring> Controller::TakeCommits(uint64_t id) {
   }
   // 中英混打結束：整段送出
   if (!ss.mixed_commit.empty()) {
+    ss.mixed_commit = TaiwanIfZhuyin(api_, ss.session_id, std::move(ss.mixed_commit));
     commits.push_back(ss.mixed_commit);
     RecordCommit(ss.mixed_commit);
     CountCommit(ss, ss.mixed_commit, true);
@@ -1660,11 +1690,12 @@ std::vector<std::wstring> Controller::TakeCommits(uint64_t id) {
   if (ss.mixed_active() && api_->get_commit(ss.session_id, &commit)) {
     // 混打中 Rime 送出的字（選字、標點）收進混打內容
     if (commit.text)
-      ss.mixed_text += utf8::ToWide(commit.text);
+      ss.mixed_text += TaiwanIfZhuyin(api_, ss.session_id, utf8::ToWide(commit.text));
     api_->free_commit(&commit);
   } else if (api_->get_commit(ss.session_id, &commit)) {
-    const std::wstring text = commit.text ? utf8::ToWide(commit.text) : std::wstring();
+    std::wstring text = commit.text ? utf8::ToWide(commit.text) : std::wstring();
     api_->free_commit(&commit);
+    text = TaiwanIfZhuyin(api_, ss.session_id, std::move(text));
     commits.push_back(text);
     if (!text.empty()) {
       CountCommit(ss, text);
@@ -1730,7 +1761,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
       std::wstring preview = utf8::ToWide(ctx->commit_text_preview);
       while (!preview.empty() && preview.back() < 0x80)
         preview.pop_back();
-      ss.default_text = preview;
+      ss.default_text = TaiwanIfZhuyin(api_, ss.session_id, std::move(preview));
       ss.default_zhuyin = ComposingZhuyin(ss.session_id);
     }
   }
@@ -1763,6 +1794,9 @@ bool Controller::PreviewPreedit(uint64_t id, const RimeContext& ctx, bool ascii_
     pv.sel_start = 0;
     pv.sel_end = (int)pv.text.size();
   }
+  // 與送出同一套規則。一字換一字，上面的選取範圍不用重算。
+  if (IsZhuyinSchema(schema_id))
+    pv.text = PreferTaiwanForms(std::move(pv.text));
   out->text = pv.text;
   out->sel_start = pv.sel_start;
   out->sel_end = pv.sel_end;
@@ -1993,18 +2027,21 @@ void Controller::CountShadow(SessionState& ss, const std::wstring& text) {
   // 只對照同一段組字（字數相同）；之後又打了字或混打的送出不算
   if (zhuyin_preview::SplitChars(text).size() != zhuyin_preview::SplitChars(ss.shadow_first).size())
     return;
+  const auto same = [&](const std::wstring& other) {
+    return TaiwanIfZhuyin(api_, ss.session_id, text) == TaiwanIfZhuyin(api_, ss.session_id, other);
+  };
   ChoiceStats& s = Stats(ss.session_id);
   ++s.shadow_total;
   if (ss.shadow_would_change) {
     ++s.shadow_changed;
-    if (text == ss.shadow_best)
+    if (same(ss.shadow_best))
       ++s.shadow_rerank_right;
-    else if (text == ss.shadow_first)
+    else if (same(ss.shadow_first))
       ++s.shadow_rime_right;
   }
   // 校準：分數最高的另一句是不是使用者要的（打開顯示時，校準已經有樣本）
   if (!ss.shadow_best.empty() && std::isfinite(ss.shadow_gain))
-    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, text == ss.shadow_best,
+    calibration_->Record(SuggestionKind::kRerank, ss.shadow_gain, same(ss.shadow_best),
                          RerankFeatures(ss.shown_sentences, ss.shown_scores, ss.shadow_best));
 }
 
@@ -2095,6 +2132,7 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
         preview.pop_back();
     }
   }
+  preview = TaiwanIfZhuyin(api_, ss->session_id, std::move(preview));
   if (preview.empty()) {
     CancelCompletion();
     return;
@@ -2330,7 +2368,9 @@ void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixe
   record.default_text = ss.default_text;
   record.text = text;
   // 評過分的整句要是這次送出前的輸入（第一句就是預設轉換），不然是打字中途的舊結果
-  if (!ss.shown_sentences.empty() && ss.shown_sentences[0] == ss.default_text) {
+  if (!ss.shown_sentences.empty() &&
+      TaiwanIfZhuyin(api_, ss.session_id, ss.shown_sentences[0]) ==
+          TaiwanIfZhuyin(api_, ss.session_id, ss.default_text)) {
     record.shown = ss.shown_sentences;
     record.shown_scores = ss.shown_scores;
   }

@@ -27,4 +27,8 @@ std::vector<std::wstring> MergeCandidates(std::vector<std::wstring> merged,
                                           const std::vector<std::wstring>& more,
                                           size_t max = 5);
 
+// 注音整句的臺灣常用字。每個替換都是一個字換一個字，所以字數與選取範圍不變；
+// 重複套用結果相同。不包含「週→周」「面→麵」（那兩條會把原本對的句子改掉）。
+std::wstring PreferTaiwanForms(std::wstring text);
+
 }  // namespace ime

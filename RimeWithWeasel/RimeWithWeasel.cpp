@@ -8,6 +8,7 @@
 #include <shellapi.h>
 #include "../core/ime/controller.h"
 #include "../core/ime/prediction_engine.h"
+#include "../core/ime/text_rules.h"
 
 #include <cmath>
 #include <cstring>
@@ -509,7 +510,8 @@ void RimeWithWeaselHandler::_ReadClientInfo(WeaselSessionId ipc_id,
 }
 
 void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
-                                              RimeContext& ctx) {
+                                              RimeContext& ctx,
+                                              bool taiwan_forms) {
   // 先保存LLM预测模式状态，因为后面可能会被修改
   bool llm_mode = m_controller->PredictionMode();
   // 後台預測執行緒會替換候選，這裡取快照再使用
@@ -529,15 +531,17 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
 
   // 处理Rime候选词
   for (int i = 0; i < ctx.menu.num_candidates; ++i) {
-    cinfo.candies[i].str = escape_string(u8tow(ctx.menu.candidates[i].text));
+    // 機率是用 Rime 原句當鍵。畫面上的字可以先換成臺灣常用字，查機率仍用原句。
+    const std::wstring raw = u8tow(ctx.menu.candidates[i].text);
+    const std::wstring shown = taiwan_forms ? ime::PreferTaiwanForms(raw) : raw;
+    cinfo.candies[i].str = escape_string(shown);
     if (ctx.menu.candidates[i].comment) {
       cinfo.comments[i].str =
           escape_string(u8tow(ctx.menu.candidates[i].comment));
     }
     // 整句的機率（外觀設定開啟、本機模型評過這句時）
     double probability = 0;
-    if (m_controller->SentenceProbability(u8tow(ctx.menu.candidates[i].text),
-                                          &probability)) {
+    if (m_controller->SentenceProbability(raw, &probability)) {
       const int percent = (int)std::lround(probability * 100);
       std::wstring& comment = cinfo.comments[i].str;
       comment += (comment.empty() ? L"" : L" ") +
@@ -976,6 +980,10 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
 
   SessionStatus& session_status = get_session_status(ipc_id);
   RimeSessionId session_id = session_status.session_id;
+  char schema_id[256] = {0};
+  const bool taiwan_forms =
+      rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id)) &&
+      std::strncmp(schema_id, "bopomofo", 8) == 0;
 
   // 送出的文字（待送出的 LLM 候選、混打內容、Rime
   // 送出的字）；前文、個人詞庫與統計由控制器記錄
@@ -1062,7 +1070,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
           break;
         case UIStyle::PREVIEW_ALL: {
           CandidateInfo cinfo;
-          _GetCandidateInfo(cinfo, ctx);
+          _GetCandidateInfo(cinfo, ctx, taiwan_forms);
           std::string text = std::string(rime_preedit) + "  [";
           for (auto i = 0; i < ctx.menu.num_candidates; i++) {
             std::string label =
@@ -1079,8 +1087,11 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
                                         : wtou8(session_status.style.mark_text);
             std::string prefix =
                 (i != ctx.menu.highlighted_candidate_index) ? "" : mark_text;
-            text += " " + prefix + label + ctx.menu.candidates[i].text + " " +
-                    comment;
+            const std::string cand = taiwan_forms
+                                          ? wtou8(ime::PreferTaiwanForms(
+                                                u8tow(ctx.menu.candidates[i].text)))
+                                          : ctx.menu.candidates[i].text;
+            text += " " + prefix + label + cand + " " + comment;
           }
           preedit.text = u8tow(text + " ]");
           composition_cursor();
@@ -1096,7 +1107,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
       CandidateInfo cinfo;
       std::wstringstream ss;
       boost::archive::text_woarchive oa(ss);
-      _GetCandidateInfo(cinfo, ctx);
+      _GetCandidateInfo(cinfo, ctx, taiwan_forms);
 
       oa << cinfo;
 
@@ -1109,7 +1120,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     std::wstringstream ss;
     boost::archive::text_woarchive oa(ss);
     RimeContext empty_ctx = {0};
-    _GetCandidateInfo(cinfo, empty_ctx);
+    _GetCandidateInfo(cinfo, empty_ctx, false);
 
     oa << cinfo;
     messages.push_back(std::string("ctx.cand=") + wtou8(ss.str()) + '\n');
@@ -1674,6 +1685,10 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
                                         WeaselSessionId ipc_id,
                                         bool ascii_mode) {
   RimeSessionId session_id = to_session_id(ipc_id);
+  char schema_id[256] = {0};
+  const bool taiwan_forms =
+      rime_api->get_current_schema(session_id, schema_id, sizeof(schema_id)) &&
+      std::strncmp(schema_id, "bopomofo", 8) == 0;
   RIME_STRUCT(RimeContext, ctx);
   if (rime_api->get_context(session_id, &ctx)) {
     ime::Preedit preview;
@@ -1709,7 +1724,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
     CandidateInfo& cinfo(weasel_context.cinfo);
     if (ctx.menu.num_candidates > 0) {
       // 有Rime候选词，调用_GetCandidateInfo会同时添加Rime和LLM候选词
-      _GetCandidateInfo(cinfo, ctx);
+      _GetCandidateInfo(cinfo, ctx, taiwan_forms);
       if (m_dev_console && m_dev_console->IsEnabled()) {
         std::wstringstream ss;
         ss << L"[DEBUG] _GetContext: 有Rime候选词(" << ctx.menu.num_candidates
@@ -1719,7 +1734,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
     } else if (m_controller->ShowingPredictions()) {
       // 如果处于LLM预测模式但没有Rime候选词，只显示LLM候选词
       cinfo.clear();
-      _GetCandidateInfo(cinfo, ctx);  // 这会添加LLM候选词
+      _GetCandidateInfo(cinfo, ctx, taiwan_forms);  // 这会添加LLM候选词
       if (m_dev_console && m_dev_console->IsEnabled()) {
         std::wstringstream ss;
         ss << L"[DEBUG] _GetContext: 无Rime候选词，添加LLM候选词后 "
@@ -1738,7 +1753,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
     CandidateInfo& cinfo(weasel_context.cinfo);
     cinfo.clear();
     RimeContext empty_ctx = {0};
-    _GetCandidateInfo(cinfo, empty_ctx);  // 这会添加LLM候选词
+    _GetCandidateInfo(cinfo, empty_ctx, false);  // 这会添加LLM候选词
     if (m_dev_console && m_dev_console->IsEnabled()) {
       std::wstringstream ss;
       ss << L"[DEBUG] _GetContext: 无Rime上下文，添加LLM候选词后 "

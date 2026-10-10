@@ -123,6 +123,26 @@ static void TestTextRules() {
   CHECK(ime::MergeCandidates({L"a"}, {L"b", L"a", L"c", L"d", L"e", L"f"}) ==
         (Strings{L"a", L"b", L"c", L"d", L"e"}));
   CHECK(ime::MergeCandidates({}, {L"x", L"y"}, 1) == Strings{L"x"});
+
+  // 注音預覽的臺灣常用字：一字換一字，再套一次不變。週、面維持原字。
+  const std::wstring raw =
+      L"\u7232\u88CF\u55AB\u8988\u4F48\u7740\u9EAA\u81FA\u3007"
+      L"\u6211\u9580\u4F60\u9580\u4ED6\u9580\u5979\u9580\u5B83\u9580\u7260\u9580"
+      L"\u597D\u4E86\u5ABD";
+  const std::wstring preferred = ime::PreferTaiwanForms(raw);
+  CHECK(preferred.size() == raw.size());
+  CHECK(preferred ==
+        L"\u70BA\u88E1\u5403\u6838\u5E03\u8457\u9EB5\u53F0\u96F6"
+        L"\u6211\u5011\u4F60\u5011\u4ED6\u5011\u5979\u5011\u5B83\u5011\u7260\u5011"
+        L"\u597D\u4E86\u55CE");
+  CHECK(ime::PreferTaiwanForms(preferred) == preferred);
+  CHECK(ime::PreferTaiwanForms(L"\u5927\u9580") == L"\u5927\u9580");          // 大門
+  CHECK(ime::PreferTaiwanForms(L"\u5ABD\u5ABD") == L"\u5ABD\u5ABD");          // 媽媽
+  CHECK(ime::PreferTaiwanForms(L"\u4ED6\u5ABD\u5ABD") == L"\u4ED6\u5ABD\u5ABD");  // 他媽媽
+  CHECK(ime::PreferTaiwanForms(L"\u597D\u5ABD") == L"\u597D\u5ABD");          // 兩個字不改句尾
+  CHECK(ime::PreferTaiwanForms(L"\u9031\u672B") == L"\u9031\u672B");          // 週末
+  CHECK(ime::PreferTaiwanForms(L"\u4E0B\u9762") == L"\u4E0B\u9762");          // 下面
+  CHECK(ime::PreferTaiwanForms(L"\u7232\u4E86\u3113") == L"\u70BA\u4E86\u3113");  // 句尾注音留著
 }
 
 static void TestZhuyin() {
@@ -140,6 +160,16 @@ static void TestZhuyin() {
   CHECK(CountSyllables(sp, "5j4u.3") == 2);
   CHECK(SplitSyllables(sp, "5j4u.3") ==
         (std::vector<std::string>{"5j4", "u.3"}));
+  // ㄎㄨˋㄚ 後面還有別的音：聲調移回韻母後，前面的鍵不動
+  CHECK(RepairEarlyTone("rup wu0 dj481j4") == "rup wu0 dj841j4");
+  CHECK(RepairEarlyTone("2u032k7dj481j4ap6") == "2u032k7dj841j4ap6");
+  CHECK(RepairEarlyTone("dj48 ") == "dj48 ");          // 褲啊：韻母自己有聲調
+  CHECK(RepairEarlyTone("1840q9 ") == "1840q9 ");      // 爸安：前面的音節已經有韻母
+  CHECK(RepairEarlyTone("d4j81j4") == "d4j81j4");      // 聲調接在第一個符號後，方案已認得
+  CHECK(RepairEarlyTone("4dj81j4") == "4dj81j4");      // 聲調打在音節最前
+  CHECK(RepairEarlyTone("dj841j4") == "dj841j4");
+  CHECK(UnconvertedTail("\xe4\xbb\x8a\xe5\xa4\xa9vu84", "rup vu84") == 4);
+  CHECK(UnconvertedTail("\xe4\xbb\x8a\xe5\xa4\xa9", "rup wu0") == 0);
 }
 
 static void TestRescore() {

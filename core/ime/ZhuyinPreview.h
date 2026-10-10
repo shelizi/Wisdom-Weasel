@@ -39,6 +39,64 @@ inline bool IsBoundary(const ZhuyinSpeller& sp, char c) {
   return c == sp.delimiter || sp.finals.find(c) != std::string::npos;
 }
 
+// 大千鍵盤的聲調鍵，與韻母鍵（不含介音）
+inline bool IsToneKey(char c) {
+  return c == ' ' || c == '6' || c == '3' || c == '4' || c == '7';
+}
+
+inline bool IsFinalKey(char c) {
+  return std::strchr("8ik,9ol.0p;/-", c) != nullptr;
+}
+
+// 聲調打在韻母前面（ㄎㄨˋㄚ，後面還接著別的音）時，整句音節會錯位，
+// Rime 造不出句子，游標後面就只剩未轉換的按鍵。把這個聲調移到韻母後面。
+// 韻母自己帶著聲調（ㄎㄨˋㄚˉ）不移，避免把「褲啊」併成「跨」。
+inline std::string RepairEarlyTone(const std::string& keys) {
+  std::string out;
+  out.reserve(keys.size());
+  size_t i = 0;
+  while (i < keys.size()) {
+    if (IsToneKey(keys[i])) {
+      out += keys[i++];
+      continue;
+    }
+    const size_t begin = i;
+    bool has_final = false;
+    while (i < keys.size() && !IsToneKey(keys[i])) {
+      if (IsFinalKey(keys[i]))
+        has_final = true;
+      ++i;
+    }
+    const size_t body = i - begin;
+    if (body >= 1 && body <= 2 && !has_final && i + 2 < keys.size() &&
+        IsFinalKey(keys[i + 1]) && !IsToneKey(keys[i + 2])) {
+      out.append(keys, begin, body);
+      out += keys[i + 1];
+      out += keys[i];
+      i += 2;
+      continue;
+    }
+    out.append(keys, begin, body);
+    if (i < keys.size())
+      out += keys[i++];
+  }
+  return out;
+}
+
+// commit_text_preview 尾端沒被吃掉的按鍵有多長。造句失敗時，這段就是後面整串注音。
+inline size_t UnconvertedTail(const std::string& preview, const std::string& input) {
+  size_t n = 0;
+  while (n < preview.size() && n < input.size()) {
+    const unsigned char c = (unsigned char)preview[preview.size() - 1 - n];
+    if (c >= 0x80)
+      break;
+    if (input[input.size() - 1 - n] != (char)c)
+      break;
+    ++n;
+  }
+  return n;
+}
+
 inline size_t CountSyllables(const ZhuyinSpeller& sp, const std::string& raw) {
   size_t n = 0;
   bool open = false;
