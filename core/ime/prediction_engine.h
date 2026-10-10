@@ -9,11 +9,13 @@
 // 每次請求有序號：有更新的請求（繼續打字）或取消時，舊請求的結果直接丟掉、本機模型立即停止。
 // 推理一次只跑一個（llama.cpp 的 context 不能同時給多個執行緒用）。
 // 需要 Rime 或介面的部分（查同音字、更新候選窗）由呼叫端以回呼提供，Windows 與 mac 共用。
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "calibration.h"
@@ -122,6 +124,7 @@ class PredictionEngine {
  private:
   struct State;
   static void Run(const std::shared_ptr<State>& state, uint64_t seq, const PredictionRequest& req);
+  static void WorkerLoop(const std::shared_ptr<State>& state);
   std::shared_ptr<State> state_;  // 背景執行緒也持有，引擎先解構也安全
 };
 

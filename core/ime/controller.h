@@ -27,6 +27,7 @@ class LearnFilter;
 class LLMProvider;
 class PersonalLexicon;
 class PersonalRefiner;
+struct ZhuyinSpeller;  // ZhuyinPreview.h，全域型別
 
 namespace ime {
 
@@ -214,6 +215,9 @@ class Controller {
   std::string ChoiceProfile(RimeSessionId session_id);
   ChoiceStats& Stats(RimeSessionId session_id);
   void SaveStats();
+  // 目前方案的拼寫設定（注音預覽、組字區標點用）。方案檔案在執行中不會變，
+  // LoadConfig（重新部署）時清掉
+  const ZhuyinSpeller& Speller(const char* schema_id);
   void CountCommit(SessionState& ss, const std::wstring& text, bool mixed = false);
   void LogChoice(SessionState& ss, const std::wstring& text, bool mixed);
   void RecordCommit(const std::wstring& text);  // 前文與個人詞庫
@@ -298,6 +302,9 @@ class Controller {
   std::unique_ptr<HomophoneFinder> homophones_;
   std::unique_ptr<SentenceFinder> sentences_;
   std::unique_ptr<ChoiceStatsStore> choice_store_;
+  // Speller() 的快取：按鍵路徑（組字中打標點）與每次組字區更新都會用
+  std::string speller_schema_;
+  std::unique_ptr<ZhuyinSpeller> speller_;
   std::unique_ptr<CalibrationStore> calibration_;  // 推薦／校正的信心校準（預測背景執行緒也會讀）
   std::map<std::string, std::string> schema_flags_;  // 方案 → 方案裡的設定（語言模型等）
 

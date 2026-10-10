@@ -3,6 +3,7 @@
 // 只用 librime API 的輸入法小工具（Windows 與 mac 共用）
 #include <rime_api.h>
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -30,8 +31,9 @@ bool SelectText(RimeApi* api,
 class SentenceFinder {
  public:
   explicit SentenceFinder(RimeApi* api) : api_(api) {}
+  // cancelled：掃候選途中回傳 true 就提早放棄（有更新的按鍵時不佔著服務端的鎖）
   std::vector<std::wstring> Find(const std::string& schema, const std::string& input, size_t chars,
-                                 size_t max);
+                                 size_t max, const std::function<bool()>& cancelled = {});
 
  private:
   RimeApi* api_;
@@ -42,8 +44,10 @@ class SentenceFinder {
 class HomophoneFinder {
  public:
   explicit HomophoneFinder(RimeApi* api) : api_(api) {}
-  // schema 方案裡 keys（一個音節的按鍵）的同音字，最多 6 個
-  std::vector<std::wstring> Find(const std::string& schema, const std::string& keys);
+  // schema 方案裡 keys（一個音節的按鍵）的同音字，最多 6 個。
+  // cancelled：掃候選途中回傳 true 就提早放棄（不完整的結果不寫進快取）
+  std::vector<std::wstring> Find(const std::string& schema, const std::string& keys,
+                                 const std::function<bool()>& cancelled = {});
   // 重新部署後詞典可能變了
   void ClearCache() { cache_.clear(); }
 

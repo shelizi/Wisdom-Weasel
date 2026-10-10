@@ -87,8 +87,27 @@ void ChoiceStatsStore::AddProfile(const std::string& key,
   out << line << '\n';
 }
 
+ChoiceStatsStore::~ChoiceStatsStore() {
+  Flush();
+}
+
 void ChoiceStatsStore::Save() {
   Load();
+  // 按鍵路徑每次呼叫都整檔重寫會卡：兩秒內的重複存檔只記「待寫」
+  if (last_write_ms_ != 0 && base::MonotonicMs() - last_write_ms_ < 2000) {
+    pending_ = true;
+    return;
+  }
+  WriteNow();
+}
+
+void ChoiceStatsStore::Flush() {
+  if (!loaded_ || !pending_)
+    return;
+  WriteNow();
+}
+
+void ChoiceStatsStore::WriteNow() {
   const std::string cutoff = DateString(90);
   while (!stats_.empty() && stats_.begin()->first < cutoff)
     stats_.erase(stats_.begin());
@@ -99,12 +118,15 @@ void ChoiceStatsStore::Save() {
         << '\t' << s.deleted_after << '\t' << s.focus_uses << '\t' << s.recommend_offered << '\t'
         << s.recommend_used << '\t' << s.shadow_total << '\t' << s.shadow_changed << '\t'
         << s.shadow_rerank_right << '\t' << s.shadow_rime_right << '\n';
+  last_write_ms_ = base::MonotonicMs();
+  pending_ = false;
 }
 
 void ChoiceStatsStore::Reset() {
   stats_.clear();
   profiles_.clear();
   loaded_ = true;
+  pending_ = false;
   std::error_code ec;
   fs::remove(dir_ / "weasel_stats.txt", ec);
   fs::remove(dir_ / "weasel_stats_profiles.txt", ec);

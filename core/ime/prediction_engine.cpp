@@ -20,6 +20,15 @@ struct PredictionEngine::State {
   mutable std::mutex mutex;  // 保護 current
   PredictionSet current;
   std::mutex infer;  // 串行化推理
+  // 單一背景執行緒：一次只有一個請求在跑；queued 只留最新的（打字中間的請求直接丟掉，
+  // 不排隊、不每次開執行緒）
+  std::thread worker;
+  std::mutex queue_mutex;
+  std::condition_variable cv;
+  bool queued = false;
+  uint64_t queued_seq = 0;
+  PredictionRequest queued_req;
+  bool stop = false;
 };
 
 namespace {
@@ -32,10 +41,18 @@ bool Logging() {
 
 PredictionEngine::PredictionEngine(Hooks hooks) : state_(std::make_shared<State>()) {
   state_->hooks = std::move(hooks);
+  state_->worker = std::thread([state = state_] { WorkerLoop(state); });
 }
 
 PredictionEngine::~PredictionEngine() {
   Cancel();
+  {
+    std::lock_guard<std::mutex> lock(state_->queue_mutex);
+    state_->stop = true;
+  }
+  state_->cv.notify_one();
+  if (state_->worker.joinable())
+    state_->worker.join();
 }
 
 uint64_t PredictionEngine::Request(PredictionRequest request) {
@@ -48,15 +65,51 @@ uint64_t PredictionEngine::Request(PredictionRequest request) {
       joined += (joined.empty() ? L"" : L" / ") + p;
     g_dev_console->WriteLine(L"[LLM] 个人词库候选: " + (joined.empty() ? L"(无)" : joined));
   }
-  std::thread([state = state_, seq, request = std::move(request)]() { Run(state, seq, request); })
-      .detach();
+  {
+    std::lock_guard<std::mutex> lock(state_->queue_mutex);
+    state_->queued = true;
+    state_->queued_seq = seq;
+    state_->queued_req = std::move(request);
+  }
+  state_->cv.notify_one();
   return seq;
 }
 
 void PredictionEngine::Cancel() {
-  std::lock_guard<std::mutex> lock(state_->mutex);
-  ++state_->seq;
-  state_->current = PredictionSet();
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    ++state_->seq;
+    state_->current = PredictionSet();
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_->queue_mutex);
+    state_->queued = false;
+  }
+}
+
+void PredictionEngine::WorkerLoop(const std::shared_ptr<State>& state) {
+  std::unique_lock<std::mutex> lock(state->queue_mutex);
+  for (;;) {
+    state->cv.wait(lock, [&] { return state->stop || state->queued; });
+    if (state->stop)
+      return;
+    const uint64_t seq = state->queued_seq;
+    PredictionRequest req = std::move(state->queued_req);
+    state->queued = false;
+    // 防抖：等待期間有更新的請求排進來就丟掉這個，直接換新的
+    if (req.delay_ms > 0) {
+      if (state->cv.wait_for(lock, std::chrono::milliseconds(req.delay_ms),
+                             [&] { return state->stop || state->queued; }))
+        continue;
+      if (state->stop)
+        return;
+    }
+    if (seq != state->seq.load())  // 已被 Cancel 或更新的請求取代
+      continue;
+    lock.unlock();
+    Run(state, seq, req);
+    lock.lock();
+  }
 }
 
 double PredictionSet::Gain(size_t i) const {
@@ -120,12 +173,6 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
   const auto current = [&] { return seq == state->seq.load(); };
   // 生成途中又有新請求（繼續打字）：本機模型立即停止，讓新的請求接著開始
   LLMCancelScope cancel_scope([state, seq] { return seq != state->seq.load(); });
-  // 防抖：等待期間若又有新請求，直接放棄，不佔用 GPU
-  if (req.delay_ms > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(req.delay_ms));
-    if (!current())
-      return;
-  }
   const auto models = [&] {
     return state->hooks.models ? state->hooks.models() : PredictionModels();
   };

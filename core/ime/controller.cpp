@@ -283,6 +283,8 @@ void Controller::LoadConfig(RimeConfig* config) {
     min_confidence_ = (std::min)(0.9, (std::max)(0.0, min_confidence));
   }
   homophones_->ClearCache();  // 重新部署後詞典可能變了
+  speller_.reset();
+  speller_schema_.clear();  // 方案的拼寫設定也可能變了
   // LLM 整句校正（llm/typo/llm）；Rime 容錯另外設定在注音方案裡，與此無關。
   // 舊設定 llm/typo_correction: llm 視為開啟
   {
@@ -1041,7 +1043,7 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
         char schema_id[256] = {0};
         api_->get_current_schema(session_id, schema_id, sizeof(schema_id));
         punct_in_composition =
-            LoadZhuyinSpeller(api_, schema_id).alphabet.find((char)keycode) == std::string::npos;
+            Speller(schema_id).alphabet.find((char)keycode) == std::string::npos;
       }
       api_->free_status(&status);
     }
@@ -1787,7 +1789,7 @@ bool Controller::PreviewPreedit(uint64_t id, const RimeContext& ctx, bool ascii_
   ZhuyinPreview pv = BuildZhuyinPreview(ctx.commit_text_preview,
                                         ctx.composition.preedit ? ctx.composition.preedit : "",
                                         input ? input : "", caret, cand ? cand : "", hl,
-                                        LoadZhuyinSpeller(api_, schema_id), ss.preview_input,
+                                        Speller(schema_id), ss.preview_input,
                                         ss.preview_units, ss.preview_lens, ss.focus >= 0);
   // without a chosen word the whole preedit is the selection
   if (pv.sel_start == pv.sel_end) {
@@ -1928,9 +1930,13 @@ bool Controller::RescoreInput(uint64_t id,
       ss->preview_lens.size() != ss->preview_units.size() || !IsZhuyinSchema(schema_id))
     return false;
   *units = ss->preview_units;
+  // 佔著服務端的鎖查同音字：有新的按鍵就提早放棄，不讓按鍵等整段查完
+  const auto stale = [this, seq] { return !prediction_->IsCurrent(seq); };
   size_t offset = 0;
   for (size_t len : ss->preview_lens) {
-    homophones->push_back(homophones_->Find(schema_id, input.substr(offset, len)));
+    homophones->push_back(homophones_->Find(schema_id, input.substr(offset, len), stale));
+    if (stale())
+      return false;
     offset += len;
   }
   return true;
@@ -1959,7 +1965,11 @@ bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring
   for (const auto& u : units)
     if (u.empty() || u[0] < 0x3400 || zhuyin_preview::IsBopomofo(u[0]))
       return false;
-  *sentences = sentences_->Find(schema_id, input, units.size(), rerank_sentences_);
+  // 佔著服務端的鎖掃整句候選：有新的按鍵就提早放棄
+  *sentences = sentences_->Find(schema_id, input, units.size(), rerank_sentences_,
+                                [this, seq] { return !prediction_->IsCurrent(seq); });
+  if (!prediction_->IsCurrent(seq))
+    return false;
   // 第一句一定是使用者看到的轉換（選字記憶、手動選過的字都在裡面）
   sentences->erase(std::remove(sentences->begin(), sentences->end(), preview), sentences->end());
   sentences->insert(sentences->begin(), preview);
@@ -2331,6 +2341,15 @@ ChoiceStats& Controller::Stats(RimeSessionId session_id) {
 
 void Controller::SaveStats() {
   choice_store_->Save();
+}
+
+const ZhuyinSpeller& Controller::Speller(const char* schema_id) {
+  const char* id = schema_id ? schema_id : "";
+  if (!speller_ || speller_schema_ != id) {
+    speller_ = std::make_unique<ZhuyinSpeller>(LoadZhuyinSpeller(api_, id));
+    speller_schema_ = id;
+  }
+  return *speller_;
 }
 
 void Controller::CountCommit(SessionState& ss, const std::wstring& text, bool mixed) {

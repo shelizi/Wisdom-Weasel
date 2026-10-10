@@ -173,6 +173,12 @@ class RimeWithWeaselHandler : public weasel::RequestHandler,
   bool m_llm_server_ui_shown =
       false;  // TSF 下为显示异步 LLM 结果而弹出的服务端候选窗是否在显示
 
+  // ContextKey() 的快取：每個按鍵都會查前景視窗與標題；同一視窗短時間內重用
+  WeaselSessionId m_ctx_key_session = 0;
+  HWND m_ctx_key_hwnd = nullptr;
+  ULONGLONG m_ctx_key_ms = 0;
+  std::wstring m_ctx_key;
+
   // ime::Frontend：控制器用到的 Weasel 功能
   ime::SessionState* Session(uint64_t id) override;
   void Refresh(uint64_t id) override;

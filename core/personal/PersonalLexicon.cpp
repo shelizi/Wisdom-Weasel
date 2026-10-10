@@ -95,6 +95,39 @@ void PersonalLexicon::Bump(Score& s, int64_t now) const {
   s.last = now;
 }
 
+PersonalLexicon::Score& PersonalLexicon::WordSlot(const std::wstring& word) {
+  auto [it, inserted] = words_.try_emplace(word);
+  if (inserted && !word.empty())
+    heads_[word[0]].push_back(&*it);
+  return it->second;
+}
+
+void PersonalLexicon::UntrackWord(const std::wstring& word) {
+  if (word.empty())
+    return;
+  auto h = heads_.find(word[0]);
+  if (h == heads_.end())
+    return;
+  auto& v = h->second;
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (v[i]->first == word) {
+      v[i] = v.back();
+      v.pop_back();
+      break;
+    }
+  }
+  if (v.empty())
+    heads_.erase(h);
+}
+
+void PersonalLexicon::RebuildHeads() {
+  heads_.clear();
+  for (auto it = words_.begin(); it != words_.end(); ++it) {
+    if (!it->first.empty())
+      heads_[it->first[0]].push_back(&*it);
+  }
+}
+
 std::vector<std::pair<size_t, size_t>> PersonalLexicon::UnitSpans(const std::wstring& text) {
   std::vector<std::pair<size_t, size_t>> spans;
   size_t start = 0;
@@ -133,7 +166,7 @@ void PersonalLexicon::RecordLocked(const std::wstring& window, const std::wstrin
         prev.clear();
         continue;
       }
-      Bump(words_[word], now);
+      Bump(WordSlot(word), now);
       if (!prev.empty()) {
         Bump(next_[prev][word], now);
         Bump(next_[BackoffKey(prev)][word], now);
@@ -275,10 +308,13 @@ std::vector<std::wstring> PersonalLexicon::CompleteFrom(const std::wstring& pref
   const int64_t now = Now();
   std::lock_guard<std::mutex> lock(mutex_);
   std::unordered_map<std::wstring, double> scores;
-  // 1) 以 prefix 開頭、比 prefix 長的常用詞
-  for (const auto& [word, s] : words_) {
-    if (word.size() > prefix.size() && word.compare(0, prefix.size(), prefix) == 0)
-      scores[word] += Decayed(s, now);
+  // 1) 以 prefix 開頭、比 prefix 長的常用詞（用首字索引，不用掃整個詞庫）
+  const auto h = heads_.find(prefix[0]);
+  if (h != heads_.end()) {
+    for (const auto* e : h->second) {
+      if (e->first.size() > prefix.size() && e->first.compare(0, prefix.size(), prefix) == 0)
+        scores[e->first] += Decayed(e->second, now);
+    }
   }
   // 2) prefix 後面最常接的詞
   auto it = next_.find(prefix);
@@ -417,6 +453,7 @@ bool PersonalLexicon::Load() {
       next_[utf8::ToWide(f[1])][utf8::ToWide(f[2])] = Score{atof(f[3].c_str()), std::atoll(f[4].c_str())};
     }
   }
+  RebuildHeads();
   last_save_ = Now();
   return true;
 }
@@ -556,6 +593,7 @@ void PersonalLexicon::ApplyRefinement(
       removed_.insert(word);
       merged_.erase(word);
       added_.erase(word);
+      UntrackWord(word);
       words_.erase(word);
       next_.erase(word);
       for (auto& [prev, nexts] : next_)
@@ -577,7 +615,9 @@ void PersonalLexicon::ApplyRefinement(
       };
       auto w = words_.find(from);
       if (w != words_.end()) {
-        move_score(words_[to], w->second);
+        const Score moved = w->second;  // WordSlot 可能 rehash，迭代器先取值再動
+        move_score(WordSlot(to), moved);
+        UntrackWord(from);
         words_.erase(from);
       }
       auto n = next_.find(from);
@@ -624,13 +664,14 @@ void PersonalLexicon::ApplySplits(const std::vector<Split>& splits) {
         continue;  // 只記規則，之後打到時生效
       // 分數以現在的衰減值相加：每個部分都拿到原片段的分數，部分之間照順序接續
       const Score moved = w->second;
+      UntrackWord(unit);
       words_.erase(w);
       auto add_score = [&](Score& dst, const Score& src) {
         dst.value = Decayed(dst, now) + Decayed(src, now);
         dst.last = now;
       };
       for (size_t i = 0; i < parts.size(); ++i) {
-        add_score(words_[parts[i]], moved);
+        add_score(WordSlot(parts[i]), moved);
         if (i > 0) {
           add_score(next_[parts[i - 1]][parts[i]], moved);
           add_score(next_[BackoffKey(parts[i - 1])][parts[i]], moved);
@@ -855,6 +896,7 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
     std::lock_guard<std::mutex> lock(mutex_);
     words_ = std::move(scratch.words_);
     next_ = std::move(scratch.next_);
+    heads_.clear();  // 舊節點已銷毀，下面補完 pending 與手動加入的詞後整個重建
     chain_word_.clear();
     // 重建期間送出的文字補上
     for (const auto& r : pending_)
@@ -870,6 +912,7 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
       s.value = Decayed(s, now) + Decayed(manual, now);
       s.last = now;
     }
+    RebuildHeads();
     rebuilding_ = false;
     ++dirty_;
   }
@@ -896,6 +939,7 @@ void PersonalLexicon::AppendRawLog(const std::wstring& window, const std::wstrin
 void PersonalLexicon::Clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   words_.clear();
+  heads_.clear();
   next_.clear();
   last_word_.clear();
   chain_word_.clear();
@@ -935,7 +979,7 @@ void PersonalLexicon::AddWord(const std::wstring& word) {
     reviewed_.insert(word);  // 使用者親自加入的詞不必再給 LLM 審查
     added_[word] = now;      // 記住，「重新精煉全部」重建後補回
     // 手動加入的詞給較高的起始分數，一樣會隨時間衰減
-    Score& s = words_[word];
+    Score& s = WordSlot(word);
     s.value = Decayed(s, now) + 5.0;
     s.last = now;
     ++dirty_;
@@ -949,6 +993,7 @@ void PersonalLexicon::DeleteWords(const std::vector<std::wstring>& words) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& word : words) {
+      UntrackWord(word);
       words_.erase(word);
       next_.erase(word);
       for (auto& [prev, nexts] : next_)

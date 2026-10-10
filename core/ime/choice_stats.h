@@ -42,6 +42,7 @@ std::string ProfileKey(const std::string& version, const std::string& settings);
 class ChoiceStatsStore {
  public:
   explicit ChoiceStatsStore(std::filesystem::path dir) : dir_(std::move(dir)) {}
+  ~ChoiceStatsStore();  // 還沒寫出的累計補寫
 
   // 今天、這個組合的統計（第一次用到時讀檔）
   ChoiceStats& Today(const std::string& profile);
@@ -53,19 +54,26 @@ class ChoiceStatsStore {
                   const std::string& subject,
                   const std::string& settings);
 
-  // 寫回 weasel_stats.txt，只留最近 90 天
+  // 寫回 weasel_stats.txt，只留最近 90 天。
+  // 按鍵路徑（Backspace、送出）每次都會呼叫：距上次寫入太近就只記「待寫」，
+  // 下次呼叫或 Flush 時才寫，避免打字中整檔重寫
   void Save();
+  // 立刻把待寫的統計寫出（服務結束、切換設定時呼叫）
+  void Flush();
 
   // 清除統計與兩個檔案
   void Reset();
 
  private:
   void Load();
+  void WriteNow();  // 實際整檔重寫
 
   std::filesystem::path dir_;
   bool loaded_ = false;
   std::map<std::string, ChoiceStats> stats_;       // 日期 \t 組合代碼 → 統計
   std::map<std::string, std::string> profiles_;    // 組合代碼 → 整行
+  uint64_t last_write_ms_ = 0;
+  bool pending_ = false;
 };
 
 }  // namespace ime

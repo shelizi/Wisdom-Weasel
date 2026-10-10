@@ -149,6 +149,12 @@ class PersonalLexicon {
   std::filesystem::path dir_;
   mutable std::mutex mutex_;
   std::unordered_map<std::wstring, Score> words_;                                  // 單詞
+  // 補全查詢的索引：詞的首字 → 詞庫元素。unordered_map 的節點位址不會因 rehash 搬移，
+  // 但詞的增刪要同步（WordSlot/UntrackedWord/RebuildHeads），清空與重建時整個重來
+  std::unordered_map<wchar_t, std::vector<const std::pair<const std::wstring, Score>*>> heads_;
+  Score& WordSlot(const std::wstring& word);  // words_ 的槽位；新詞記進首字索引
+  void UntrackWord(const std::wstring& word);  // 從索引移除（刪詞之前呼叫）
+  void RebuildHeads();
   std::unordered_map<std::wstring, std::unordered_map<std::wstring, Score>> next_;  // 前 → 後
   std::unordered_map<std::wstring, std::wstring> last_word_;   // 每個視窗最後送出的詞（查接續用）
   std::unordered_map<std::wstring, std::wstring> chain_word_;  // 每個視窗最後學到的詞（學接續用）

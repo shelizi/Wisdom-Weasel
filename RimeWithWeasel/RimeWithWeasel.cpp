@@ -1847,6 +1847,20 @@ std::mutex& RimeWithWeaselHandler::ApiMutex() {
 }
 
 std::wstring RimeWithWeaselHandler::ContextKey(uint64_t id) {
+  // 前景窗口（顶层窗口）：同一应用的不同窗口、浏览器不同分页、不同聊天室各自一份前文。
+  HWND hwnd = GetForegroundWindow();
+  if (hwnd) {
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root)
+      hwnd = root;
+  }
+  // 每個按鍵都會查：同個視窗短時間內標題不會變，重用上一份（視窗換了 hwnd 就不同，
+  // 標題裡的未讀數等變化本來就會濾掉）
+  const ULONGLONG now = GetTickCount64();
+  if (hwnd == m_ctx_key_hwnd && (WeaselSessionId)id == m_ctx_key_session &&
+      now - m_ctx_key_ms < 300)
+    return m_ctx_key;
+
   // 应用名（Rime session 的 client_app）
   std::wstring app;
   char app_name[256] = {0};
@@ -1854,14 +1868,7 @@ std::wstring RimeWithWeaselHandler::ContextKey(uint64_t id) {
                              app_name, sizeof(app_name) - 1))
     app = u8tow(app_name);
 
-  // 前景窗口（顶层窗口）与标题：同一应用的不同窗口、浏览器不同分页、不同聊天室各自一份前文。
   // 标题去掉数字与 * ● 等，避免未读数、「已修改」标记变化时被当成另一个窗口。
-  HWND hwnd = GetForegroundWindow();
-  if (hwnd) {
-    HWND root = GetAncestor(hwnd, GA_ROOT);
-    if (root)
-      hwnd = root;
-  }
   // 不能用 GetWindowTextW：它會對視窗送 WM_GETTEXT
   // 並等回覆，視窗忙碌或正在等輸入法時
   // 就卡住整個服務（所有應用程式跟著凍結）。InternalGetWindowText
@@ -1878,7 +1885,11 @@ std::wstring RimeWithWeaselHandler::ContextKey(uint64_t id) {
   }
   wchar_t hwnd_buf[32] = {0};
   swprintf_s(hwnd_buf, L"%p", (void*)hwnd);
-  return app + L"|" + hwnd_buf + L"|" + title_key;
+  m_ctx_key = app + L"|" + hwnd_buf + L"|" + title_key;
+  m_ctx_key_session = (WeaselSessionId)id;
+  m_ctx_key_hwnd = hwnd;
+  m_ctx_key_ms = now;
+  return m_ctx_key;
 }
 
 void RimeWithWeaselHandler::Redeploy() {

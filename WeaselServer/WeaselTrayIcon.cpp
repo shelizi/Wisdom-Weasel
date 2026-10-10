@@ -59,14 +59,11 @@ void WeaselTrayIcon::Refresh() {
   /* change icon, when
           1,mode changed
           2,icon changed
-          3,both m_schema_zhung_icon and m_style.current_zhung_icon empty(for
-     initialize) 4,both m_schema_ascii_icon and m_style.current_ascii_icon
-     empty(for initialize)
+     （一開始 m_mode 是 INITIAL，第一個 Refresh 一定會進來；
+       圖示被移除時下面的 !Visible() 也會補 ShowIcon）
   */
   if (mode != m_mode || m_schema_zhung_icon != m_style.current_zhung_icon ||
-      (m_schema_zhung_icon.empty() && m_style.current_zhung_icon.empty()) ||
-      m_schema_ascii_icon != m_style.current_ascii_icon ||
-      (m_schema_ascii_icon.empty() && m_style.current_ascii_icon.empty())) {
+      m_schema_ascii_icon != m_style.current_ascii_icon) {
     ShowIcon();
     m_mode = mode;
     m_schema_zhung_icon = m_style.current_zhung_icon;

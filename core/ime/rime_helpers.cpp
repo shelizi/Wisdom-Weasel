@@ -89,7 +89,8 @@ bool SelectText(RimeApi* api,
 }
 
 std::vector<std::wstring> SentenceFinder::Find(const std::string& schema, const std::string& input,
-                                               size_t chars, size_t max) {
+                                               size_t chars, size_t max,
+                                               const std::function<bool()>& cancelled) {
   std::vector<std::wstring> result;
   if (!session_ || !api_->find_session(session_)) {
     session_ = api_->create_session();
@@ -105,6 +106,8 @@ std::vector<std::wstring> SentenceFinder::Find(const std::string& schema, const 
   RimeCandidateListIterator iter = {0};
   if (api_->candidate_list_begin(session_, &iter)) {
     for (int i = 0; i < 100 && result.size() < max && api_->candidate_list_next(&iter); ++i) {
+      if (cancelled && cancelled())
+        break;
       if (!iter.candidate.text)
         continue;
       const std::wstring text = utf8::ToWide(iter.candidate.text);
@@ -118,7 +121,8 @@ std::vector<std::wstring> SentenceFinder::Find(const std::string& schema, const 
   return result;
 }
 
-std::vector<std::wstring> HomophoneFinder::Find(const std::string& schema, const std::string& keys) {
+std::vector<std::wstring> HomophoneFinder::Find(const std::string& schema, const std::string& keys,
+                                                const std::function<bool()>& cancelled) {
   const std::string cache_key = schema + "\t" + keys;
   auto it = cache_.find(cache_key);
   if (it != cache_.end())
@@ -136,9 +140,14 @@ std::vector<std::wstring> HomophoneFinder::Find(const std::string& schema, const
     schema_ = schema;
   }
   api_->set_input(session_, keys.c_str());
+  bool complete = true;
   RimeCandidateListIterator iter = {0};
   if (api_->candidate_list_begin(session_, &iter)) {
     for (int i = 0; i < 60 && result.size() < 6 && api_->candidate_list_next(&iter); ++i) {
+      if (cancelled && cancelled()) {
+        complete = false;
+        break;
+      }
       if (!iter.candidate.text)
         continue;
       const std::wstring text = utf8::ToWide(iter.candidate.text);
@@ -149,9 +158,11 @@ std::vector<std::wstring> HomophoneFinder::Find(const std::string& schema, const
     api_->candidate_list_end(&iter);
   }
   api_->clear_composition(session_);
-  if (cache_.size() > 5000)
-    cache_.clear();
-  cache_[cache_key] = result;
+  if (complete) {  // 半途放棄的不是完整結果，不寫進快取
+    if (cache_.size() > 5000)
+      cache_.clear();
+    cache_[cache_key] = result;
+  }
   return result;
 }
 
