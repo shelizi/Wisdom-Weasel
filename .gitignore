@@ -68,3 +68,16 @@ bench/__pycache__/
 /output/llama-mac/
 /build-mac
 __pycache__/
+
+# 工具與實驗檔（不進版本庫）
+.claude/
+docs/history-session/
+docs/zhuyin-contextual-reranker-optimization-plan.md
+docs/zhuyin-ime-comparison-2026-10-sources.md
+docs/zhuyin-ime-comparison-2026-10.md
+docs/zhuyin-jev-rerank-2026-10.md
+docs/zhuyin-select-preview-fix-2026-10.md
+*.obj
+test/TuneChoice/context_probe.cpp
+test/TuneChoice/*.py
+test/TuneChoice/select_llavon.txt
