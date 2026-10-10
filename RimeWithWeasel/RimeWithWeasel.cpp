@@ -19,6 +19,8 @@
 #include <regex>
 #include <sstream>
 #include <rime_api.h>
+#include "../core/base/clock.h"
+#include "../core/base/key_stats.h"
 
 #include "../core/llm/ContextHistory.h"
 // 包含 DevConsole 的完整定义（需要调用其方法）
@@ -63,6 +65,27 @@ WeaselSessionId _GenerateNewWeaselSessionId(SessionStatusMap sm, DWORD pid) {
 int expand_ibus_modifier(int m) {
   return (m & 0xff) | ((m & 0xff00) << 16);
 }
+
+// FNV-1a：候選內容指紋。內容沒變時重用上次組好的候選資訊
+struct Fingerprint {
+  uint64_t h = 1469598103934665603ULL;
+  void Bytes(const void* p, size_t n) {
+    const unsigned char* b = static_cast<const unsigned char*>(p);
+    for (size_t i = 0; i < n; ++i) {
+      h ^= b[i];
+      h *= 1099511628211ULL;
+    }
+  }
+  void Int(uint64_t v) { Bytes(&v, sizeof v); }
+  void Real(double v) { Bytes(&v, sizeof v); }
+  void U8(const char* s) {
+    if (s)
+      Bytes(s, std::strlen(s));
+    h ^= 0x9f;
+    h *= 1099511628211ULL;
+  }
+  void Wide(const std::wstring& s) { Bytes(s.data(), s.size() * sizeof(wchar_t)); }
+};
 
 RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
     : m_ui(ui),
@@ -327,13 +350,23 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   if (m_disabled)
     return FALSE;
 
+  const uint64_t t0 = base::MonotonicUs();
   const ime::KeyResult result = m_controller->ProcessKey(
       ipc_id, keyEvent.keycode, expand_ibus_modifier(keyEvent.mask));
+  const uint64_t t1 = base::MonotonicUs();
   if (result.respond) {
     _Respond(ipc_id, eat);
     _UpdateUI(ipc_id);
     m_active_session = ipc_id;
   }
+  const uint64_t t2 = base::MonotonicUs();
+  auto& key_stats = base::KeyStats::Instance();
+  key_stats.Add(base::KeyStats::kController, t1 - t0);
+  key_stats.Add(base::KeyStats::kRespond, t2 - t1);
+  key_stats.Add(base::KeyStats::kTotal, t2 - t0);
+  // 每 512 鍵在開發終端報一次 p50/p95（沒開就不組字串）
+  if (key_stats.Count() % 512 == 0 && m_dev_console && m_dev_console->IsEnabled())
+    m_dev_console->WriteLine(key_stats.Report());
   return (BOOL)result.handled;
 }
 
@@ -513,11 +546,41 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
                                               RimeContext& ctx,
                                               bool taiwan_forms) {
   // 先保存LLM预测模式状态，因为后面可能会被修改
-  bool llm_mode = m_controller->PredictionMode();
+  const bool llm_mode = m_controller->PredictionMode();
   // 後台預測執行緒會替換候選，這裡取快照再使用
   const ime::PredictionSet llm_set = m_controller->Predictions();
   const std::vector<std::wstring>& llm_candidates = llm_set.candidates;
-  size_t llm_candidate_count = llm_candidates.size();
+  const size_t llm_candidate_count = llm_candidates.size();
+
+  // 內容指紋：Rime 候選、LLM 候選、整句機率版本都沒變時，直接重用上次組好的資訊
+  Fingerprint fp;
+  fp.Int(taiwan_forms ? 1 : 0);
+  fp.Int(llm_mode ? 1 : 0);
+  fp.Int(m_controller->HasSentenceProbabilities() ? 1 : 0);
+  fp.Int(m_controller->SentenceProbsVersion());
+  fp.Int(ctx.menu.num_candidates);
+  fp.Int(ctx.menu.page_no);
+  fp.Int(ctx.menu.highlighted_candidate_index);
+  fp.Int(ctx.menu.is_last_page);
+  const bool has_labels = RIME_STRUCT_HAS_MEMBER(ctx, ctx.select_labels) && ctx.select_labels;
+  for (int i = 0; i < ctx.menu.num_candidates; ++i) {
+    fp.U8(ctx.menu.candidates[i].text);
+    fp.U8(ctx.menu.candidates[i].comment);
+    if (has_labels)
+      fp.U8(ctx.select_labels[i]);
+    else if (ctx.menu.select_keys)
+      fp.Int((unsigned char)ctx.menu.select_keys[i]);
+  }
+  for (size_t i = 0; i < llm_candidate_count; ++i) {
+    fp.Wide(llm_candidates[i]);
+    fp.Int((uint64_t)llm_set.Kind(i));
+    fp.Real(i < llm_set.gains.size() ? llm_set.gains[i] : 0);
+    fp.Real(i < llm_set.confidences.size() ? llm_set.confidences[i] : 0);
+  }
+  if (fp.h == m_cand_fp) {
+    cinfo = m_cand_info;
+    return;
+  }
 
   // 先清空候选词信息，避免重复添加
   cinfo.candies.clear();
@@ -607,6 +670,9 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
       m_dev_console->WriteLine(ss.str());
     }
   }
+
+  m_cand_fp = fp.h;
+  m_cand_info = cinfo;
 }
 
 void RimeWithWeaselHandler::StartMaintenance() {

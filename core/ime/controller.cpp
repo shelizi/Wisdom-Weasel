@@ -14,6 +14,7 @@
 
 #include "../base/clock.h"
 #include "../base/devlog.h"
+#include "../base/key_stats.h"
 #include "../base/utf8.h"
 #include "../llm/ContextHistory.h"
 #include "../llm/LLMProvider.h"
@@ -80,10 +81,15 @@ bool IsZhuyinSchema(const char* schema_id) {
 }
 
 // 注音方案才換成臺灣常用字。其他方案維持 Rime 的字。
+// 已經查過方案時用 schema_id 版本，不用再問 Rime
+std::wstring TaiwanIfZhuyin(const char* schema_id, std::wstring text) {
+  return IsZhuyinSchema(schema_id) ? PreferTaiwanForms(std::move(text)) : text;
+}
+
 std::wstring TaiwanIfZhuyin(RimeApi* api, RimeSessionId session_id, std::wstring text) {
   char schema[256] = {0};
-  if (api->get_current_schema(session_id, schema, sizeof(schema)) && IsZhuyinSchema(schema))
-    return PreferTaiwanForms(std::move(text));
+  if (api->get_current_schema(session_id, schema, sizeof(schema)))
+    return TaiwanIfZhuyin(schema, std::move(text));
   return text;
 }
 
@@ -275,6 +281,7 @@ void Controller::LoadConfig(RimeConfig* config) {
   flag = false;
   show_probability_ = api_->config_get_bool(config, "llm/choice/show_probability", &flag) && flag;
   sentence_probs_.clear();
+  ++probs_gen_;
   // 推薦／校正校準過的採用機率低於這個就不顯示（還沒校準時都顯示）；0 = 都顯示。
   // 預設 0.5：比較可能對才顯示（第一候選換成它才划算）
   {
@@ -1077,27 +1084,34 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     }
   }
 
+  const uint64_t pk_us = base::MonotonicUs();
   Bool handled = api_->process_key(session_id, keycode, mask);
   for (size_t i = 1; i < backspaces; ++i)
     api_->process_key(session_id, keycode, mask);
+  base::KeyStats::Instance().Add(base::KeyStats::kProcessKey, base::MonotonicUs() - pk_us);
   // 聲調打在韻母前會讓整句造不出來，後面只剩注音。游標在句尾時把聲調移回去，
   // 讓其餘的字仍按原來的音節選。框選單字時不動。
   if (handled && !release && ss.focus < 0) {
-    char schema_id[256] = {0};
     const char* raw = api_->get_input(session_id);
-    if (raw && *raw && api_->get_current_schema(session_id, schema_id, sizeof(schema_id)) &&
-        IsZhuyinSchema(schema_id) && api_->get_caret_pos(session_id) == std::strlen(raw)) {
+    if (raw && *raw) {
       const std::string input(raw);
-      std::string preview;
-      RIME_STRUCT(RimeContext, ctx);
-      if (api_->get_context(session_id, &ctx)) {
-        if (ctx.commit_text_preview)
-          preview = ctx.commit_text_preview;
-        api_->free_context(&ctx);
-      }
+      // 要先修的輸入很少：修好的結果和原本相同就不用查方案與組字區
       const std::string repaired = zhuyin_preview::RepairEarlyTone(input);
-      if (repaired != input && zhuyin_preview::UnconvertedTail(preview, input) >= 4)
-        api_->set_input(session_id, repaired.c_str());
+      if (repaired != input) {
+        char schema_id[256] = {0};
+        if (api_->get_current_schema(session_id, schema_id, sizeof(schema_id)) &&
+            IsZhuyinSchema(schema_id) && api_->get_caret_pos(session_id) == input.size()) {
+          std::string preview;
+          RIME_STRUCT(RimeContext, ctx);
+          if (api_->get_context(session_id, &ctx)) {
+            if (ctx.commit_text_preview)
+              preview = ctx.commit_text_preview;
+            api_->free_context(&ctx);
+          }
+          if (zhuyin_preview::UnconvertedTail(preview, input) >= 4)
+            api_->set_input(session_id, repaired.c_str());
+        }
+      }
     }
   }
   if (punct_in_composition) {
@@ -1121,13 +1135,16 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   const bool rescore = ScoringWanted();
   if (handled && !release && (PredictionAvailable() || TypoAvailable() || rescore)) {
     bool composing = false;
+    char schema_id[256] = {0};
     RIME_STRUCT(RimeStatus, status);
     if (api_->get_status(session_id, &status)) {
       composing = status.is_composing && !status.is_ascii_mode;
+      if (status.schema_id)
+        std::strncpy(schema_id, status.schema_id, sizeof(schema_id) - 1);
       api_->free_status(&status);
     }
     if (composing && ((while_typing_ && PredictionAvailable()) || TypoAvailable() || rescore)) {
-      ScheduleCompletion(id, kCompletionDelayMs);
+      ScheduleCompletion(id, kCompletionDelayMs, schema_id);
     } else if (composing && prediction_mode_) {
       // 未開啟打字中補全：開始打字後，送出後留下的下一詞預測已不適用，直接清掉
       prediction_mode_ = false;
@@ -1153,18 +1170,26 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
   const bool release = (mask & mod::kRelease) != 0;
   const bool is_shift = keycode == key::kShiftL || keycode == key::kShiftR;
   const bool other_mods = (mask & (mod::kControl | mod::kAlt | mod::kSuper)) != 0;
-  bool composing = false;
-  RIME_STRUCT(RimeStatus, status);
-  if (api_->get_status(session_id, &status)) {
-    composing = !!status.is_composing;
-    api_->free_status(&status);
-  }
+  // 組字狀態等到真的需要才查：放開鍵與未混打時大多用不到
+  bool composing_v = false;
+  bool have_composing = false;
+  auto composing = [&]() {
+    if (!have_composing) {
+      have_composing = true;
+      RIME_STRUCT(RimeStatus, status);
+      if (api_->get_status(session_id, &status)) {
+        composing_v = !!status.is_composing;
+        api_->free_status(&status);
+      }
+    }
+    return composing_v;
+  };
   // 吃掉按鍵時一定要回應完整的目前狀態：TSF 讀到空的回應會當成組字結束，把組字清掉
   *respond = true;
   // 送出混打內容與目前的組字，回到一般輸入
   auto commit_all = [&]() {
     std::wstring text = ss.mixed_text;
-    if (composing)
+    if (composing())
       text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
     ss.mixed_text.clear();
     ss.mixed_english = false;
@@ -1178,14 +1203,14 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
     mixed_shift_tap_ = is_shift && !other_mods;
   if (release && is_shift && mixed_shift_tap_) {
     mixed_shift_tap_ = false;
-    if (!composing && !ss.mixed_active())
+    if (!ss.mixed_active() && !composing())
       return false;
     // 英文段不切換 Rime 的 ascii_mode：英文字母都由這裡處理；切成英數會讓應用程式
     // 看到輸入模式改變，有些程式因此把組字藏起來，直到切回中文
     if (ss.mixed_english) {
       ss.mixed_english = false;
     } else {
-      if (composing) {
+      if (composing()) {
         ss.mixed_text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
         if (prediction_mode_ || completion_active_)
           ExitPredictionMode(id);
@@ -1199,10 +1224,10 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
   // 組字中 Shift+字母：像新注音一樣打大寫英文，接在轉好的中文後面，仍留在中文。
   // 不交給 Rime：注音方案的 alternative_select_keys 是 ABCDEFGHIJ，會被當成選字
   const bool upper = keycode >= 'A' && keycode <= 'Z' && !other_mods;
-  if (upper && !ss.mixed_english && (composing || ss.mixed_active())) {
+  if (upper && !ss.mixed_english && (ss.mixed_active() || composing())) {
     if (release)
       return true;
-    if (composing) {
+    if (composing()) {
       ss.mixed_text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
       if (prediction_mode_ || completion_active_)
         ExitPredictionMode(id);
@@ -1235,7 +1260,7 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
       ExitPredictionMode(id);
     return true;
   }
-  if (ss.mixed_english || !composing) {
+  if (ss.mixed_english || !composing()) {
     if (keycode == key::kBackSpace) {
       PopChar(ss.mixed_text);
       // 刪光了：結束混打，停在目前的中英模式
@@ -1334,6 +1359,9 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   const bool nav = keycode == key::kLeft || keycode == key::kRight || keycode == key::kHome ||
                    keycode == key::kEnd;
   if (!nav || (mask & (mod::kControl | mod::kAlt | mod::kSuper | mod::kShift)))
+    return false;
+  // 沒有框選中的音節時，放開方向鍵不會被吃掉，不用查狀態
+  if ((mask & mod::kRelease) && ss.focus < 0)
     return false;
   const RimeSessionId session_id = ss.session_id;
   RIME_STRUCT(RimeStatus, status);
@@ -1731,6 +1759,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
   SessionState& ss = *state;
   if (!composing) {
     sentence_probs_.clear();
+    ++probs_gen_;
     ss.preview_input.clear();
     ss.preview_units.clear();
     ss.preview_lens.clear();
@@ -1763,8 +1792,10 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
       std::wstring preview = utf8::ToWide(ctx->commit_text_preview);
       while (!preview.empty() && preview.back() < 0x80)
         preview.pop_back();
-      ss.default_text = TaiwanIfZhuyin(api_, ss.session_id, std::move(preview));
-      ss.default_zhuyin = ComposingZhuyin(ss.session_id);
+      char schema_id[256] = {0};
+      api_->get_current_schema(ss.session_id, schema_id, sizeof(schema_id));
+      ss.default_text = TaiwanIfZhuyin(schema_id, std::move(preview));
+      ss.default_zhuyin = ComposingZhuyin(ss.session_id, schema_id);
     }
   }
 }
@@ -1856,6 +1887,7 @@ void Controller::TriggerPrediction(uint64_t id,
   const bool rerank = scoring && (rerank_mode_ > 0 || show_probability_);
   const bool rescore = scoring && rescore_on_ && rerank_mode_ != 2;
   sentence_probs_.clear();  // 上一次的機率不再對應目前的輸入
+  ++probs_gen_;
   if (!llm_available && !personal_ && !correct && !rescore && !rerank) {
     LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
     return;
@@ -2005,6 +2037,7 @@ void Controller::OnSentenceScores(uint64_t id, uint64_t seq, const RerankResult&
     return;
   const std::vector<double> probs = SentenceProbabilities(result.scores);
   sentence_probs_.clear();
+  ++probs_gen_;
   for (size_t i = 0; i < result.texts.size() && i < probs.size(); ++i) {
     if (!std::isnan(probs[i]))
       sentence_probs_[result.texts[i]] = probs[i];
@@ -2114,7 +2147,7 @@ void Controller::ExitPredictionMode(uint64_t id) {
   Log(L"[LLM] 退出LLM预测模式");
 }
 
-void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
+void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms, const char* schema_id) {
   SessionState* ss = frontend_->Session(id);
   if (!ss)
     return;
@@ -2122,6 +2155,12 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
   const bool rescore = ScoringWanted();
   if (!predict && !TypoAvailable() && !rescore)
     return;
+  // 呼叫端沒查到方案時才自己查（按鍵路徑已經有 status 的直接傳進來）
+  char schema_buf[256] = {0};
+  if (!schema_id) {
+    api_->get_current_schema(ss->session_id, schema_buf, sizeof(schema_buf));
+    schema_id = schema_buf;
+  }
 
   // Rime 若此刻送出會得到的文字（整句轉換）；沒有時退回第一個候選
   std::wstring preview;
@@ -2134,15 +2173,11 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
     api_->free_context(&ctx);
   }
   // 注音：往回選字時轉換結果後面會接著還沒轉換的按鍵，只把游標前轉好的中文當前文
-  {
-    char schema_id[256] = {0};
-    api_->get_current_schema(ss->session_id, schema_id, sizeof(schema_id));
-    if (IsZhuyinSchema(schema_id)) {
-      while (!preview.empty() && preview.back() < 0x80)
-        preview.pop_back();
-    }
+  if (IsZhuyinSchema(schema_id)) {
+    while (!preview.empty() && preview.back() < 0x80)
+      preview.pop_back();
   }
-  preview = TaiwanIfZhuyin(api_, ss->session_id, std::move(preview));
+  preview = TaiwanIfZhuyin(schema_id, std::move(preview));
   if (preview.empty()) {
     CancelCompletion();
     return;
@@ -2151,7 +2186,8 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
   // 續寫：開啟智慧預測且（打字中補全或按 ` 鍵手動觸發，delay_ms 為 0）；
   // 整句校正：開啟 LLM 整句校正（與智慧預測、Rime 容錯各自獨立）
   const bool complete = predict && (while_typing_ || delay_ms == 0);
-  const std::wstring zhuyin = TypoAvailable() ? ComposingZhuyin(ss->session_id) : std::wstring();
+  const std::wstring zhuyin =
+      TypoAvailable() ? ComposingZhuyin(ss->session_id, schema_id) : std::wstring();
   if (!complete && zhuyin.empty() && !rescore) {
     CancelCompletion();
     return;
@@ -2166,14 +2202,10 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms) {
   TriggerPrediction(id, L"", delay_ms, preview, zhuyin, complete);
 }
 
-std::wstring Controller::ComposingZhuyin(RimeSessionId session_id) {
-  bool zhuyin_schema = false;
-  RIME_STRUCT(RimeStatus, status);
-  if (api_->get_status(session_id, &status)) {
-    zhuyin_schema = IsZhuyinSchema(status.schema_id);
-    api_->free_status(&status);
-  }
-  const char* raw = zhuyin_schema ? api_->get_input(session_id) : nullptr;
+std::wstring Controller::ComposingZhuyin(RimeSessionId session_id, const char* schema_id) {
+  if (!IsZhuyinSchema(schema_id))
+    return L"";
+  const char* raw = api_->get_input(session_id);
   if (!raw || !*raw)
     return L"";
   // 往回選字時只取游標前的部分（與送給模型的前文一致）；游標在最前面時 Rime 轉換整段

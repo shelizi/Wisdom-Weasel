@@ -179,6 +179,10 @@ class RimeWithWeaselHandler : public weasel::RequestHandler,
   ULONGLONG m_ctx_key_ms = 0;
   std::wstring m_ctx_key;
 
+  // _GetCandidateInfo 的快取：候選內容指紋沒變就直接重用上次組好的資訊
+  uint64_t m_cand_fp = ~0ULL;  // 初始值避開任何合法指紋，保證第一次一定重算
+  weasel::CandidateInfo m_cand_info;
+
   // ime::Frontend：控制器用到的 Weasel 功能
   ime::SessionState* Session(uint64_t id) override;
   void Refresh(uint64_t id) override;

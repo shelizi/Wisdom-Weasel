@@ -14,6 +14,13 @@ inline uint64_t MonotonicMs() {
       .count();
 }
 
+// 單調遞增的微秒數（按鍵路徑計時等毫秒以下量測用）
+inline uint64_t MonotonicUs() {
+  return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 inline std::tm LocalTime(std::time_t t = std::time(nullptr)) {
   std::tm tm = {};
 #ifdef _WIN32

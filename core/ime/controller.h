@@ -134,6 +134,8 @@ class Controller {
   // 彼此比較的機率。沒開、還沒評完或不是評過的句子回傳 false
   bool SentenceProbability(const std::wstring& text, double* probability) const;
   bool HasSentenceProbabilities() const { return show_probability_ && !sentence_probs_.empty(); }
+  // sentence_probs_ 的內容版本：候選資訊快取用它判斷機率有沒有更新
+  uint64_t SentenceProbsVersion() const { return probs_gen_; }
 
   // LLM 候選（接在 Rime 候選後面顯示）
   bool PredictionMode() const { return prediction_mode_; }
@@ -191,7 +193,7 @@ class Controller {
   void TriggerPrediction(uint64_t id, const std::wstring& current_input = L"", unsigned delay_ms = 0,
                          const std::wstring& completion_prefix = L"", const std::wstring& zhuyin = L"",
                          bool complete = true);
-  void ScheduleCompletion(uint64_t id, unsigned delay_ms);
+  void ScheduleCompletion(uint64_t id, unsigned delay_ms, const char* schema_id = nullptr);
   void CancelCompletion();
   void ExitPredictionMode(uint64_t id);
   bool CommitPrediction(uint64_t id, size_t index);
@@ -210,7 +212,7 @@ class Controller {
   void RecordSuggestions(SessionState& ss, CandidateKind taken);
   static void ForgetSuggestions(SessionState& ss);
   bool ConfirmText(SessionState& ss, const std::wstring& desired);
-  std::wstring ComposingZhuyin(RimeSessionId session_id);
+  std::wstring ComposingZhuyin(RimeSessionId session_id, const char* schema_id);
 
   std::string ChoiceProfile(RimeSessionId session_id);
   ChoiceStats& Stats(RimeSessionId session_id);
@@ -240,6 +242,7 @@ class Controller {
   double rerank_margin_ = 2.0;     // llm/choice/rerank_margin
   bool show_probability_ = false;  // llm/choice/show_probability：候選窗顯示整句機率
   std::map<std::wstring, double> sentence_probs_;  // 目前輸入的整句 → 機率（服務端的鎖下讀寫）
+  uint64_t probs_gen_ = 0;  // sentence_probs_ 每次變動加一
   size_t rerank_sentences_ = 10;   // llm/choice/rerank_sentences：最多評幾句
   size_t rerank_context_ = 30;     // llm/choice/rerank_context：給模型的前文最多幾個字
   double rerank_alpha_ = 0.0;      // llm/choice/rerank_alpha：長度正規化（0 = 不正規化）

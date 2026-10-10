@@ -1,10 +1,13 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -132,8 +135,30 @@ class PersonalLexicon {
   void Bump(Score& s, int64_t now) const;
   void MaybeSaveAsync();
   bool SaveLocked(std::string* blob) const;  // 在鎖內序列化
+  // 背景存檔的快照：鎖內複製字串（最多 8 萬詞＋詞對，毫秒級），
+  // 昂貴的 utf8 轉換、加密、寫檔都移到背景執行緒
+  struct SaveSnapshot {
+    int64_t now = 0;
+    double half_life_days = 30;
+    std::vector<std::pair<std::wstring, Score>> words;
+    struct NextPair {
+      std::wstring prev;
+      std::wstring next;
+      Score score;
+    };
+    std::vector<NextPair> pairs;
+  };
+  void SerializeSnapshot(const SaveSnapshot& snap, std::string* blob) const;
+  std::thread save_thread_;
   void AppendRawLog(const std::wstring& window, const std::wstring& text,
                     const std::vector<std::wstring>& rejected, int64_t now);
+  void LogWorker();
+  void DrainLogQueueLocked();  // log_mutex_ 內：把佇列的紀錄加密寫進檔案
+  std::mutex log_mutex_;
+  std::condition_variable log_cv_;
+  std::deque<std::string> log_queue_;  // 待加密的原始紀錄（已排版好的行）
+  std::thread log_worker_;
+  bool log_stop_ = false;
   // 在鎖內把一次送出計入統計（套用精煉結果：略過刪除的詞、合併的寫法換成正確寫法；
   // rejected 的片段也略過）
   void RecordLocked(const std::wstring& window, const std::wstring& text, int64_t now,

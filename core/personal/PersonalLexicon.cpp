@@ -32,6 +32,11 @@ int64_t Now() {
       .count();
 }
 
+double DecayedAt(double value, int64_t last, int64_t now, double half_life_days) {
+  const double age_days = (double)(now - last) / 86400.0;
+  return age_days <= 0 ? value : value * std::pow(0.5, age_days / half_life_days);
+}
+
 bool IsSentenceEnd(wchar_t c) {
   return c == L'。' || c == L'！' || c == L'？' || c == L'!' || c == L'?' ||
          c == L'\n' || c == L'\r';
@@ -71,23 +76,24 @@ PersonalLexicon::PersonalLexicon(fs::path dir) : dir_(std::move(dir)) {
 }
 
 PersonalLexicon::~PersonalLexicon() {
+  // 停掉原始紀錄的背景寫入：stop 後佇列裡剩下的會先寫完才結束
+  {
+    std::lock_guard<std::mutex> lock(log_mutex_);
+    log_stop_ = true;
+  }
+  log_cv_.notify_one();
+  if (log_worker_.joinable())
+    log_worker_.join();
+  // 等背景存檔結束，再做最後一次存檔
+  if (save_thread_.joinable())
+    save_thread_.join();
   if (!persist_)
     return;
-  // 等背景存檔結束，再做最後一次存檔
-  for (int i = 0; i < 500; ++i) {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (!saving_)
-        break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
   Save();
 }
 
 double PersonalLexicon::Decayed(const Score& s, int64_t now) const {
-  const double age_days = (double)(now - s.last) / 86400.0;
-  return age_days <= 0 ? s.value : s.value * std::pow(0.5, age_days / half_life_days_);
+  return DecayedAt(s.value, s.last, now, half_life_days_);
 }
 
 void PersonalLexicon::Bump(Score& s, int64_t now) const {
@@ -340,11 +346,10 @@ size_t PersonalLexicon::WordCount() const {
 }
 
 // 序列化並在記憶體中淘汰：只留分數最高的一批，其餘丟掉
-bool PersonalLexicon::SaveLocked(std::string* blob) const {
-  const int64_t now = Now();
+void PersonalLexicon::SerializeSnapshot(const SaveSnapshot& snap, std::string* blob) const {
   std::vector<std::pair<double, const std::wstring*>> words;
-  for (const auto& [word, s] : words_) {
-    const double v = Decayed(s, now);
+  for (const auto& [word, s] : snap.words) {
+    const double v = DecayedAt(s.value, s.last, snap.now, snap.half_life_days);
     if (v >= kMinScore)
       words.emplace_back(v, &word);
   }
@@ -358,12 +363,10 @@ bool PersonalLexicon::SaveLocked(std::string* blob) const {
     const std::wstring* next;
   };
   std::vector<Pair> pairs;
-  for (const auto& [prev, nexts] : next_) {
-    for (const auto& [next, s] : nexts) {
-      const double v = Decayed(s, now);
-      if (v >= kMinScore)
-        pairs.push_back({v, &prev, &next});
-    }
+  for (const auto& p : snap.pairs) {
+    const double v = DecayedAt(p.score.value, p.score.last, snap.now, snap.half_life_days);
+    if (v >= kMinScore)
+      pairs.push_back({v, &p.prev, &p.next});
   }
   std::sort(pairs.begin(), pairs.end(), [](auto& a, auto& b) { return a.v > b.v; });
   if (pairs.size() > kMaxPairs)
@@ -373,10 +376,25 @@ bool PersonalLexicon::SaveLocked(std::string* blob) const {
   out << kMagic << "\n";
   out.precision(6);
   for (const auto& [v, word] : words)
-    out << "W\t" << utf8::FromWide(*word) << "\t" << v << "\t" << now << "\n";
+    out << "W\t" << utf8::FromWide(*word) << "\t" << v << "\t" << snap.now << "\n";
   for (const auto& p : pairs)
-    out << "N\t" << utf8::FromWide(*p.prev) << "\t" << utf8::FromWide(*p.next) << "\t" << p.v << "\t" << now << "\n";
+    out << "N\t" << utf8::FromWide(*p.prev) << "\t" << utf8::FromWide(*p.next) << "\t" << p.v << "\t"
+        << snap.now << "\n";
   *blob = out.str();
+}
+
+// 序列化並在記憶體中淘汰：只留分數最高的一批，其餘丟掉
+bool PersonalLexicon::SaveLocked(std::string* blob) const {
+  SaveSnapshot snap;
+  snap.now = Now();
+  snap.half_life_days = half_life_days_;
+  snap.words.reserve(words_.size());
+  for (const auto& [word, s] : words_)
+    snap.words.emplace_back(word, s);
+  for (const auto& [prev, nexts] : next_)
+    for (const auto& [next, s] : nexts)
+      snap.pairs.push_back({prev, next, s});
+  SerializeSnapshot(snap, blob);
   return true;
 }
 
@@ -393,25 +411,40 @@ bool PersonalLexicon::Save() {
 }
 
 void PersonalLexicon::MaybeSaveAsync() {
-  std::string plain;
+  SaveSnapshot snap;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const int64_t now = Now();
-    if (saving_ || dirty_ == 0 || (dirty_ < 50 && now - last_save_ < 300))
+    if (!persist_ || saving_ || dirty_ == 0 || (dirty_ < 50 && now - last_save_ < 300))
       return;
-    SaveLocked(&plain);
+    // 鎖內只複製快照（字串副本，毫秒級）；序列化、加密、寫檔都在背景執行
+    snap.now = now;
+    snap.half_life_days = half_life_days_;
+    snap.words.reserve(words_.size());
+    for (const auto& [word, s] : words_)
+      snap.words.emplace_back(word, s);
+    for (const auto& [prev, nexts] : next_)
+      for (const auto& [next, s] : nexts)
+        snap.pairs.push_back({prev, next, s});
     dirty_ = 0;
     last_save_ = now;
     saving_ = true;
+    if (save_thread_.joinable())
+      save_thread_.join();  // saving_ 為否才會到這：上一輪已完成，幾乎不等
   }
-  // 加密與寫檔在背景執行，不佔用打字的執行緒
-  std::thread([this, plain = std::move(plain)]() {
-    std::string cipher;
-    if (Protect(plain, &cipher))
-      WriteFileAtomic(dir_ / L"lexicon.dat", cipher);
+  save_thread_ = std::thread([this, snap = std::move(snap)]() mutable {
+    try {
+      std::string plain;
+      SerializeSnapshot(snap, &plain);
+      std::string cipher;
+      if (Protect(plain, &cipher))
+        WriteFileAtomic(dir_ / L"lexicon.dat", cipher);
+    } catch (...) {
+      // 背景執行緒不能讓例外漏出去（會 terminate）；存檔失敗下次再試
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     saving_ = false;
-  }).detach();
+  });
 }
 
 bool PersonalLexicon::Load() {
@@ -789,8 +822,9 @@ std::vector<fs::path> PersonalLexicon::ArchivedLogs() const {
 }
 
 bool PersonalLexicon::ArchiveActiveLog(fs::path* archived) {
-  // 持鎖：避免和 AppendRawLog 同時寫入
-  std::lock_guard<std::mutex> lock(mutex_);
+  // 持 log_mutex_：先讓佇列的紀錄進檔案，封存才完整；寫入中的批次也等它結束
+  std::lock_guard<std::mutex> lock(log_mutex_);
+  DrainLogQueueLocked();
   std::error_code ec;
   const fs::path active = ActiveLogPath();
   if (!fs::exists(active, ec) || fs::file_size(active, ec) == 0)
@@ -918,7 +952,8 @@ void PersonalLexicon::Rebuild(std::vector<RawRecord> records) {
   }
 }
 
-// 原始輸入紀錄：每筆各自加密後附加到檔尾（4 位元組長度 + 密文），供之後的定時精煉使用
+// 原始輸入紀錄：每筆各自加密後附加到檔尾（4 位元組長度 + 密文），供之後的定時精煉使用。
+// 送出執行緒只排好版丟進佇列；加密與寫檔由背景執行緒批次處理
 void PersonalLexicon::AppendRawLog(const std::wstring& window, const std::wstring& text,
                                    const std::vector<std::wstring>& rejected, int64_t now) {
   std::wstring body = text;
@@ -926,17 +961,47 @@ void PersonalLexicon::AppendRawLog(const std::wstring& window, const std::wstrin
     body += (i == 0 ? kRejectedMark : kRejectedSeparator) + rejected[i];
   std::ostringstream record;
   record << now << "\t" << utf8::FromWide(window) << "\t" << utf8::FromWide(body);
-  std::string cipher;
-  if (!Protect(record.str(), &cipher))
+  {
+    std::lock_guard<std::mutex> lock(log_mutex_);
+    if (!log_worker_.joinable())
+      log_worker_ = std::thread([this] { LogWorker(); });
+    log_queue_.push_back(record.str());
+  }
+  log_cv_.notify_one();
+}
+
+// log_mutex_ 內：把佇列的紀錄依序加密、一次開檔寫完
+void PersonalLexicon::DrainLogQueueLocked() {
+  if (log_queue_.empty())
     return;
-  std::lock_guard<std::mutex> lock(mutex_);
   std::ofstream out(dir_ / L"input_log.dat", std::ios::binary | std::ios::app);
-  const uint32_t len = (uint32_t)cipher.size();
-  out.write((const char*)&len, sizeof(len));
-  out.write(cipher.data(), (std::streamsize)cipher.size());
+  std::string cipher;
+  while (!log_queue_.empty()) {
+    if (Protect(log_queue_.front(), &cipher)) {
+      const uint32_t len = (uint32_t)cipher.size();
+      out.write((const char*)&len, sizeof(len));
+      out.write(cipher.data(), (std::streamsize)cipher.size());
+    }
+    log_queue_.pop_front();
+  }
+}
+
+void PersonalLexicon::LogWorker() {
+  std::unique_lock<std::mutex> lock(log_mutex_);
+  for (;;) {
+    log_cv_.wait(lock, [&] { return log_stop_ || !log_queue_.empty(); });
+    DrainLogQueueLocked();
+    if (log_stop_ && log_queue_.empty())
+      return;
+  }
 }
 
 void PersonalLexicon::Clear() {
+  // 佇列中還沒寫的原始紀錄一起丟掉；背景正在寫的批次寫完後檔案照樣刪
+  {
+    std::lock_guard<std::mutex> lock(log_mutex_);
+    log_queue_.clear();
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   words_.clear();
   heads_.clear();
