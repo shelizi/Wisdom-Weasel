@@ -37,6 +37,7 @@ class ChoiceStatsStore;
 class CalibrationStore;
 class SentenceFinder;
 struct RerankResult;
+class RankerModel;
 class ScriptConverter;
 enum class CandidateKind : uint8_t;
 class HomophoneFinder;
@@ -311,6 +312,11 @@ class Controller {
   std::unique_ptr<LearnFilter> learn_filter_;
   // 停用或重新部署時，精煉器與個人詞庫交給這條執行緒停止、存檔再釋放
   std::thread retire_thread_;
+
+  // 學習式整句排序器（personal/ranker_model.json；請求帶 shared_ptr 給引擎）
+  std::shared_ptr<RankerModel> ranker_model_;
+  std::filesystem::file_time_type ranker_model_mtime_{};
+  int64_t ranker_model_check_ms_ = 0;
 
   std::unique_ptr<PredictionEngine> prediction_;
   std::unique_ptr<HomophoneFinder> homophones_;

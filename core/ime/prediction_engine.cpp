@@ -9,6 +9,7 @@
 #include "../base/devlog.h"
 #include "../llm/LLMProvider.h"
 #include "ZhuyinPreview.h"
+#include "ranker.h"
 #include "rescore.h"
 #include "text_rules.h"
 
@@ -273,8 +274,12 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
           std::lock_guard<std::mutex> infer_lock(state->infer);
           if (!current())
             return;
-          if (LLMProvider* scorer = models().rescore)
+          if (LLMProvider* scorer = models().rescore) {
             result = RerankSentences(scorer, rerank_tail, sentences, req.rerank_options);
+            // 學習式排序器：載入了就用模型分數重算推薦（fail-open：失敗保留公式結果）
+            ApplyRanker(req.ranker.get(), rerank_tail.size(), req.zhuyin,
+                        req.rerank_options, &result);
+          }
         }
         // 選字紀錄要記超過評分上限的候選：查到但沒評的尾巴也交出去
         if (sentences.size() > result.texts.size())

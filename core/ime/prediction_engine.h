@@ -25,6 +25,8 @@ class LLMProvider;
 
 namespace ime {
 
+class RankerModel;
+
 // kRerank：整句重排的推薦（候選窗一樣標「推薦」、Tab 套用，校準另外算）
 enum class CandidateKind : uint8_t { kPrediction, kRecommend, kCorrection, kRerank };
 
@@ -74,6 +76,9 @@ struct PredictionRequest {
   // 不需要模型——純資料收集，結果只用來寫選字紀錄
   bool log_sentences = false;
   RerankOptions rerank_options;
+  // 學習式排序器（personal/ranker_model.json）：有載入就用它的分數取代公式決策。
+  // shared_ptr：控制器可能在請求處理中換掉模型檔
+  std::shared_ptr<const RankerModel> ranker;
   unsigned delay_ms = 0;               // 防抖：等這麼久後若已有更新的請求就放棄
 };
 

@@ -590,6 +590,9 @@ int RunAutoTune(Configurator* configurator) {
                        {{"top", r.value("top", 0)}, {"margin", r.value("margin", 0.0)}}, nullptr);
       write("applied " + applied.dump());
     }
+    // 順便重訓學習式排序器：驗證贏過現行設定才會匯出，沒贏就維持現狀
+    const json tr = backend.Call("rank.train", {{"sync", true}}, nullptr);
+    write("rank_train " + tr.dump());
     return 0;
   } catch (...) {
     return 1;

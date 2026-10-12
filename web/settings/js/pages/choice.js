@@ -39,6 +39,9 @@ let autoCfg = null;          // 自動微調開關與排程狀態
 let autoEntries = [];        // 最近的自動調整紀錄
 let autoRunning = false;
 let autoText = '';
+let rankStatus = null;       // 學習式排序器狀態（loaded/type/trained/history）
+let rankRunning = false;
+let rankText = '';
 
 function grammarStatus(g) {
   if (downloading) return downloadText || '下載中…';
@@ -70,20 +73,23 @@ export default {
       });
       ctx.on('rerank_tune', (e) => this.onTuneEvent(ctx, e));
       ctx.on('rerank_auto', (e) => this.onAutoEvent(ctx, e));
+      ctx.on('rank_train', (e) => this.onRankEvent(ctx, e));
     }
     this.refresh(ctx);
   },
 
   async refresh(ctx) {
     try {
-      const [stats, log, grammar, calibration, history, cfg] = await Promise.all([
+      const [stats, log, grammar, calibration, history, cfg, rank] = await Promise.all([
         ctx.call('stats.get', { span }), ctx.call('choicelog.status'), ctx.call('grammar.status'),
-        ctx.call('calibration.get'), ctx.call('rerank.history'), ctx.call('rerank.auto_cfg')]);
+        ctx.call('calibration.get'), ctx.call('rerank.history'), ctx.call('rerank.auto_cfg'),
+        ctx.call('rank.status')]);
       this.stats = stats;
       this.calibration = calibration;
       this.log = log;
       autoEntries = history.entries || [];
       autoCfg = cfg;
+      rankStatus = rank;
       ctx.state.init.grammar = grammar;
       downloading = grammar.downloading || downloading;
       if (ctx.isCurrent(this)) ctx.rerender();
@@ -284,6 +290,56 @@ export default {
     return parts.concat(recent).join('\n');
   },
 
+  onRankEvent(ctx, e) {
+    if (e.state === 'pause') {
+      rankText = e.message;
+    } else if (e.state === 'score') {
+      rankText = '用目前的模型評分：' + e.done + ' / ' + e.total + ' 筆';
+    } else if (e.state === 'done' || e.state === 'error' || e.state === 'cancelled') {
+      rankRunning = false;
+      rankText = e.message || (e.exported ? '已匯出模型。' : '沒有匯出。');
+      this.refresh(ctx);
+    }
+    if (ctx.isCurrent(this)) ctx.rerender();
+  },
+
+  async startRank(ctx) {
+    try {
+      const r = await ctx.call('rank.train', {});
+      if (r && r.started) {
+        rankRunning = true;
+        rankText = '準備中…';
+        ctx.rerender();
+      } else if (r && r.message) {
+        rankText = r.message;
+        ctx.rerender();
+      }
+    } catch (e) {
+      ctx.status(e.message, 'error');
+    }
+  },
+
+  rankStatusLine() {
+    if (!rankStatus) return '讀取中…';
+    const parts = [];
+    if (rankStatus.loaded) {
+      const t = rankStatus.trained || {};
+      parts.push('排序器使用中（' + rankStatus.type + '，門檻 '
+        + Math.round((rankStatus.margin || 0) * 100) / 100
+        + (t.val_acc ? '；驗證 ' + Math.round(t.val_acc * 1000) / 10 + '%' : '') + '）');
+    } else {
+      parts.push('還沒有排序器：用選字紀錄訓一個小模型，贏過目前設定才啟用。');
+    }
+    const last = (rankStatus.history || [])[0];
+    if (last && last.ts) {
+      const d = new Date(last.ts);
+      parts.push('上次訓練 ' + (d.getMonth() + 1) + '/' + d.getDate()
+        + '：' + last.type + ' 驗證 ' + Math.round((last.val_acc || 0) * 1000) / 10
+        + '%（公式 ' + Math.round((last.base_acc || 0) * 1000) / 10 + '%）');
+    }
+    return parts.join('\n');
+  },
+
   // 自動調整的網格：每列一個「評幾句」、每欄一個門檻；格內是準確率，選中的打勾
   renderTuneGrid() {
     if (!tuneGrid) return null;
@@ -428,6 +484,20 @@ export default {
               button('回復上次', () => this.revert(ctx))),
             h('div', { class: 'card-desc status-text' },
               autoText || autoCfg ? lines([autoText, this.autoStatusLine()].filter(Boolean).join('\n')) : '讀取中…'),
+          ],
+        }),
+        card({
+          title: '學習式排序器',
+          desc: '用你的選字紀錄訓練一個小排序模型（線性或 GBDT，取代上面手調的公式）：'
+            + '每句候選用「模型分數、名次、個人詞庫、現行公式分數」等特徵重打分數。'
+            + '訓練時最後 20% 紀錄留作驗證——贏過目前設定且錯改沒變多才啟用，不夠好就維持公式。'
+            + '需要 50 筆以上有整句候選的紀錄；訓練期間輸入法會暫時放掉模型。',
+          below: [
+            h('div', { class: 'row' },
+              button(rankRunning ? '訓練中…' : '訓練排序器', () => this.startRank(ctx),
+                { disabled: rankRunning || tuning || autoRunning }),
+              h('span', { class: 'muted grow' }, rankText)),
+            h('div', { class: 'card-desc status-text' }, lines(this.rankStatusLine())),
           ],
         }),
         card({

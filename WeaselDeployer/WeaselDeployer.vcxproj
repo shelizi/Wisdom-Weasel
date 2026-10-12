@@ -228,6 +228,12 @@
     <ClCompile Include="..\core\settings\auto_tune.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\settings\rank_train.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\core\ime\ranker.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\llm\RemoteLLMProvider.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

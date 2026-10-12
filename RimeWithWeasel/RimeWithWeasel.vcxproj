@@ -281,6 +281,9 @@
     <ClCompile Include="..\core\ime\candidate_reranker.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\ime\ranker.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\ime\calibration.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -322,6 +325,7 @@
     <ClInclude Include="..\core\ime\choice_log.h" />
     <ClInclude Include="..\core\ime\calibration.h" />
     <ClInclude Include="..\core\ime\candidate_reranker.h" />
+    <ClInclude Include="..\core\ime\ranker.h" />
     <ClInclude Include="..\core\ime\choice_stats.h" />
     <ClInclude Include="..\core\ime\controller.h" />
     <ClInclude Include="..\core\ime\keys.h" />

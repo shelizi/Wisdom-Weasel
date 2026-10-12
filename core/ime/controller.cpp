@@ -29,6 +29,7 @@
 #include "choice_stats.h"
 #include "keys.h"
 #include "prediction_engine.h"
+#include "ranker.h"
 #include "rime_helpers.h"
 #include "script_convert.h"
 #include "text_rules.h"
@@ -2328,6 +2329,26 @@ void Controller::TriggerPrediction(uint64_t id,
   request.rerank_options.personal = [this](const std::wstring& text) {
     return personal_ ? personal_->SentenceScore(text) : 0.0;
   };
+  // 學習式排序器：檔案有變才重讀（5 秒檢查一次）；讀不到就沿用/清空
+  const uint64_t now_ms = base::MonotonicMs();
+  if (now_ms - (uint64_t)ranker_model_check_ms_ > 5000) {
+    ranker_model_check_ms_ = (int64_t)now_ms;
+    const std::filesystem::path model_path =
+        options_.user_dir / "personal" / "ranker_model.json";
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(model_path, ec);
+    if (ec || mtime != ranker_model_mtime_ || !ranker_model_) {
+      auto m = std::make_shared<RankerModel>();
+      if (!ec && m->Load(model_path)) {
+        ranker_model_ = std::move(m);
+        ranker_model_mtime_ = mtime;
+      } else {
+        ranker_model_.reset();
+        ranker_model_mtime_ = {};
+      }
+    }
+  }
+  request.ranker = ranker_model_;
   request.zhuyin = zhuyin;
   // 校正只看組字區的內容：組字區裡已確定的部分（混打、標點）當前文，不帶之前送出的文字
   request.typo_context = ss->mixed_text;

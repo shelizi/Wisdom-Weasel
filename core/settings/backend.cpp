@@ -15,11 +15,13 @@
 #include "../net/http.h"
 #include "../base/utf8.h"
 #include "../ime/calibration.h"
+#include "../ime/ranker.h"
 #include "../llm/RemoteLLMProvider.h"
 #include "bench.h"
 #include "ops.h"
 #include "rerank_tune.h"
 #include "auto_tune.h"
+#include "rank_train.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -569,7 +571,7 @@ Backend::Thread Backend::ThreadOf(const std::string& method) {
   static const std::set<std::string> kUi = {"models.pickFile", "dicts.pickFile", "app.setTheme"};
   static const std::set<std::string> kRime = {"init", "schemas.details", "schemas.install", "style.preview",
                                               "settings.apply", "dicts.list", "dicts.run", "llm.reload",
-                                              "rerank.auto", "rerank.apply"};
+                                              "rerank.auto", "rerank.apply", "rank.train"};
   if (kUi.count(method))
     return Thread::kUi;
   if (kRime.count(method))
@@ -1081,6 +1083,124 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
             {"last_run_ms", st.last_run_ms},
             {"last_records", st.last_records},
             {"cooldown_until_ms", st.cooldown_until_ms}};
+  }
+
+  // 學習式整句排序器：用選字紀錄訓線性/GBDT 小模型；驗證集贏過現行公式且
+  // 錯改沒變多才匯出 personal/ranker_model.json。流程同 rerank.auto
+  //（暫停輸入法模型 → 載入評分模型 → 訓練 → 恢復）；結果走 rank_train 事件
+  if (method == "rank.train") {
+    const fs::path personal = PersonalDir(s.platform);
+    const json llm = s.LLMJson();
+    const json choice = llm.value("choice", json::object());
+    const size_t cur_top = (size_t)CfgInt(choice, "rerank_sentences", 10);
+    const double cur_margin = CfgDbl(choice, "rerank_margin", 2.0);
+    const size_t context_chars = (size_t)CfgInt(choice, "rerank_context", 30);
+    const double alpha = CfgDbl(choice, "rerank_alpha", 0.0);
+    const double personal_w = CfgDbl(choice, "rerank_personal", 0.0);
+    LLMLocalModelSpec spec;
+    if (!ScorerSpec(llm, &spec))
+      return json{{"action", "error"},
+                  {"message", "沒有可用的本機評分模型（評分、預測或校正都沒選本機模型）"}};
+    const bool sync = p.value("sync", false);
+    auto run = [&s, personal, spec, cur_top, cur_margin, context_chars, alpha, personal_w](
+                   Emit emit2, const std::atomic<bool>& cancel) {
+      const auto ev = [&emit2](const json& e) {
+        if (emit2)
+          emit2("rank_train", e);
+      };
+      const fs::path paused = s.platform.UserDataDir() / "llm_paused.txt";
+      std::error_code ec;
+      fs::remove(paused, ec);
+      if (s.platform.SendPersonalCommand(9)) {
+        ev({{"state", "pause"}, {"message", "暫停輸入法的模型…"}});
+        for (int i = 0; i < 100 && !cancel && !fs::exists(paused, ec); ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      settings_rerank::RankTrainReport r;
+      try {
+        RemoteLLMProvider provider("llamacpp");
+        if (provider.LoadModelDirect(spec, 0.0) && provider.IsAvailable()) {
+          LLMCancelScope cancel_scope([&cancel] { return cancel.load(); });
+          r = settings_rerank::TrainRanker(
+              &provider, personal, context_chars, alpha, personal_w, cur_top, cur_margin,
+              cancel, [&ev](size_t done, size_t total) {
+                ev({{"state", "score"}, {"done", done}, {"total", total}});
+              });
+        } else {
+          r.message = "無法載入評分模型";
+        }
+      } catch (const std::exception& e) {
+        r.message = e.what();
+      }
+      s.platform.SendPersonalCommand(10);  // 輸入法重新載入模型
+      return r;
+    };
+    const auto report_json = [](const settings_rerank::RankTrainReport& r) {
+      return json{{"exported", r.exported}, {"type", r.type},
+                  {"cases", r.cases},         {"usable", r.usable},
+                  {"train", r.train_cases},   {"val", r.val_cases},
+                  {"base_acc", r.base_acc},   {"base_wrong", r.base_wrong},
+                  {"lin_acc", r.lin_acc},     {"gbdt_acc", r.gbdt_acc},
+                  {"val_acc", r.val_acc},     {"val_wrong", r.val_wrong},
+                  {"margin", r.margin},       {"cancelled", r.cancelled},
+                  {"message", r.message}};
+    };
+    if (sync) {
+      std::atomic<bool> cancel{false};
+      return report_json(run(s.emit, cancel));
+    }
+    std::lock_guard<std::mutex> lock(s.job_mutex);
+    if (s.tune_running)
+      throw Error("調整正在進行中。");
+    if (s.tune_job.joinable())
+      s.tune_job.join();
+    s.tune_cancel = std::make_shared<std::atomic<bool>>(false);
+    s.tune_running = true;
+    Emit emit = s.emit;
+    auto cancel = s.tune_cancel;
+    s.tune_job = std::thread([&s, emit, cancel, run, report_json]() {
+      auto r = run(emit, *cancel);
+      json out = report_json(r);
+      out["state"] = "done";
+      if (emit)
+        emit("rank_train", out);
+      s.tune_running = false;
+    });
+    return {{"started", true}};
+  }
+  // 排序器狀態：模型檔有沒有載得動＋最近訓練紀錄
+  if (method == "rank.status") {
+    const fs::path personal = PersonalDir(s.platform);
+    ime::RankerModel m;
+    const bool loaded = m.Load(personal / "ranker_model.json");
+    json j{{"loaded", loaded}};
+    if (loaded) {
+      j["type"] = m.type();
+      j["margin"] = m.margin();
+      try {
+        j["trained"] = json::parse(m.info());
+      } catch (...) {
+      }
+    }
+    json hist = json::array();
+    std::ifstream in(personal / "rank_train.log");
+    std::string line;
+    std::vector<std::string> tail;
+    while (std::getline(in, line)) {
+      if (!line.empty()) {
+        tail.push_back(line);
+        if (tail.size() > 10)
+          tail.erase(tail.begin());
+      }
+    }
+    for (auto it = tail.rbegin(); it != tail.rend(); ++it) {
+      try {
+        hist.push_back(json::parse(*it));
+      } catch (...) {
+      }
+    }
+    j["history"] = hist;
+    return j;
   }
 
   // --- 語言模型 -------------------------------------------------------------
