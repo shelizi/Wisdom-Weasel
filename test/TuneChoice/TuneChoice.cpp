@@ -558,7 +558,8 @@ void PrintScore(const char* name, const Score& s, size_t n) {
 // batch：用 ScoreBatch（共用前文、一次解碼，同輸入法）而不是逐句 ScoreText
 void ReportTopK(const std::vector<Case>& cases,
                 LLMProvider* scorer,
-                bool batch) {
+                bool batch,
+                size_t top_n) {
   struct Item {
     const Case* c;
     std::vector<double> lm;
@@ -575,11 +576,11 @@ void ReportTopK(const std::vector<Case>& cases,
     if (batch) {
       const std::vector<std::wstring> texts(
           c.sentences.begin(),
-          c.sentences.begin() + (std::min<size_t>)(c.sentences.size(), 10));
+          c.sentences.begin() + (std::min<size_t>)(c.sentences.size(), top_n));
       scorer->ScoreBatch(Tail(c.context, 30), texts, &it.lm);
       scored += texts.size();
     } else {
-      for (size_t i = 0; i < c.sentences.size() && i < 10; ++i) {
+      for (size_t i = 0; i < c.sentences.size() && i < top_n; ++i) {
         double total = NAN;
         if (!scorer->ScoreText(Tail(c.context, 30), c.sentences[i], &total,
                                nullptr))
@@ -982,6 +983,7 @@ int main(int argc, char** argv) {
   ime::RescoreOptions only_options;
   std::string grammar;  // octagram 語言模型檔（.gram），空白 = 不用
   int max_sentences = 0;   // librime 1.17 translator/max_sentences，0 = 預設
+  size_t score_top = 10;   // --score-top N：重排最多評幾句（預設 10，同輸入法）
   bool rime_only = false;  // 只評估 Rime（P0.5），不載入模型
   size_t latency = 0;      // 量推薦延遲的題數（不用快取）
   bool topk_rerank = false;
@@ -1017,6 +1019,8 @@ int main(int argc, char** argv) {
       grammar = next();
     else if (a == "--max-sentences")
       max_sentences = std::atoi(next().c_str());
+    else if (a == "--score-top")
+      score_top = (size_t)std::atoll(next().c_str());
     else if (a == "--rime-only")
       rime_only = true;
     else if (a == "--topk-rerank")
@@ -1094,7 +1098,10 @@ int main(int argc, char** argv) {
              "  translator/max_homophones: 7\n  translator/max_homographs: 7\n";
     }
     if (max_sentences > 0)
-      out << "  translator/max_sentences: " << max_sentences << "\n";
+      // 跟設定程式一樣放寬 cutoff（ops.cpp）：不然分數低很多的整句會被濾掉，
+      // K 調大時後面的候選才拿得到
+      out << "  translator/max_sentences: " << max_sentences << "\n"
+             "  translator/sentence_cutoff_threshold: 100\n";
   }
   RimeApi* api = rime_get_api();
   const std::string user_dir = user.string();
@@ -1237,7 +1244,7 @@ int main(int argc, char** argv) {
   if (topk_rerank) {
     ReportRime(cases);
     ReportTopK(cases, batch ? static_cast<LLMProvider*>(&provider) : &scorer,
-               batch);
+               batch, score_top);
     api->finalize();
     return 0;
   }
