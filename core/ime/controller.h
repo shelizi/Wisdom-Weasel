@@ -285,9 +285,11 @@ class Controller {
   // 模型：在推理鎖（prediction_->InferMutex()）下更換與取用
   std::unique_ptr<LLMProvider> llm_provider_;
   std::unique_ptr<LLMProvider> typo_owned_;
-  // llm/choice/scorer/*：評分專用的本機模型（推薦、整句重排、學習過濾）；沒設定時借預測或校正的模型
+  // llm/choice/scorer/*：評分用的本機模型（推薦、整句重排、學習過濾）；和預測或校正選同一個
+  // 模型檔時共用（scorer_llm_ 指過去），都借不到才自己載入
   std::unique_ptr<LLMProvider> scorer_owned_;
-  LLMProvider* typo_llm_ = nullptr;  // 可能指向 llm_provider_
+  LLMProvider* scorer_llm_ = nullptr;  // 可能指向 llm_provider_ 或 typo_llm_
+  LLMProvider* typo_llm_ = nullptr;    // 可能指向 llm_provider_
   std::wstring loaded_model_;        // 目前載入的模型（設定畫面顯示用）
   // 模型載入執行緒：啟動推理行程、載入模型要好幾秒，不能在服務端的鎖下做（所有應用程式都在等）。
   // LoadConfig 放一份計畫進來（只留最新的），載好後再拿鎖換上；設定又變了就丟掉舊的結果

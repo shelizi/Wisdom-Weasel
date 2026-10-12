@@ -123,6 +123,7 @@ struct Controller::ModelPlan {
   int typo_think_tokens = 2048;
   // 推薦、整句重排的評分模型（沒指定時借預測或校正的，不在這裡載入）
   bool scorer = false;
+  int scorer_share = 0;  // 和預測（1）或校正（2）選同一個本機模型檔時共用，不自己載入
   LLMLocalModelSpec scorer_spec;
   // 簡體在地化：和智慧預測（1）或整句校正（2）選同一組時共用，否則自己載入
   bool localize = false;
@@ -523,7 +524,8 @@ void Controller::LoadConfig(RimeConfig* config) {
 
 std::vector<std::unique_ptr<LLMProvider>> Controller::TakeModels() {
   std::vector<std::unique_ptr<LLMProvider>> retired;
-  typo_llm_ = nullptr;  // 可能指向 llm_provider_，先放掉
+  typo_llm_ = nullptr;     // 可能指向 llm_provider_，先放掉
+  scorer_llm_ = nullptr;   // 可能指向 llm_provider_ 或 typo_llm_
   retired.push_back(std::move(typo_owned_));
   retired.push_back(std::move(scorer_owned_));
   retired.push_back(std::move(llm_provider_));
@@ -723,6 +725,14 @@ void Controller::PlanScorer(RimeConfig* config, ModelPlan* plan) {
     spec.n_gpu_layers = value;
   if (api_->config_get_int(config, "llm/llamacpp/n_threads", &value) && value > 0)
     spec.n_threads = value;
+  // 和預測或校正選同一個本機模型檔：共用已載入的，省一份模型記憶體。
+  // 評分只算 logprob，不吃對方的 instruct／thinking／n_ctx 設定，同檔就能借
+  if (read("llm/provider_type") == "llamacpp" &&
+      spec.model_path == read("llm/llamacpp/model_path"))
+    plan->scorer_share = 1;
+  else if (read("llm/typo/type") == "llamacpp" &&
+           spec.model_path == read("llm/typo/model_path"))
+    plan->scorer_share = 2;
 }
 
 void Controller::ModelLoaderLoop() {
@@ -810,14 +820,24 @@ void Controller::LoadModels(ModelPlan& plan) {
       localize = std::move(provider);
     }
   }
+  int scorer_shares = 0;
   if (plan.scorer && !PlanStale(plan)) {
-    auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
-    if (provider->LoadModelDirect(plan.scorer_spec, 0.0)) {
-      scorer = std::move(provider);
-      LOG(INFO) << "Scorer model loaded: " << plan.scorer_spec.model_path;
-    } else {
-      LOG(ERROR) << "Scorer: failed to load model " << plan.scorer_spec.model_path;
+    if (plan.scorer_share == 1 && predict && predict->IsAvailable())
+      scorer_shares = 1;
+    else if (plan.scorer_share == 2 && (typo || typo_shares))
+      scorer_shares = 2;
+    else {
+      auto provider = std::make_unique<RemoteLLMProvider>("llamacpp");
+      if (provider->LoadModelDirect(plan.scorer_spec, 0.0)) {
+        scorer = std::move(provider);
+        LOG(INFO) << "Scorer model loaded: " << plan.scorer_spec.model_path;
+      } else {
+        LOG(ERROR) << "Scorer: failed to load model " << plan.scorer_spec.model_path;
+      }
     }
+    if (scorer_shares)
+      LOG(INFO) << "Scorer shares the "
+                << (scorer_shares == 1 ? "prediction" : "typo correction") << " model.";
   }
 
   // 換上：和 LoadConfig 一樣先拿服務端的鎖再拿推理鎖。服務端的鎖不能一直等（解構時會持鎖等
@@ -845,6 +865,9 @@ void Controller::LoadModels(ModelPlan& plan) {
     localize_llm_ = localize_shares == 1   ? llm_provider_.get()
                     : localize_shares == 2 ? typo_llm_
                                            : localize_owned_.get();
+    scorer_llm_ = scorer_shares == 1   ? llm_provider_.get()
+                  : scorer_shares == 2 ? typo_llm_
+                                       : scorer_owned_.get();
     loaded_model_ = label;
   }
   api_lock.unlock();
@@ -861,6 +884,10 @@ void Controller::SetPredictionModel(std::unique_ptr<LLMProvider> model, bool ena
   std::lock_guard<std::mutex> infer_lock(prediction_->InferMutex());
   if (typo_llm_ == llm_provider_.get())
     typo_llm_ = nullptr;
+  if (localize_llm_ == llm_provider_.get())
+    localize_llm_ = nullptr;
+  if (scorer_llm_ == llm_provider_.get())
+    scorer_llm_ = nullptr;
   llm_provider_ = std::move(model);
   llm_enabled_ = enabled;
 }
@@ -912,8 +939,8 @@ LLMProvider* Controller::RescoreProvider() const {
   auto local = [](LLMProvider* p) {
     return p && p->IsAvailable() && p->GetProviderName() == "llama.cpp Local";
   };
-  if (local(scorer_owned_.get()))
-    return scorer_owned_.get();
+  if (local(scorer_llm_))
+    return scorer_llm_;
   if (local(llm_provider_.get()))
     return llm_provider_.get();
   if (typo_on_ && local(typo_llm_))
