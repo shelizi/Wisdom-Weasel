@@ -261,8 +261,8 @@ function loadForm(llm, defaults) {
       rescore: bool(get(llm, 'choice/rescore'), false),
       rerank: ['off', 'shadow', 'on'].includes(str(get(llm, 'choice/rerank'))) ? str(get(llm, 'choice/rerank')) : 'off',
       rerank_margin: str(get(llm, 'choice/rerank_margin')) || '2',
-      sentences: String([0, 3, 5, 10].includes(int(get(llm, 'choice/sentence_candidates'), 0))
-        ? int(get(llm, 'choice/sentence_candidates'), 0) : 0),
+      sentences: String(Math.max(0, Math.min(63, int(get(llm, 'choice/sentence_candidates'), 0)))),
+      rerank_sentences: String(Math.max(2, Math.min(63, int(get(llm, 'choice/rerank_sentences'), 10)))),
       min_confidence: str(get(llm, 'choice/min_confidence')) || '0.5',
       rerank_context: String(int(get(llm, 'choice/rerank_context'), 30)),
       rerank_alpha: str(get(llm, 'choice/rerank_alpha')) || '0',
@@ -314,7 +314,8 @@ export function buildLlm() {
   set(llm, 'choice/rerank', form.choice.rerank);
   const rerankMargin = parseFloat(trim(form.choice.rerank_margin));
   set(llm, 'choice/rerank_margin', Number.isFinite(rerankMargin) && rerankMargin >= 0 ? rerankMargin : 2);
-  set(llm, 'choice/sentence_candidates', Number(form.choice.sentences) || 0);
+  set(llm, 'choice/sentence_candidates', Math.max(0, Math.min(63, int(form.choice.sentences, 0))));
+  set(llm, 'choice/rerank_sentences', Math.max(2, Math.min(63, int(form.choice.rerank_sentences, 10))));
   set(llm, 'choice/rerank_context', Math.min(200, Math.max(0, int(form.choice.rerank_context, 30))));
   const alpha = parseFloat(trim(form.choice.rerank_alpha));
   set(llm, 'choice/rerank_alpha', Number.isFinite(alpha) ? Math.min(1, Math.max(0, alpha)) : 0);
@@ -381,10 +382,12 @@ export function validate() {
   return null;
 }
 
-// 方案要列幾個整句候選：使用者選的數量；開整句重排時至少 10 句（重排從這些整句挑）
+// 方案要列幾個整句候選：使用者選的數量；開整句重排時至少要給評分句數那麼多（重排從這些整句挑）
 function sentenceCount(form) {
-  const n = Number(form.choice.sentences) || 0;
-  return form.choice.rerank !== 'off' ? Math.max(n, 10) : n;
+  const n = Math.max(0, Math.min(63, int(form.choice.sentences, 0)));
+  if (form.choice.rerank === 'off') return n;
+  const score = Math.max(2, Math.min(63, int(form.choice.rerank_sentences, 10)));
+  return Math.max(n, score);
 }
 
 // 啟動或套用後：以儲存的設定重設表單

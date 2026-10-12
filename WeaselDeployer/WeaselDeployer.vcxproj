@@ -222,6 +222,9 @@
     <ClCompile Include="..\core\settings\bench.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\core\settings\rerank_tune.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\core\llm\RemoteLLMProvider.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

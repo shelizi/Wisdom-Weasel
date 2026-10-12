@@ -1,12 +1,7 @@
 import { h, section, card, checkbox, button, select, input, note, confirm, lines } from '../ui.js';
+import { int } from '../state.js';
 import { profileInfo } from './profiles.js';
 
-const kSentenceCounts = [
-  { value: '0', label: '關閉（Rime 預設）' },
-  { value: '3', label: '3 句' },
-  { value: '5', label: '5 句' },
-  { value: '10', label: '10 句' },
-];
 // 介入程度：整句重排的門檻與信心校準的門檻一起設（原方案 §12）。數值依 TuneChoice 與使用者的校準樣本
 export const kInterventions = [
   { value: 'conservative', label: '保守（很有把握才推薦）', margin: 12, min_confidence: 0.7 },
@@ -37,6 +32,9 @@ let selectedRow = 0;
 let downloading = false;
 let downloadText = '';
 let subscribed = false;
+let tuning = false;          // 整句重排自動調整進行中
+let tuneText = '';           // 進度或結果
+let tuneGrid = null;         // 完成的網格：{tops, margins, cells:{top:{margin:{accuracy,wrong_change}}}, best:{top,margin}}
 
 function grammarStatus(g) {
   if (downloading) return downloadText || '下載中…';
@@ -66,6 +64,7 @@ export default {
         }
         if (ctx.isCurrent(this)) ctx.rerender();
       });
+      ctx.on('rerank_tune', (e) => this.onTuneEvent(ctx, e));
     }
     this.refresh(ctx);
   },
@@ -84,6 +83,109 @@ export default {
     } catch (e) {
       ctx.status(e.message, 'error');
     }
+  },
+
+  // 整句重排自動調整：用選字紀錄裡自己的 Top-K 整句，拿目前的評分模型掃「門檻 × 評幾句」
+  async startTune(ctx) {
+    const { state } = ctx;
+    // 評分沒選時借智慧預測或注音校正的本機模型（與輸入法端的借用相同）
+    const local = (i) => (i >= 0 && i < state.profiles.length && !state.profiles[i].remote ? i : -1);
+    const i = [state.use.scorer, state.use.predict, state.use.typo].map(local).find((x) => x >= 0);
+    const p = i === undefined ? null : state.profiles[i];
+    if (!p || p.remote) {
+      ctx.status('請先在「各功能使用的模型」幫評分（或智慧預測）選一組本機模型。', 'error');
+      return;
+    }
+    if (!p.model_path) {
+      ctx.status('評分用的模型設定還沒選模型檔。', 'error');
+      return;
+    }
+    const f = state.form;
+    try {
+      await ctx.call('rerank.tune', {
+        profile: { remote: false, model_path: p.model_path, model_type: p.model_type },
+        options: {
+          n_ctx: f.local.n_ctx,
+          n_gpu_layers: int(f.local.gpu_layers, 0),
+          n_threads: int(f.local.threads, 4),
+        },
+        context: int(f.choice.rerank_context, 30),
+      });
+    } catch (e) {
+      ctx.status(e.message, 'error');
+      return;
+    }
+    tuning = true;
+    tuneGrid = null;
+    tuneText = '準備中…';
+    ctx.rerender();
+  },
+
+  onTuneEvent(ctx, e) {
+    if (e.state === 'pause') {
+      tuneText = e.message;
+    } else if (e.state === 'load') {
+      if (e.ok) {
+        tuneText = '模型已載入（' + e.ms + ' ms），正在讀取選字紀錄並評分…';
+      } else {
+        tuning = false;
+        tuneText = '無法載入模型（檔案不存在、記憶體不足或格式不支援）。';
+      }
+    } else if (e.state === 'score') {
+      tuneText = '用目前的模型評分：' + e.done + ' / ' + e.total + ' 筆';
+    } else if (e.state === 'done') {
+      tuning = false;
+      if (!(e.top >= 2)) {
+        tuneText = '紀錄裡沒有足夠的整句候選可以比較（至少 2 句），請改用「只統計」打一些字之後再試。';
+        if (ctx.isCurrent(this)) ctx.rerender();
+        return;
+      }
+      const c = ctx.state.form.choice;
+      c.rerank_margin = String(e.margin);
+      c.rerank_sentences = String(e.top);
+      if (int(c.sentences, 0) < e.top) c.sentences = String(e.top);
+      ctx.markDirty('llm');
+      tuneGrid = e.grid && e.grid.length ? {
+        tops: [...new Set(e.grid.map((g) => g.top))],
+        margins: [...new Set(e.grid.map((g) => g.margin))],
+        cells: Object.fromEntries(e.grid.map((g) => [g.top + '/' + g.margin, g])),
+        best: { top: e.top, margin: e.margin },
+      } : null;
+      tuneText = '最佳參數：評 ' + e.top + ' 句、門檻 ' + e.margin + '（' + e.cases + ' 筆紀錄裡準確率 '
+        + Math.round(e.accuracy * 1000) / 10 + '%，把原本對的改掉 ' + Math.round(e.wrong_change * 1000) / 10
+        + '%）。已填入並套用。';
+      ctx.rerender();
+      ctx.apply().then((ok) => {
+        if (!ok) {
+          tuneText = tuneText.replace('已填入並套用。', '參數已填入表單，但套用未完成。');
+          if (ctx.isCurrent(this)) ctx.rerender();
+        }
+      });
+      return;
+    } else if (e.state === 'cancelled') {
+      tuning = false;
+      tuneText = '已取消。';
+    } else if (e.state === 'error') {
+      tuning = false;
+      tuneText = '自動調整失敗：' + e.message;
+    }
+    if (ctx.isCurrent(this)) ctx.rerender();
+  },
+
+  // 自動調整的網格：每列一個「評幾句」、每欄一個門檻；格內是準確率，選中的打勾
+  renderTuneGrid() {
+    if (!tuneGrid) return null;
+    const { tops, margins, cells, best } = tuneGrid;
+    return h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, h('th', {}, '評幾句＼門檻'), ...margins.map((m) => h('th', {}, String(m))))),
+      h('tbody', {}, tops.map((t) => h('tr', {}, h('td', {}, t + ' 句'),
+        ...margins.map((m) => {
+          const g = cells[t + '/' + m];
+          if (!g) return h('td', {}, '—');
+          const pct = Math.round(g.accuracy * 1000) / 10 + '%';
+          return h('td', { title: '把原本對的改掉 ' + Math.round(g.wrong_change * 1000) / 10 + '%' },
+            t === best.top && m === best.margin ? '✓ ' + pct : pct);
+        }))))));
   },
 
   render(ctx) {
@@ -149,17 +251,16 @@ export default {
           title: '長句的整句候選',
           desc: 'Rime 預設只有第一個候選是整句，第二名起是句首的詞（方便從句首一段一段選），句子越長越顯得短。'
             + '打開後，候選窗前面會列出幾個完整的整句（多半只差一兩個字），句首的詞會移到後面。'
-            + '開啟整句重排時至少列 10 句。套用後會重新部署。',
-          control: select(kSentenceCounts, c.sentences, (v) => {
-            c.sentences = v;
-            ctx.markDirty('llm');
-          }, { width: '160px' }),
+            + '開啟整句重排時會自動補到「評幾句」的數量。套用後會重新部署。',
+          control: h('div', { class: 'row' },
+            input(c.sentences, (v) => { c.sentences = v; ctx.markDirty('llm'); }, { width: '60px' }),
+            h('span', { class: 'muted' }, '句（0 = 關閉，最多 63）')),
         }),
         card({
           title: '整句重排',
-          desc: 'Rime 先給出符合注音的前 10 個整句，本機模型依前文挑最通順的一句；比 Rime 第一句好超過門檻才推薦（Tab 套用）。'
+          desc: 'Rime 先給出符合注音的幾個整句，本機模型依前文挑最通順的一句；比 Rime 第一句好超過門檻才推薦（Tab 套用）。'
             + '候選一律來自 Rime，模型只負責排序。建議先選「只統計」用一陣子，在下面的選字統計看「整句重排」欄（改對／會改）再決定要不要顯示；'
-            + '顯示時取代上面的同音字推薦。開關時會重新部署，候選窗會列出至少 10 個整句候選（見上面的「長句的整句候選」）。',
+            + '顯示時取代上面的同音字推薦。開關時會重新部署，候選窗會列出至少「評幾句」個整句候選（見上面的「長句的整句候選」）。',
           control: select(kRerankModes, c.rerank, (v) => {
             c.rerank = v;
             ctx.markDirty('llm');
@@ -193,6 +294,19 @@ export default {
               input(c.rerank_personal, (v) => { c.rerank_personal = v; ctx.markDirty('llm'); },
                 { width: '60px', disabled: c.rerank === 'off' }),
               h('span', { class: 'muted' }, '（0 = 不用；句子裡有你常打的詞就加分，每個詞加 權重 × log(1 + 詞分數)）')),
+            h('div', { class: 'row' }, h('span', { class: c.rerank === 'off' ? 'muted' : '' }, '評幾句'),
+              input(c.rerank_sentences, (v) => { c.rerank_sentences = v; ctx.markDirty('llm'); },
+                { width: '60px', disabled: c.rerank === 'off' }),
+              h('span', { class: 'muted' }, '句（模型最多評幾句整句，2～63；越多越準但越慢）')),
+            h('div', { class: 'row' },
+              button(tuning ? '調整中…' : '依目前模型自動調整', () => this.startTune(ctx),
+                { disabled: tuning }),
+              button('取消', () => ctx.call('rerank.cancel'), { disabled: !tuning }),
+              h('span', { class: 'muted grow' }, tuneText)),
+            h('div', { class: 'row' }, h('span', { class: 'muted' },
+              '自動調整：讀選字紀錄裡你的整句候選，用上面的評分模型掃「評幾句 × 門檻」，把準確率最高的組合填入並套用。'
+                + '需要選字紀錄有整句候選（開啟「記錄選字過程」且整句重排開過「只統計」或「顯示」後打過字）；調整期間輸入法會暫時放掉模型。')),
+            this.renderTuneGrid(),
           ],
         }),
         card({

@@ -60,6 +60,7 @@ add_library(wisdom_core STATIC
   ${CORE}/settings/backend.cpp
   ${CORE}/settings/ops.cpp
   ${CORE}/settings/bench.cpp
+  ${CORE}/settings/rerank_tune.cpp
   ${CORE}/third_party/monocypher/monocypher.c
 )
 target_include_directories(wisdom_core PUBLIC ${COMMON_INCLUDES})

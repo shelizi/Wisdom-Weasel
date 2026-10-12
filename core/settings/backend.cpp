@@ -15,8 +15,10 @@
 #include "../net/http.h"
 #include "../base/utf8.h"
 #include "../ime/calibration.h"
+#include "../llm/RemoteLLMProvider.h"
 #include "bench.h"
 #include "ops.h"
+#include "rerank_tune.h"
 
 namespace settings {
 
@@ -134,12 +136,15 @@ struct Backend::State {
   std::thread bench_job;  // 模型測試
   std::shared_ptr<std::atomic<bool>> bench_cancel;
   std::atomic<bool> bench_running{false};
+  std::thread tune_job;  // 整句重排自動調整
+  std::shared_ptr<std::atomic<bool>> tune_cancel;
+  std::atomic<bool> tune_running{false};
   std::atomic<unsigned> probe_id{0};
 
   State(Platform& p, Options o, Emit e) : platform(p), options(std::move(o)), emit(std::move(e)) {}
 
   ~State() {
-    for (auto* cancel : {&model_cancel, &grammar_cancel, &bench_cancel}) {
+    for (auto* cancel : {&model_cancel, &grammar_cancel, &bench_cancel, &tune_cancel}) {
       if (*cancel)
         **cancel = true;
     }
@@ -149,6 +154,8 @@ struct Backend::State {
       grammar_job.join();
     if (bench_job.joinable())
       bench_job.join();
+    if (tune_job.joinable())
+      tune_job.join();
     if (available.size)
       api->schema_list_destroy(&available);
     if (switcher)
@@ -610,6 +617,105 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     std::lock_guard<std::mutex> lock(s.job_mutex);
     if (s.bench_cancel)
       *s.bench_cancel = true;
+    return nullptr;
+  }
+
+  // --- 整句重排自動調整：讀選字紀錄的 Top-K，用現在的評分模型掃門檻 × 評幾句 ------
+  // 同 bench.start：背景執行緒先請輸入法放掉模型，評完再請它載回
+  if (method == "rerank.tune") {
+    const json q = p.value("profile", json::object());
+    const bool remote = q.value("remote", false);
+    const std::string model_path = q.value("model_path", "");
+    if (remote)
+      throw Error("整句重排的評分只能用本機模型（llama.cpp / GGUF）。");
+    if (model_path.empty())
+      throw Error(
+          "請先在「語言模型」頁幫評分選一組本機模型（或在「各功能使用的模型」選評分用的模型）。");
+    const json o = p.value("options", json::object());
+    LLMLocalModelSpec spec;
+    spec.model_path = model_path;
+    spec.instruct = q.value("model_type", "Instruct") != "Base";
+    spec.n_ctx = o.value("n_ctx", 2048);
+    spec.n_gpu_layers = o.value("n_gpu_layers", 0);
+    spec.n_threads = o.value("n_threads", 4);
+    spec.disable_thinking = true;
+    const size_t context_chars = (size_t)p.value("context", 30);
+
+    std::lock_guard<std::mutex> lock(s.job_mutex);
+    if (s.tune_running)
+      throw Error("自動調整正在進行中。");
+    if (s.tune_job.joinable())
+      s.tune_job.join();
+    s.tune_cancel = std::make_shared<std::atomic<bool>>(false);
+    s.tune_running = true;
+    Emit emit = s.emit;
+    auto cancel = s.tune_cancel;
+    s.tune_job = std::thread([&s, emit, cancel, spec, context_chars]() {
+      const fs::path paused = s.platform.UserDataDir() / "llm_paused.txt";
+      std::error_code ec;
+      fs::remove(paused, ec);
+      if (s.platform.SendPersonalCommand(9)) {
+        emit("rerank_tune", {{"state", "pause"}, {"message", "暫停輸入法的模型…"}});
+        for (int i = 0; i < 100 && !*cancel && !fs::exists(paused, ec); ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      try {
+        std::vector<settings_rerank::LoggedCase> cases;
+        settings_rerank::LoadLoggedTopK(PersonalDir(s.platform), &cases);
+        if (cases.size() < 30) {
+          emit("rerank_tune",
+               {{"state", "error"},
+                {"message", "有整句候選的選字紀錄只有 " + std::to_string(cases.size()) +
+                                " 筆（至少 30 筆）。請開啟「選字紀錄」與整句重排（只統計或顯示），"
+                                "打一些字之後再試。"}});
+        } else {
+          RemoteLLMProvider provider("llamacpp");
+          const auto t0 = std::chrono::steady_clock::now();
+          const bool loaded = provider.LoadModelDirect(spec, 0.0) && provider.IsAvailable();
+          const auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - t0)
+                                   .count();
+          emit("rerank_tune", {{"state", "load"}, {"ok", loaded}, {"ms", (int)load_ms}});
+          if (loaded) {
+            // 取消時進行中的評分也中斷（推理行程會定期檢查）
+            LLMCancelScope cancel_scope([&cancel] { return cancel->load(); });
+            auto report = settings_rerank::Tune(
+                &provider, cases, context_chars, *cancel, [emit](size_t done, size_t total) {
+                  emit("rerank_tune",
+                       {{"state", "score"}, {"done", done}, {"total", total}});
+                });
+            if (report.cancelled) {
+              emit("rerank_tune", {{"state", "cancelled"}});
+            } else {
+              json grid = json::array();
+              for (const auto& g : report.grid)
+                grid.push_back({{"top", g.top},
+                                {"margin", g.margin},
+                                {"accuracy", g.accuracy},
+                                {"wrong_change", g.wrong_change}});
+              emit("rerank_tune",
+                   {{"state", "done"},
+                    {"cases", report.cases},
+                    {"margin", report.best.margin},
+                    {"top", report.best.top},
+                    {"accuracy", report.best.accuracy},
+                    {"wrong_change", report.best.wrong_change},
+                    {"grid", grid}});
+            }
+          }
+        }
+      } catch (const std::exception& e) {
+        emit("rerank_tune", {{"state", "error"}, {"message", e.what()}});
+      }
+      s.platform.SendPersonalCommand(10);  // 輸入法重新載入模型
+      s.tune_running = false;
+    });
+    return {{"started", true}};
+  }
+  if (method == "rerank.cancel") {
+    std::lock_guard<std::mutex> lock(s.job_mutex);
+    if (s.tune_cancel)
+      *s.tune_cancel = true;
     return nullptr;
   }
 
