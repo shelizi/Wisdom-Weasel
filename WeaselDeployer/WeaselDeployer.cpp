@@ -128,6 +128,12 @@ static int Run(LPTSTR lpCmdLine) {
     return result == -1 ? 1 : result;
   }
 
+  // 無頭自動微調（工作排程器 WisdomWeaselAutoTune 每週呼叫）：
+  // 漸進調整整句重排參數；偵測到劣化時回滾。結果寫 personal/auto_tune.log
+  if (!wcscmp(L"/autotune", lpCmdLine)) {
+    return RunAutoTune(&configurator);
+  }
+
   bool deployment_scheduled = !wcscmp(L"/deploy", lpCmdLine);
   if (deployment_scheduled) {
     return configurator.UpdateWorkspace();

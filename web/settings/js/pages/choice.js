@@ -35,6 +35,10 @@ let subscribed = false;
 let tuning = false;          // 整句重排自動調整進行中
 let tuneText = '';           // 進度或結果
 let tuneGrid = null;         // 完成的網格：{tops, margins, cells:{top:{margin:{accuracy,wrong_change}}}, best:{top,margin}}
+let autoCfg = null;          // 自動微調開關與排程狀態
+let autoEntries = [];        // 最近的自動調整紀錄
+let autoRunning = false;
+let autoText = '';
 
 function grammarStatus(g) {
   if (downloading) return downloadText || '下載中…';
@@ -65,18 +69,21 @@ export default {
         if (ctx.isCurrent(this)) ctx.rerender();
       });
       ctx.on('rerank_tune', (e) => this.onTuneEvent(ctx, e));
+      ctx.on('rerank_auto', (e) => this.onAutoEvent(ctx, e));
     }
     this.refresh(ctx);
   },
 
   async refresh(ctx) {
     try {
-      const [stats, log, grammar, calibration] = await Promise.all([
+      const [stats, log, grammar, calibration, history, cfg] = await Promise.all([
         ctx.call('stats.get', { span }), ctx.call('choicelog.status'), ctx.call('grammar.status'),
-        ctx.call('calibration.get')]);
+        ctx.call('calibration.get'), ctx.call('rerank.history'), ctx.call('rerank.auto_cfg')]);
       this.stats = stats;
       this.calibration = calibration;
       this.log = log;
+      autoEntries = history.entries || [];
+      autoCfg = cfg;
       ctx.state.init.grammar = grammar;
       downloading = grammar.downloading || downloading;
       if (ctx.isCurrent(this)) ctx.rerender();
@@ -172,6 +179,109 @@ export default {
       tuneText = '自動調整失敗：' + e.message;
     }
     if (ctx.isCurrent(this)) ctx.rerender();
+  },
+
+  // 把 top/margin 填入表單並套用（自動微調與回復共用）
+  applyParams(ctx, top, margin) {
+    const c = ctx.state.form.choice;
+    c.rerank_margin = String(margin);
+    c.rerank_sentences = String(top);
+    if (int(c.sentences, 0) < top) c.sentences = String(top);
+    ctx.markDirty('llm');
+    ctx.apply();
+    this.refresh(ctx);
+  },
+
+  onAutoEvent(ctx, e) {
+    if (e.state === 'pause') {
+      autoText = e.message;
+    } else if (e.state === 'score') {
+      autoText = '用目前的模型評分：' + e.done + ' / ' + e.total + ' 筆';
+    } else if (e.state === 'done' || e.state === 'error' || e.state === 'cancelled') {
+      autoRunning = false;
+      if (e.action === 'apply' || e.action === 'rollback') {
+        this.applyParams(ctx, e.top, e.margin);
+        autoText = (e.action === 'rollback' ? '偵測到修正率上升，已回復：' : '已調整：')
+          + (e.message || '評 ' + e.top + ' 句、門檻 ' + e.margin);
+      } else {
+        autoText = e.message || (e.state === 'error' ? '檢查失敗。' : '');
+      }
+    }
+    if (ctx.isCurrent(this)) ctx.rerender();
+  },
+
+  async startAuto(ctx) {
+    try {
+      const r = await ctx.call('rerank.auto', {});
+      if (r && r.action === 'rollback') {
+        this.applyParams(ctx, r.top, r.margin);
+        autoText = '偵測到修正率上升，已回復：評 ' + r.top + ' 句、門檻 ' + r.margin;
+        ctx.rerender();
+        return;
+      }
+      if (r && r.action === 'skip') {
+        autoText = '已跳過：' + (r.reason || '');
+        ctx.rerender();
+        return;
+      }
+      if (r && r.started) {
+        autoRunning = true;
+        autoText = '準備中…';
+        ctx.rerender();
+      }
+    } catch (e) {
+      ctx.status(e.message, 'error');
+    }
+  },
+
+  async toggleAuto(ctx, v) {
+    try {
+      autoCfg = await ctx.call('rerank.auto_cfg', { enabled: v });
+      if (ctx.isCurrent(this)) ctx.rerender();
+    } catch (e) {
+      ctx.status(e.message, 'error');
+    }
+  },
+
+  async revert(ctx) {
+    try {
+      const r = await ctx.call('rerank.revert');
+      if (!r || !r.found) {
+        ctx.status('沒有可回復的參數。', 'error');
+        return;
+      }
+      this.applyParams(ctx, r.top, r.margin);
+      autoText = '已回復：評 ' + r.top + ' 句、門檻 ' + r.margin;
+      ctx.rerender();
+    } catch (e) {
+      ctx.status(e.message, 'error');
+    }
+  },
+
+  autoStatusLine() {
+    const labels = { apply: '調整', rollback: '回復', hold: '維持', skip: '跳過' };
+    const fmt = (e) => {
+      const d = new Date(e.ts);
+      const when = (d.getMonth() + 1) + '/' + d.getDate() + ' '
+        + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      let s = when + '　' + (labels[e.action] || e.action);
+      if (e.top) s += '：評 ' + e.top + ' 句、門檻 ' + e.margin;
+      if (e.note) s += '（' + e.note + '）';
+      return s;
+    };
+    const parts = [];
+    if (autoCfg) {
+      parts.push(autoCfg.enabled
+        ? (autoCfg.scheduled ? '排程已設定（每週）' : '已開啟，但排程未建立')
+        : '自動微調關閉');
+      if (autoCfg.last_run_ms) {
+        const d = new Date(autoCfg.last_run_ms);
+        parts.push('上次檢查 ' + (d.getMonth() + 1) + '/' + d.getDate() + ' '
+          + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'));
+      }
+    }
+    const recent = autoEntries.slice(0, 5).map(fmt);
+    return parts.concat(recent).join('\n');
   },
 
   // 自動調整的網格：每列一個「評幾句」、每欄一個門檻；格內是準確率，選中的打勾
@@ -307,8 +417,17 @@ export default {
               h('span', { class: 'muted grow' }, tuneText)),
             h('div', { class: 'row' }, h('span', { class: 'muted' },
               '自動調整：讀選字紀錄裡你的整句候選，用上面的評分模型掃「評幾句 × 門檻」，把準確率最高的組合填入並套用。'
-                + '需要選字紀錄有整句候選（開啟「記錄選字過程」且整句重排開過「只統計」或「顯示」後打過字）；調整期間輸入法會暫時放掉模型。')),
+                + '需要選字紀錄有整句候選（開啟「記錄選字過程」後打過字即有）；調整期間輸入法會暫時放掉模型。')),
             this.renderTuneGrid(),
+            h('div', { class: 'row' },
+              checkbox(autoCfg ? autoCfg.enabled : false,
+                '自動微調：定期檢查選字紀錄，每次最多調一格「評幾句／門檻」；偵測到修正率上升會自動回復（每週執行，需要 100 筆以上紀錄）',
+                (v) => this.toggleAuto(ctx, v)),
+              h('span', { class: 'muted grow' }),
+              button(autoRunning ? '檢查中…' : '立即檢查', () => this.startAuto(ctx), { disabled: autoRunning || tuning }),
+              button('回復上次', () => this.revert(ctx))),
+            h('div', { class: 'card-desc status-text' },
+              autoText || autoCfg ? lines([autoText, this.autoStatusLine()].filter(Boolean).join('\n')) : '讀取中…'),
           ],
         }),
         card({

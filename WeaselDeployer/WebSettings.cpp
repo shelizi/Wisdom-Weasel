@@ -11,8 +11,10 @@
 #include <wrl.h>
 #include <condition_variable>
 #include <atomic>
+#include <ctime>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shlwapi.lib")
@@ -554,4 +556,42 @@ int RunWebSettings(Configurator* configurator,
                    const WebSettingsOptions& options) {
   WebSettingsWindow window(configurator, options);
   return window.Run();
+}
+
+int RunAutoTune(Configurator* configurator) {
+  try {
+    WinSettingsPlatform platform(configurator);
+    // 排程執行沒有網頁可看：事件與結果追加到 personal/auto_tune.log
+    const fs::path log = platform.UserDataDir() / "personal" / "auto_tune.log";
+    std::error_code ec;
+    fs::create_directories(log.parent_path(), ec);
+    const auto stamp = [] {
+      const std::time_t t = std::time(nullptr);
+      char buf[32] = {0};
+      std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+      return std::string(buf);
+    };
+    const auto write = [log, &stamp](const std::string& line) {
+      std::ofstream out(log, std::ios::app);
+      out << stamp() << " " << line << "\n";
+    };
+    Backend::Options backend_options;
+    backend_options.correct_instruction = wtou8(kLLMCorrectInstruction);
+    Backend backend(platform, backend_options,
+                    [&write](const std::string& event, const json& data) {
+                      write(event + " " + data.dump());
+                    });
+    const json r = backend.Call("rerank.auto", {{"sync", true}}, nullptr);
+    write("result " + r.dump());
+    const std::string action = r.value("action", "");
+    if (action == "apply" || action == "rollback") {
+      const json applied =
+          backend.Call("rerank.apply",
+                       {{"top", r.value("top", 0)}, {"margin", r.value("margin", 0.0)}}, nullptr);
+      write("applied " + applied.dump());
+    }
+    return 0;
+  } catch (...) {
+    return 1;
+  }
 }

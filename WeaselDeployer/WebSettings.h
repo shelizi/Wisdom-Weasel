@@ -22,3 +22,7 @@ struct WebSettingsOptions {
 // 0：正常關閉；-1：無法使用 WebView2 或找不到設定網頁（已告訴使用者）
 int RunWebSettings(Configurator* configurator,
                    const WebSettingsOptions& options);
+
+// 無頭自動微調（工作排程器呼叫）：跑 rerank.auto，結果是 apply/rollback 時
+// 直接 rerank.apply 套用。事件與結果寫進 personal/auto_tune.log。0 正常、1 失敗
+int RunAutoTune(Configurator* configurator);

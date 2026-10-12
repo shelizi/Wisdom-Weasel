@@ -49,11 +49,18 @@ std::vector<double> Doubles(const std::wstring& s) {
 }
 
 constexpr size_t kMaxTop = 20;                          // 自動調整評分的句數上限（延遲隨句數線性增加）
-const size_t kTops[] = {3, 5, 10, 15, 20};              // 「評幾句」的候選
-const double kMargins[] = {0.5, 1, 2, 3, 4, 6, 8, 12};  // 門檻的候選
 
-// 一種組合選出的句子：非第一句比第一句好超過 margin 才換；換不了就維持初稿。
-// 計分比照線上的 RerankScore（長度正規化＋個人詞庫加分）；第一句不是預設轉換時不換（保守）
+}  // namespace
+
+const std::vector<size_t>& TopGrid() {
+  static const std::vector<size_t> kTops = {3, 5, 10, 15, 20};  // 「評幾句」的候選
+  return kTops;
+}
+const std::vector<double>& MarginGrid() {
+  static const std::vector<double> kMargins = {0.5, 1, 2, 3, 4, 6, 8, 12};  // 門檻的候選
+  return kMargins;
+}
+
 const std::wstring& Choose(const LoggedCase& c, const std::vector<double>& lm, size_t top,
                            double margin, double alpha, double personal_weight) {
   const size_t n = (std::min)(top, (std::min)(lm.size(), c.sentences.size()));
@@ -79,8 +86,6 @@ const std::wstring& Choose(const LoggedCase& c, const std::vector<double>& lm, s
     return c.sentences[best];
   return c.draft;
 }
-
-}  // namespace
 
 size_t LoadLoggedTopK(const std::filesystem::path& personal_dir, std::vector<LoggedCase>* cases) {
   size_t skipped = 0;
@@ -174,6 +179,84 @@ size_t LoadLoggedTopK(const std::filesystem::path& personal_dir, std::vector<Log
   return skipped;
 }
 
+size_t LoadLoggedMeta(const std::filesystem::path& personal_dir,
+                      std::vector<LoggedMeta>* out) {
+  size_t skipped = 0;
+  std::ifstream in(personal_dir / "choice_log.dat", std::ios::binary);
+  if (!in)
+    return skipped;
+  const std::string data((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  size_t pos = 0;
+  while (pos + 4 <= data.size()) {
+    uint32_t len = 0;
+    std::memcpy(&len, data.data() + pos, 4);
+    pos += 4;
+    if (pos + len > data.size())
+      break;
+    std::string plain;
+    const bool ok = personal_crypto::Unprotect(data.substr(pos, len), &plain);
+    pos += len;
+    if (!ok) {
+      ++skipped;
+      continue;
+    }
+    const auto f = Split(utf8::ToWide(plain), L'\t');
+    if (f.size() < 3) {
+      ++skipped;
+      continue;
+    }
+    LoggedMeta m;
+    m.time = std::wcstoll(f[0].c_str(), nullptr, 10);
+    m.method = utf8::FromWide(f[2]);
+    m.has_topk = f.size() > 7 && !f[7].empty();
+    out->push_back(std::move(m));
+  }
+  return skipped;
+}
+
+std::vector<ScoredCase> ScoreCases(LLMProvider* scorer,
+                                   const std::vector<LoggedCase>& cases,
+                                   size_t context_chars,
+                                   const std::atomic<bool>& cancel,
+                                   const std::function<void(size_t, size_t)>& progress) {
+  std::vector<ScoredCase> items;
+  items.reserve(cases.size());
+  size_t done = 0;
+  for (const auto& c : cases) {
+    if (cancel)
+      break;
+    ScoredCase it{&c, {}};
+    scorer->ScoreBatch(Tail(c.context, context_chars), c.sentences, &it.lm);
+    if (it.lm.size() != c.sentences.size())
+      it.lm.assign(c.sentences.size(), std::numeric_limits<double>::quiet_NaN());
+    items.push_back(std::move(it));
+    if (progress)
+      progress(++done, cases.size());
+  }
+  return items;
+}
+
+// pick 與 truth 比較算對錯（同 TuneChoice：wrong 只算初稿本來對的題目）
+TuneOutcome EvalParams(const std::vector<ScoredCase>& items, size_t top, double margin,
+                       double alpha, double personal_weight) {
+  TuneOutcome out;
+  size_t right = 0, base_right = 0, wrong = 0;
+  for (const auto& it : items) {
+    const std::wstring& pick = Choose(*it.c, it.lm, top, margin, alpha, personal_weight);
+    right += pick == it.c->truth;
+    if (it.c->draft == it.c->truth) {
+      ++base_right;
+      wrong += pick != it.c->truth;
+    }
+  }
+  out.top = top;
+  out.margin = margin;
+  out.accuracy = items.empty() ? 0 : (double)right / items.size();
+  out.wrong_change = base_right ? (double)wrong / base_right : 0;
+  return out;
+}
+
 TuneReport Tune(LLMProvider* scorer,
                 const std::vector<LoggedCase>& cases,
                 size_t context_chars,
@@ -182,65 +265,28 @@ TuneReport Tune(LLMProvider* scorer,
                 const std::atomic<bool>& cancel,
                 const std::function<void(size_t, size_t)>& progress) {
   TuneReport report;
-  // 每筆一次 ScoreBatch；評分失敗的整筆當「不換」算（同輸入法 fail-open）
-  struct Item {
-    const LoggedCase* c;
-    std::vector<double> lm;
-  };
-  std::vector<Item> items;
-  items.reserve(cases.size());
-  size_t done = 0;
-  for (const auto& c : cases) {
-    if (cancel) {
-      report.cancelled = true;
-      break;
-    }
-    Item it{&c, {}};
-    scorer->ScoreBatch(Tail(c.context, context_chars), c.sentences, &it.lm);
-    if (it.lm.size() != c.sentences.size())
-      it.lm.assign(c.sentences.size(), std::numeric_limits<double>::quiet_NaN());
-    items.push_back(std::move(it));
-    if (progress)
-      progress(++done, cases.size());
-  }
+  const auto items = ScoreCases(scorer, cases, context_chars, cancel, progress);
   report.cases = items.size();
   for (const auto& it : items)
     report.scored += it.lm.size();
-  if (cancel || items.empty())
+  report.cancelled = cancel.load();
+  if (report.cancelled || items.empty())
     return report;
 
   // 「評幾句」的網格：資料裡最大的句數以內的預設值，再加上句數本身（例如只有 8 句時加 8）
   size_t max_n = 0;
   for (const auto& it : items)
     max_n = (std::max)(max_n, it.lm.size());
-  std::set<size_t> tops(std::begin(kTops), std::end(kTops));
+  std::set<size_t> tops(TopGrid().begin(), TopGrid().end());
   if (max_n >= 2 && max_n < kMaxTop)
     tops.insert(max_n);
-  // 評一種組合；pick 與 truth 比較算對錯（同 TuneChoice：wrong 只算初稿本來對的題目）
-  const auto eval = [&](size_t top, double margin, TuneOutcome* out) {
-    size_t right = 0, base_right = 0, wrong = 0;
-    for (const auto& it : items) {
-      const std::wstring& pick =
-          Choose(*it.c, it.lm, top, margin, length_alpha, personal_weight);
-      right += pick == it.c->truth;
-      if (it.c->draft == it.c->truth) {
-        ++base_right;
-        wrong += pick != it.c->truth;
-      }
-    }
-    out->top = top;
-    out->margin = margin;
-    out->accuracy = items.empty() ? 0 : (double)right / items.size();
-    out->wrong_change = base_right ? (double)wrong / base_right : 0;
-  };
 
   bool have_best = false;
   for (size_t top : tops) {
     if (top < 2 || top > max_n)
       continue;
-    for (double margin : kMargins) {
-      TuneOutcome out;
-      eval(top, margin, &out);
+    for (double margin : MarginGrid()) {
+      TuneOutcome out = EvalParams(items, top, margin, length_alpha, personal_weight);
       // 準確率最高；同分取門檻較大（保守）、再取評較少句（快）
       const double acc = out.accuracy;
       if (!have_best || acc > report.best.accuracy + 1e-9 ||

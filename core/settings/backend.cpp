@@ -19,6 +19,10 @@
 #include "bench.h"
 #include "ops.h"
 #include "rerank_tune.h"
+#include "auto_tune.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace settings {
 
@@ -31,6 +35,114 @@ std::string Str(const json& params, const char* key) {
   const auto it = params.find(key);
   return it != params.end() && it->is_string() ? it->get<std::string>() : std::string();
 }
+
+// 設定樹讀出來的純量是字串（ConfigToJson），數字欄要容字串或數字
+int64_t CfgInt(const json& o, const char* key, int64_t fallback) {
+  const auto it = o.find(key);
+  if (it == o.end())
+    return fallback;
+  if (it->is_number())
+    return it->get<int64_t>();
+  if (it->is_string())
+    return std::atoll(it->get<std::string>().c_str());
+  return fallback;
+}
+double CfgDbl(const json& o, const char* key, double fallback) {
+  const auto it = o.find(key);
+  if (it == o.end())
+    return fallback;
+  if (it->is_number())
+    return it->get<double>();
+  if (it->is_string())
+    return std::atof(it->get<std::string>().c_str());
+  return fallback;
+}
+
+int64_t NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// 評分要用的本機模型：評分專用 → 預測（llamacpp）→ 校正（借用順序同輸入法與網頁）
+bool ScorerSpec(const json& llm, LLMLocalModelSpec* spec) {
+  const json choice = llm.value("choice", json::object());
+  const json scorer = choice.value("scorer", json::object());
+  std::string path = scorer.value("model_path", "");
+  std::string type = scorer.value("model_type", "");
+  if (path.empty()) {
+    const json lc = llm.value("llamacpp", json::object());
+    if (llm.value("provider_type", "") != "openai") {
+      path = lc.value("model_path", "");
+      type = lc.value("model_type", "");
+    }
+  }
+  if (path.empty()) {
+    const json typo = llm.value("typo", json::object());
+    if (typo.value("model_path", "") != "") {
+      path = typo.value("model_path", "");
+      type = typo.value("model_type", "");
+    }
+  }
+  if (path.empty())
+    return false;
+  const json lc = llm.value("llamacpp", json::object());
+  spec->model_path = path;
+  spec->instruct = type != "Base";
+  spec->n_ctx = (int)CfgInt(lc, "n_ctx", 2048);
+  spec->n_gpu_layers = (int)CfgInt(lc, "n_gpu_layers", 0);
+  spec->n_threads = (int)CfgInt(lc, "n_threads", 4);
+  spec->disable_thinking = true;
+  return true;
+}
+
+json AutoResultJson(const settings_rerank::AutoRunResult& r) {
+  json j{{"action", r.action},
+         {"top", r.top},
+         {"margin", r.margin},
+         {"message", r.message},
+         {"records", r.records},
+         {"cases", r.entry.cases},
+         {"check",
+          {{"judgeable", r.check.judgeable},
+           {"degraded", r.check.degraded},
+           {"before", r.check.before_rate},
+           {"after", r.check.after_rate},
+           {"after_n", r.check.after_n}}}};
+  if (r.action == "apply" || r.action == "hold") {
+    j["current"] = {{"top", r.decision.current.top},
+                    {"margin", r.decision.current.margin},
+                    {"accuracy", r.decision.current.accuracy},
+                    {"wrong", r.decision.current.wrong_change}};
+    j["best"] = {{"top", r.decision.best.top},
+                 {"margin", r.decision.best.margin},
+                 {"accuracy", r.decision.best.accuracy}};
+    j["applied"] = {{"top", r.decision.applied.top},
+                    {"margin", r.decision.applied.margin},
+                    {"accuracy", r.decision.applied.accuracy}};
+  }
+  return j;
+}
+
+#ifdef _WIN32
+// 建立隱藏行程並等它結束；回傳結束碼
+int RunQuiet(const std::wstring& cmd) {
+  STARTUPINFOW si{sizeof(si)};
+  PROCESS_INFORMATION pi{};
+  std::wstring mutable_cmd = cmd;
+  if (!CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+    return -1;
+  WaitForSingleObject(pi.hProcess, 30000);
+  DWORD code = 1;
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return (int)code;
+}
+
+const wchar_t kAutoTuneTask[] = L"WisdomWeaselAutoTune";
+#endif
 
 std::string Base64(const std::string& data) {
   static const char* kChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -456,7 +568,8 @@ Backend::~Backend() = default;
 Backend::Thread Backend::ThreadOf(const std::string& method) {
   static const std::set<std::string> kUi = {"models.pickFile", "dicts.pickFile", "app.setTheme"};
   static const std::set<std::string> kRime = {"init", "schemas.details", "schemas.install", "style.preview",
-                                              "settings.apply", "dicts.list", "dicts.run", "llm.reload"};
+                                              "settings.apply", "dicts.list", "dicts.run", "llm.reload",
+                                              "rerank.auto", "rerank.apply"};
   if (kUi.count(method))
     return Thread::kUi;
   if (kRime.count(method))
@@ -721,6 +834,253 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     if (s.tune_cancel)
       *s.tune_cancel = true;
     return nullptr;
+  }
+
+  // --- 整句重排自動微調：漸進一步＋防劣化回滾 -------------------------------
+  // sync=true 時同步跑完回傳結果（/autotune 無頭模式用）；否則背景跑、結果走
+  // rerank_auto 事件。判定與 history 在 settings_rerank::AutoTuneRun。
+  if (method == "rerank.auto") {
+    const bool sync = p.value("sync", false);
+    const bool force = p.value("force", false);
+    const fs::path personal = PersonalDir(s.platform);
+    settings_rerank::AutoState st = settings_rerank::LoadAutoState(personal);
+    const int64_t now_ms = NowMs();
+    if (!st.enabled && !force)
+      return json{{"action", "skip"}, {"reason", "自動微調未開啟"}};
+    if (!force && now_ms < st.cooldown_until_ms)
+      return json{{"action", "skip"}, {"reason", "回滾冷卻中"}};
+
+    const json llm = s.LLMJson();
+    const json choice = llm.value("choice", json::object());
+    const size_t cur_top = (size_t)CfgInt(choice, "rerank_sentences", 10);
+    const double cur_margin = CfgDbl(choice, "rerank_margin", 2.0);
+    const size_t context_chars = (size_t)CfgInt(choice, "rerank_context", 30);
+    const double alpha = CfgDbl(choice, "rerank_alpha", 0.0);
+    const double personal_w = CfgDbl(choice, "rerank_personal", 0.0);
+
+    // 不用模型的檢查先跑：上次套用的參數有沒有讓修正率變差
+    std::vector<settings_rerank::LoggedMeta> meta;
+    settings_rerank::LoadLoggedMeta(personal, &meta);
+    const auto history = settings_rerank::LoadTuneHistory(personal);
+    const settings_rerank::TuneEntry* last_apply = nullptr;
+    for (auto it = history.rbegin(); it != history.rend() && !last_apply; ++it)
+      if (it->action == "apply")
+        last_apply = &*it;
+    const auto check = last_apply ? settings_rerank::CheckDegradation(meta, last_apply->apply_rec_ms)
+                                  : settings_rerank::DegradeCheck{};
+    auto save_run = [&] {
+      st.last_run_ms = now_ms;
+      st.last_records = meta.size();
+      settings_rerank::SaveAutoState(personal, st);
+    };
+    if (check.degraded) {
+      settings_rerank::TuneEntry e;
+      e.ts = now_ms;
+      e.action = "rollback";
+      e.top = last_apply->prev_top;
+      e.margin = last_apply->prev_margin;
+      e.prev_top = last_apply->top;
+      e.prev_margin = last_apply->margin;
+      e.apply_rec_ms = meta.empty() ? 0 : meta.back().time;
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "修正率 %.1f%% → %.1f%%（%zu 筆後段紀錄）",
+                    check.before_rate * 100, check.after_rate * 100, check.after_n);
+      e.note = buf;
+      settings_rerank::AppendTuneHistory(personal, e);
+      st.cooldown_until_ms = now_ms + 7LL * 86400000;  // 回滾後冷卻一週
+      save_run();
+      settings_rerank::AutoRunResult r;
+      r.action = "rollback";
+      r.top = e.top;
+      r.margin = e.margin;
+      r.check = check;
+      r.records = meta.size();
+      r.entry = e;
+      r.message = "偵測到套用後修正率上升，回復到評 " + std::to_string(e.top) + " 句、門檻 " +
+                  std::to_string(e.margin);
+      return AutoResultJson(r);
+    }
+    if (!force) {
+      if (meta.size() < st.last_records + 150)
+        return json{{"action", "skip"}, {"reason", "新紀錄未滿 150 筆"}, {"records", meta.size()}};
+      if (now_ms - st.last_run_ms < 3LL * 86400000)
+        return json{{"action", "skip"}, {"reason", "距上次執行未滿三天"}, {"records", meta.size()}};
+    }
+    LLMLocalModelSpec spec;
+    if (!ScorerSpec(llm, &spec))
+      return json{{"action", "error"},
+                  {"reason", "沒有可用的本機評分模型（評分、預測或校正都沒選本機模型）"}};
+
+    // 暫停輸入法模型 → 載入評分模型 → AutoTuneRun → 恢復（sync 與背景共用）。
+    // 全部用值捕捉：背景執行緒跑時 Call 已回傳，參照區域變數會懸垂
+    const size_t records = meta.size();
+    auto run = [&s, personal, spec, cur_top, cur_margin, context_chars, alpha, personal_w,
+                records](Emit emit2, const std::atomic<bool>& cancel) {
+      const auto ev = [&emit2](const json& e) {
+        if (emit2)
+          emit2("rerank_auto", e);
+      };
+      const fs::path paused = s.platform.UserDataDir() / "llm_paused.txt";
+      std::error_code ec;
+      fs::remove(paused, ec);
+      if (s.platform.SendPersonalCommand(9)) {
+        ev({{"state", "pause"}, {"message", "暫停輸入法的模型…"}});
+        for (int i = 0; i < 100 && !cancel && !fs::exists(paused, ec); ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      settings_rerank::AutoRunResult r;
+      try {
+        RemoteLLMProvider provider("llamacpp");
+        if (provider.LoadModelDirect(spec, 0.0) && provider.IsAvailable()) {
+          LLMCancelScope cancel_scope([&cancel] { return cancel.load(); });
+          r = settings_rerank::AutoTuneRun(
+              &provider, personal, cur_top, cur_margin, context_chars, alpha, personal_w, cancel,
+              [&ev](size_t done, size_t total) {
+                ev({{"state", "score"}, {"done", done}, {"total", total}});
+              });
+        } else {
+          r.action = "error";
+          r.message = "無法載入評分模型";
+        }
+      } catch (const std::exception& e) {
+        r.action = "error";
+        r.message = e.what();
+      }
+      s.platform.SendPersonalCommand(10);  // 輸入法重新載入模型
+      // 更新上次執行狀態（不動開關與冷卻期）
+      auto st2 = settings_rerank::LoadAutoState(personal);
+      st2.last_run_ms = NowMs();
+      st2.last_records = records;
+      settings_rerank::SaveAutoState(personal, st2);
+      return r;
+    };
+
+    if (sync) {
+      std::atomic<bool> cancel{false};
+      return AutoResultJson(run(s.emit, cancel));
+    }
+    std::lock_guard<std::mutex> lock(s.job_mutex);
+    if (s.tune_running)
+      throw Error("調整正在進行中。");
+    if (s.tune_job.joinable())
+      s.tune_job.join();
+    s.tune_cancel = std::make_shared<std::atomic<bool>>(false);
+    s.tune_running = true;
+    Emit emit = s.emit;
+    auto cancel = s.tune_cancel;
+    s.tune_job = std::thread([&s, emit, cancel, run]() {
+      auto r = run(emit, *cancel);
+      json out = AutoResultJson(r);
+      out["state"] = "done";
+      if (emit)
+        emit("rerank_auto", out);
+      s.tune_running = false;
+    });
+    return {{"started", true}};
+  }
+  // 直接寫入一組重排參數（排程/無頭模式的套用路徑；網頁走表單 settings.apply）
+  if (method == "rerank.apply") {
+    const size_t top = (size_t)p.value("top", 0);
+    const double margin = p.value("margin", 0.0);
+    if (top < 2 || !(margin > 0))
+      throw Error("參數不完整（top ≥ 2、margin > 0）。");
+    RimeConfig cfg = {0};
+    s.api->settings_get_config(s.style, &cfg);
+    s.rime->config_set_int(&cfg, "llm/choice/rerank_sentences", (int)top);
+    s.rime->config_set_double(&cfg, "llm/choice/rerank_margin", margin);
+    const bool ok = !!s.api->customize_item(s.style, "llm", &cfg);
+    s.rime->config_close(&cfg);
+    if (!ok)
+      throw Error("LLM 設定儲存失敗。");
+    s.api->save_settings(s.style);
+    // 整句候選數不夠評這麼多句時補上（只增不減）
+    int sentences = 0;
+    for (const char* schema : {"bopomofo", "bopomofo_express", "bopomofo_tw"}) {
+      const std::string text = [&] {
+        std::ifstream in(s.platform.UserDataDir() / (std::string(schema) + ".custom.yaml"));
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      }();
+      const auto pos = text.find("translator/max_sentences:");
+      if (pos != std::string::npos)
+        sentences = (std::max)(sentences, std::atoi(text.c_str() + pos + 25));
+    }
+    if ((size_t)sentences < top) {
+      std::string error;
+      if (!ApplySentenceCandidates(s.platform, (int)top, &error))
+        throw Error("整句候選數補高失敗：" + error);
+    }
+    s.platform.Deploy();
+    s.api->load_settings(s.style);
+    return {{"deployed", true}, {"llm", s.LLMJson()}};
+  }
+  if (method == "rerank.history") {
+    const auto history = settings_rerank::LoadTuneHistory(PersonalDir(s.platform));
+    json entries = json::array();
+    for (auto it = history.rbegin(); it != history.rend() && entries.size() < 20; ++it) {
+      entries.push_back({{"ts", it->ts},
+                         {"action", it->action},
+                         {"top", it->top},
+                         {"margin", it->margin},
+                         {"prev_top", it->prev_top},
+                         {"prev_margin", it->prev_margin},
+                         {"cases", it->cases},
+                         {"acc_prev", it->acc_prev},
+                         {"acc_best", it->acc_best},
+                         {"note", it->note}});
+    }
+    const auto st = settings_rerank::LoadAutoState(PersonalDir(s.platform));
+    std::vector<settings_rerank::LoggedMeta> meta;
+    settings_rerank::LoadLoggedMeta(PersonalDir(s.platform), &meta);
+    return {{"entries", entries},
+            {"auto",
+             {{"enabled", st.enabled},
+              {"last_run_ms", st.last_run_ms},
+              {"last_records", st.last_records},
+              {"cooldown_until_ms", st.cooldown_until_ms}}},
+            {"records", meta.size()}};
+  }
+  // 上次自動套用的前一組參數（UI「回復」鈕）
+  if (method == "rerank.revert") {
+    const auto history = settings_rerank::LoadTuneHistory(PersonalDir(s.platform));
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+      if (it->action == "apply" && it->prev_top >= 2 && it->prev_margin > 0)
+        return {{"found", true},
+                {"top", it->prev_top},
+                {"margin", it->prev_margin},
+                {"note", it->note}};
+    }
+    return {{"found", false}};
+  }
+  // 自動微調開關＋排程（Windows 工作排程器；每週跑 WeaselDeployer /autotune）
+  if (method == "rerank.auto_cfg") {
+    const fs::path personal = PersonalDir(s.platform);
+    if (p.contains("enabled")) {
+      auto st = settings_rerank::LoadAutoState(personal);
+      st.enabled = p.value("enabled", false);
+      settings_rerank::SaveAutoState(personal, st);
+#ifdef _WIN32
+      if (st.enabled) {
+        wchar_t exe[MAX_PATH] = {0};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        const std::wstring cmd = L"schtasks /Create /TN \"" + std::wstring(kAutoTuneTask) +
+                                 L"\" /TR \"\\\"" + exe + L"\\\" /autotune\" /SC WEEKLY /IT /F";
+        if (RunQuiet(cmd) != 0)
+          throw Error("工作排程器註冊失敗（自動微調仍已開啟，但不會定期執行）。");
+      } else {
+        RunQuiet(L"schtasks /Delete /TN \"" + std::wstring(kAutoTuneTask) + L"\" /F");
+      }
+#endif
+    }
+    const auto st = settings_rerank::LoadAutoState(personal);
+    bool scheduled = false;
+#ifdef _WIN32
+    scheduled = RunQuiet(L"schtasks /Query /TN \"" + std::wstring(kAutoTuneTask) + L"\"") == 0;
+#endif
+    return {{"enabled", st.enabled},
+            {"scheduled", scheduled},
+            {"last_run_ms", st.last_run_ms},
+            {"last_records", st.last_records},
+            {"cooldown_until_ms", st.cooldown_until_ms}};
   }
 
   // --- 語言模型 -------------------------------------------------------------

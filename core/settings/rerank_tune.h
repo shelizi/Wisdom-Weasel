@@ -35,6 +35,38 @@ struct LoggedCase {
 size_t LoadLoggedTopK(const std::filesystem::path& personal_dir,
                       std::vector<LoggedCase>* cases);
 
+// 每筆紀錄的輕量資訊（只取需要的欄位；劣化偵測、資料量統計用）
+struct LoggedMeta {
+  int64_t time = 0;       // 毫秒
+  std::string method;     // direct/changed/focus/llm/correction/mixed/reverted
+  bool has_topk = false;  // 有整句候選
+};
+// 讀全部紀錄的 meta（不管有沒有 Top-K；解密失敗略過）。回傳略過的筆數
+size_t LoadLoggedMeta(const std::filesystem::path& personal_dir,
+                      std::vector<LoggedMeta>* out);
+
+// 「評幾句」與「門檻」的網格（Tune 的掃描空間，也是漸進調整的步長）
+const std::vector<size_t>& TopGrid();
+const std::vector<double>& MarginGrid();
+constexpr size_t kMaxRecordedTop = 20;  // 紀錄與調參的句數上限
+
+// 一種組合選出的句子：非第一句比第一句好超過 margin 才換；換不了就維持初稿。
+// 計分比照線上的 RerankScore（長度正規化＋個人詞庫加分）；第一句不是預設轉換時不換（保守）
+const std::wstring& Choose(const LoggedCase& c, const std::vector<double>& lm, size_t top,
+                           double margin, double alpha, double personal_weight);
+
+// 一筆已用模型重評分過的紀錄
+struct ScoredCase {
+  const LoggedCase* c;
+  std::vector<double> lm;  // 各候選的模型分數（失敗的是 NaN）
+};
+// 每筆一次 ScoreBatch；評分失敗整筆補 NaN（fail-open 同輸入法）；可取消、回報進度
+std::vector<ScoredCase> ScoreCases(LLMProvider* scorer,
+                                   const std::vector<LoggedCase>& cases,
+                                   size_t context_chars,
+                                   const std::atomic<bool>& cancel,
+                                   const std::function<void(size_t, size_t)>& progress);
+
 // 一種參數組合的成績
 struct TuneOutcome {
   size_t top = 0;          // 最多評幾句
@@ -42,6 +74,10 @@ struct TuneOutcome {
   double accuracy = 0;     // 選出來的句子與使用者送出的一樣的比例
   double wrong_change = 0; // 初稿本來就對、卻被換掉的比例（佔初稿對的題數）
 };
+
+// 一組參數在已評分資料上的成績
+TuneOutcome EvalParams(const std::vector<ScoredCase>& items, size_t top, double margin,
+                       double alpha, double personal_weight);
 
 struct TuneReport {
   size_t cases = 0;    // 拿來評的題數（評分成功的紀錄）
