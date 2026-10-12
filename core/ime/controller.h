@@ -188,7 +188,14 @@ class Controller {
   bool HandleSimplifiedKey(uint64_t id, int keycode, int mask);
   bool HandleMixedInput(uint64_t id, SessionState& ss, int keycode, int mask, bool* respond);
   bool HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, int mask);
+  bool HandleZhuyinDelete(SessionState& ss, int keycode, int mask);
   bool FocusSyllable(SessionState& ss, int index);
+  void LockFocusedChoice(SessionState& ss, int index, const std::wstring& text);
+  size_t ConfirmedPrefix(SessionState& ss);
+  bool CaptureManualChoice(SessionState& ss, int index, const std::string& input, bool focused);
+  void SyncManualChoices(SessionState& ss, const std::string& input);
+  void EditManualChoices(SessionState& ss, size_t start, size_t erased, size_t inserted);
+  bool RestoreManualChoices(SessionState& ss, bool keep_focus = true);
 
   void TriggerPrediction(uint64_t id, const std::wstring& current_input = L"", unsigned delay_ms = 0,
                          const std::wstring& completion_prefix = L"", const std::wstring& zhuyin = L"",

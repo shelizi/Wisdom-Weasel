@@ -10,7 +10,15 @@
 namespace ime {
 
 struct SessionState {
+  struct ManualChoice {
+    size_t start = 0;
+    std::string keys;
+    std::wstring text;
+  };
   RimeSessionId session_id = 0;
+  std::string manual_input;
+  std::string manual_schema;
+  std::vector<ManualChoice> manual_choices;
   // last fully converted preview (preedit_type: preview), one unit per
   // syllable, to keep showing the text after the caret while selecting
   std::string preview_input;

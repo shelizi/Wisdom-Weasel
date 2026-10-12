@@ -958,6 +958,10 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     return {true, respond};
   if (HandleZhuyinFocus(id, ss, keycode, mask))
     return {true, true};
+  // Enter 送出前把尚未套回 Rime 的後段手動選字恢復（框選時 Rime 只轉到游標）。
+  if (!release && (keycode == key::kReturn || keycode == key::kKPEnter) &&
+      ss.focus < 0 && !ss.manual_choices.empty())
+    RestoreManualChoices(ss, false);
 
   // ` 鍵：組字中觸發 LLM 預測；雙擊清空前文
   if (!release && keycode == key::kGrave) {
@@ -1057,8 +1061,18 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   }
 
   // 注音組字中按 Backspace：游標前的音節已打聲調（成字）就整個字刪掉，還在拼的才一次刪一鍵
+  const bool choice_focused = ss.focus >= 0;
+  int choice_start = ss.focus;
+  if (!release && !choice_focused && (keycode == key::kReturn || keycode == key::kKPEnter ||
+                                     keycode == ' '))
+    choice_start = (int)ConfirmedPrefix(ss);
+  const std::string choice_input = ss.preview_input;
+  const std::string editing_input = ss.manual_choices.empty() ? "" : ss.manual_input;
+  const size_t editing_caret = ss.manual_choices.empty() ? 0 : api_->get_caret_pos(session_id);
+  const bool deleted_syllable = HandleZhuyinDelete(ss, keycode, mask);
   size_t backspaces = 1;
-  if (keycode == key::kBackSpace && !(mask & (mod::kRelease | other_mod_mask | mod::kShift))) {
+  if (!deleted_syllable && keycode == key::kBackSpace &&
+      !(mask & (mod::kRelease | other_mod_mask | mod::kShift))) {
     RIME_STRUCT(RimeStatus, status);
     if (api_->get_status(session_id, &status)) {
       if (status.is_composing) {
@@ -1085,10 +1099,12 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   }
 
   const uint64_t pk_us = base::MonotonicUs();
-  Bool handled = api_->process_key(session_id, keycode, mask);
+  Bool handled = deleted_syllable ? True : api_->process_key(session_id, keycode, mask);
   for (size_t i = 1; i < backspaces; ++i)
     api_->process_key(session_id, keycode, mask);
   base::KeyStats::Instance().Add(base::KeyStats::kProcessKey, base::MonotonicUs() - pk_us);
+  const bool manual_selected = handled && !release && !deleted_syllable &&
+                               CaptureManualChoice(ss, choice_start, choice_input, choice_focused);
   // 聲調打在韻母前會讓整句造不出來，後面只剩注音。游標在句尾時把聲調移回去，
   // 讓其餘的字仍按原來的音節選。框選單字時不動。
   if (handled && !release && ss.focus < 0) {
@@ -1114,6 +1130,35 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
       }
     }
   }
+  if (handled && !release) {
+    const char* raw = api_->get_input(session_id);
+    const std::string input = raw ? raw : "";
+    const bool input_changed = ss.manual_input != input;
+    // 用實際插入位置處理同音節／相同按鍵，不能只用字串最長共同前綴猜位置。
+    if (input_changed && !editing_input.empty() && ss.manual_input == editing_input &&
+        input.size() > editing_input.size() && editing_caret <= editing_input.size()) {
+      const size_t inserted = input.size() - editing_input.size();
+      if (input.compare(0, editing_caret, editing_input, 0, editing_caret) == 0 &&
+          input.substr(editing_caret + inserted) == editing_input.substr(editing_caret)) {
+        EditManualChoices(ss, editing_caret, 0, inserted);
+        ss.manual_input = input;
+      }
+    }
+    if (input_changed && !editing_input.empty() && ss.manual_input == editing_input &&
+        input.size() < editing_input.size()) {
+      const size_t erased = editing_input.size() - input.size();
+      const size_t caret = api_->get_caret_pos(session_id);
+      const size_t start = caret < editing_caret ? caret : editing_caret;
+      if (start + erased <= editing_input.size() &&
+          input == editing_input.substr(0, start) + editing_input.substr(start + erased)) {
+        EditManualChoices(ss, start, erased, 0);
+        ss.manual_input = input;
+      }
+    }
+    SyncManualChoices(ss, input);
+    if (!ss.manual_choices.empty() && (manual_selected || input_changed || deleted_syllable))
+      RestoreManualChoices(ss);
+  }
   if (punct_in_composition) {
     RIME_STRUCT(RimeCommit, commit);
     if (api_->get_commit(session_id, &commit)) {
@@ -1133,7 +1178,8 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     RequestLocalize(ComposingSentence(session_id), false);
   // 打字中補全：正在組字時，停頓 300ms 後以 Rime 目前的轉換結果續寫；組字結束則清除補全候選
   const bool rescore = ScoringWanted();
-  if (handled && !release && (PredictionAvailable() || TypoAvailable() || rescore)) {
+  if (handled && !release && (!deleted_syllable || ss.focus < 0) &&
+      (PredictionAvailable() || TypoAvailable() || rescore)) {
     bool composing = false;
     char schema_id[256] = {0};
     RIME_STRUCT(RimeStatus, status);
@@ -1189,8 +1235,10 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
   // 送出混打內容與目前的組字，回到一般輸入
   auto commit_all = [&]() {
     std::wstring text = ss.mixed_text;
-    if (composing())
+    if (composing()) {
+      RestoreManualChoices(ss, false);
       text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
+    }
     ss.mixed_text.clear();
     ss.mixed_english = false;
     ss.mixed_commit += text;
@@ -1211,6 +1259,7 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
       ss.mixed_english = false;
     } else {
       if (composing()) {
+        RestoreManualChoices(ss, false);
         ss.mixed_text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
         if (prediction_mode_ || completion_active_)
           ExitPredictionMode(id);
@@ -1228,6 +1277,7 @@ bool Controller::HandleMixedInput(uint64_t id, SessionState& ss, int keycode, in
     if (release)
       return true;
     if (composing()) {
+      RestoreManualChoices(ss, false);
       ss.mixed_text += TaiwanIfZhuyin(api_, session_id, TakeComposition(api_, session_id));
       if (prediction_mode_ || completion_active_)
         ExitPredictionMode(id);
@@ -1355,6 +1405,298 @@ bool Controller::FocusSyllable(SessionState& ss, int index) {
   return true;
 }
 
+void Controller::EditManualChoices(SessionState& ss,
+                                   size_t start,
+                                   size_t erased,
+                                   size_t inserted) {
+  auto& choices = ss.manual_choices;
+  choices.erase(
+      std::remove_if(choices.begin(), choices.end(),
+                     [&](SessionState::ManualChoice& c) {
+                       if (c.start + c.keys.size() <= start)
+                         return false;
+                       if (c.start >= start + erased) {
+                         c.start = c.start - erased + inserted;
+                         return false;
+                       }
+                       return true;  // 改動音節本身就解除它的手動選字。
+                     }),
+      choices.end());
+}
+
+void Controller::SyncManualChoices(SessionState& ss, const std::string& input) {
+  if (input == ss.manual_input)
+    return;
+  size_t first = 0, suffix = 0;
+  while (first < input.size() && first < ss.manual_input.size() &&
+         input[first] == ss.manual_input[first])
+    ++first;
+  while (suffix < input.size() - first &&
+         suffix < ss.manual_input.size() - first &&
+         input[input.size() - suffix - 1] ==
+             ss.manual_input[ss.manual_input.size() - suffix - 1])
+    ++suffix;
+  EditManualChoices(ss, first, ss.manual_input.size() - first - suffix,
+                    input.size() - first - suffix);
+  ss.manual_input = input;
+  if (input.empty())
+    ss.manual_choices.clear();
+}
+
+void Controller::LockFocusedChoice(SessionState& ss,
+                                   int index,
+                                   const std::wstring& text) {
+  const char* raw = api_->get_input(ss.session_id);
+  const std::string input = raw ? raw : "";
+  if (index < 0 || index >= (int)ss.preview_lens.size() ||
+      input != ss.preview_input || zhuyin_preview::SplitChars(text).size() != 1)
+    return;
+  SyncManualChoices(ss, input);
+  size_t start = 0;
+  for (int i = 0; i < index; ++i)
+    start += ss.preview_lens[i];
+  const size_t len = ss.preview_lens[index];
+  if (start + len > input.size())
+    return;
+  auto& choices = ss.manual_choices;
+  choices.erase(std::remove_if(choices.begin(), choices.end(),
+                               [&](const SessionState::ManualChoice& c) {
+                                 return c.start < start + len &&
+                                        c.start + c.keys.size() > start;
+                               }),
+                choices.end());
+  choices.push_back({start, input.substr(start, len), text});
+  if (index < (int)ss.preview_units.size() && ss.preview_units[index] != text)
+    ss.choice_changed = true;
+  std::sort(choices.begin(), choices.end(),
+            [](const auto& a, const auto& b) { return a.start < b.start; });
+  char schema[256] = {0};
+  api_->get_current_schema(ss.session_id, schema, sizeof(schema));
+  ss.manual_schema = schema;
+}
+
+size_t Controller::ConfirmedPrefix(SessionState& ss) {
+  RIME_STRUCT(RimeContext, ctx);
+  size_t count = 0;
+  if (api_->get_context(ss.session_id, &ctx)) {
+    const auto units = zhuyin_preview::SplitChars(
+        utf8::ToWide(ctx.composition.preedit ? ctx.composition.preedit : ""));
+    for (const auto& unit : units) {
+      if (unit.front() < 0x3400 || zhuyin_preview::IsBopomofo(unit.front()))
+        break;
+      ++count;
+    }
+    api_->free_context(&ctx);
+  }
+  return count;
+}
+
+bool Controller::CaptureManualChoice(SessionState& ss,
+                                     int index,
+                                     const std::string& input,
+                                     bool focused) {
+  if (index < 0 || input.empty())
+    return false;
+  const char* raw = api_->get_input(ss.session_id);
+  if (!raw || input != raw)
+    return false;
+  RIME_STRUCT(RimeContext, ctx);
+  if (!api_->get_context(ss.session_id, &ctx))
+    return false;
+  std::vector<std::wstring> units;
+  if ((!focused || api_->get_caret_pos(ss.session_id) != ss.focus_caret ||
+       ctx.menu.num_candidates == 0) &&
+      ctx.commit_text_preview)
+    units = zhuyin_preview::SplitChars(utf8::ToWide(ctx.commit_text_preview));
+  api_->free_context(&ctx);
+  const size_t confirmed = ConfirmedPrefix(ss);
+  const size_t end = focused ? (std::min)(confirmed, (size_t)index + 1) : confirmed;
+  if (index >= (int)units.size() || end <= (size_t)index || end > units.size())
+    return false;
+  for (size_t i = (size_t)index; i < end; ++i)
+    LockFocusedChoice(ss, (int)i, units[i]);
+  return true;
+}
+
+// 只把手動選字當限制，其他部分重新使用 Rime 的候選排名。
+// 選到最後一個鎖定字就停止，讓尚未確認的尾段繼續自動造句。
+bool Controller::RestoreManualChoices(SessionState& ss, bool keep_focus) {
+  const char* raw = api_->get_input(ss.session_id);
+  const std::string input = raw ? raw : "";
+  SyncManualChoices(ss, input);
+  if (ss.manual_choices.empty())
+    return true;
+  char schema[256] = {0};
+  api_->get_current_schema(ss.session_id, schema, sizeof(schema));
+  if (ss.manual_schema != schema || !IsZhuyinSchema(schema)) {
+    ss.manual_choices.clear();
+    return false;
+  }
+  const size_t caret =
+      keep_focus ? api_->get_caret_pos(ss.session_id) : input.size();
+  const int focus =
+      keep_focus && ss.focus_input == input && ss.focus_caret == caret
+          ? ss.focus
+          : -1;
+  auto failed = [&] {
+    api_->clear_composition(ss.session_id);
+    api_->set_input(ss.session_id, input.c_str());
+    api_->set_caret_pos(ss.session_id, caret);
+    return false;
+  };
+  ss.focus = -1;
+  api_->clear_composition(ss.session_id);
+  api_->set_input(ss.session_id, input.c_str());
+  RIME_STRUCT(RimeContext, ctx);
+  if (!api_->get_context(ss.session_id, &ctx))
+    return failed();
+  BuildZhuyinPreview(ctx.commit_text_preview ? ctx.commit_text_preview : "",
+                     ctx.composition.preedit ? ctx.composition.preedit : "",
+                     input, input.size(), "", 0, Speller(schema),
+                     ss.preview_input, ss.preview_units, ss.preview_lens);
+  api_->free_context(&ctx);
+  // 按原始按鍵邊界逐段延長輸入。未鎖的前段選排名第一的候選；
+  // 伸到鎖定音節時只選指定的字，不依賴自動斷詞的字數。
+  auto replay = [&](size_t limit) {
+    api_->clear_composition(ss.session_id);
+    for (const auto& choice : ss.manual_choices) {
+      if (choice.start + choice.keys.size() > limit)
+        break;
+      if (choice.start + choice.keys.size() > input.size() ||
+          input.compare(choice.start, choice.keys.size(), choice.keys) != 0)
+        return false;
+      if (choice.start > 0) {
+        api_->set_input(ss.session_id, input.substr(0, choice.start).c_str());
+        bool confirmed = false;
+        for (size_t n = 0; n <= choice.start; ++n) {
+          if (!api_->get_context(ss.session_id, &ctx))
+            return false;
+          const bool has_menu = ctx.menu.num_candidates > 0;
+          api_->free_context(&ctx);
+          if (!has_menu) {
+            confirmed = true;
+            break;
+          }
+          if (!api_->select_candidate(ss.session_id, 0))
+            return false;
+        }
+        if (!confirmed)
+          return false;
+      }
+      api_->set_input(
+          ss.session_id,
+          input.substr(0, choice.start + choice.keys.size()).c_str());
+      int best = -1, index = 0;
+      RimeCandidateListIterator it = {0};
+      if (api_->candidate_list_begin(ss.session_id, &it)) {
+        while (index < 300 && api_->candidate_list_next(&it)) {
+          if (it.candidate.text &&
+              utf8::ToWide(it.candidate.text) == choice.text) {
+            best = index;
+            break;
+          }
+          ++index;
+        }
+        api_->candidate_list_end(&it);
+      }
+      if (best < 0 || !api_->select_candidate(ss.session_id, best))
+        return false;
+    }
+    api_->set_input(ss.session_id, input.c_str());
+    return true;
+  };
+  if (!replay(input.size()))
+    return failed();
+  if (api_->get_context(ss.session_id, &ctx)) {
+    BuildZhuyinPreview(ctx.commit_text_preview ? ctx.commit_text_preview : "",
+                       ctx.composition.preedit ? ctx.composition.preedit : "",
+                       input, input.size(), "", 0, Speller(schema),
+                       ss.preview_input, ss.preview_units, ss.preview_lens);
+    api_->free_context(&ctx);
+  }
+  if (focus >= 0 && focus < (int)ss.preview_lens.size())
+    return FocusSyllable(ss, focus);
+  // 句中正在拼音節時，游標後的鎖定先留在完整預覽快取。
+  // 引擎只確認游標前的鎖，避免把正在拼的音節提早選掉，讓空白仍能輸入一聲。
+  if (keep_focus && caret < input.size() && !replay(caret))
+    return failed();
+  api_->set_caret_pos(ss.session_id, caret);
+  return true;
+}
+
+// 依顯示游標刪整字：Backspace 刪前字，Delete 刪後字。直接移除原始音節，不重送 Backspace：
+// Rime 的第一下可能只解除前段選字，重送會留下半個音節。
+bool Controller::HandleZhuyinDelete(SessionState& ss, int keycode, int mask) {
+  if ((keycode != key::kBackSpace && keycode != key::kDelete) ||
+      (mask & (mod::kRelease | mod::kControl | mod::kAlt | mod::kSuper | mod::kShift)))
+    return false;
+  const RimeSessionId session_id = ss.session_id;
+  const char* raw = api_->get_input(session_id);
+  std::string input = raw ? raw : "";
+  if (input.empty() || ss.preview_input != input || ss.preview_lens.empty() ||
+      ss.preview_lens.size() != ss.preview_units.size())
+    return false;
+  RIME_STRUCT(RimeStatus, status);
+  bool zhuyin = false;
+  if (api_->get_status(session_id, &status)) {
+    zhuyin = status.is_composing && !status.is_ascii_mode && IsZhuyinSchema(status.schema_id);
+    api_->free_status(&status);
+  }
+  if (!zhuyin)
+    return false;
+  const size_t caret = api_->get_caret_pos(session_id);
+  int index = ss.focus;
+  // Rime 的內部游標在框選音節末端，顯示游標則在音節開頭。
+  // 句首 Backspace 必須吃掉，不能交回 Rime 刪框選音節。
+  if (ss.focus >= 0 && keycode == key::kBackSpace) {
+    if (ss.focus == 0)
+      return true;
+    --index;
+  }
+  size_t start = 0, total = 0;
+  for (size_t i = 0; i < ss.preview_lens.size(); ++i) {
+    const size_t end = total + ss.preview_lens[i];
+    if (ss.focus < 0 && ((keycode == key::kBackSpace && end == caret) ||
+                         (keycode == key::kDelete && total == caret)))
+      index = (int)i;
+    total = end;
+  }
+  if (total != input.size() || index < 0 || index >= (int)ss.preview_lens.size())
+    return false;
+  // 尚未拼完的注音仍逐鍵刪除。
+  const auto& unit = ss.preview_units[index];
+  if (unit.empty() || zhuyin_preview::IsBopomofo(unit.front()) || zhuyin_preview::IsTone(unit.front()))
+    return false;
+  for (int i = 0; i < index; ++i)
+    start += ss.preview_lens[i];
+  EditManualChoices(ss, start, ss.preview_lens[index], 0);
+  input.erase(start, ss.preview_lens[index]);
+  ss.manual_input = input;
+  ss.preview_units.erase(ss.preview_units.begin() + index);
+  ss.preview_lens.erase(ss.preview_lens.begin() + index);
+  ss.preview_input = input;
+  ss.focus = -1;
+  api_->clear_composition(session_id);
+  if (!input.empty()) {
+    api_->set_input(session_id, input.c_str());
+    if (index < (int)ss.preview_lens.size()) {
+      // 原位置的下一個字接上來，繼續在游標後選字。
+      if (!FocusSyllable(ss, index))
+        api_->set_caret_pos(session_id, start);
+    } else {
+      // 刪掉末字：保留前段換過的字，再回到句尾。
+      FocusSyllable(ss, (int)ss.preview_lens.size() - 1);
+      api_->set_caret_pos(session_id, input.size());
+      ss.focus = -1;
+    }
+  }
+  if (keycode == key::kBackSpace) {
+    ++Stats(session_id).backspaces;
+    SaveStats();
+  }
+  return true;
+}
+
 bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, int mask) {
   const bool nav = keycode == key::kLeft || keycode == key::kRight || keycode == key::kHome ||
                    keycode == key::kEnd;
@@ -1389,6 +1731,10 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   } else if (ss.focus < 0) {
     return false;  // 本來就在句尾
   } else if (keycode == key::kEnd || ss.focus + 1 >= count) {
+    if (!ss.manual_choices.empty()) {
+      RestoreManualChoices(ss, false);
+      return true;
+    }
     // 回到句尾：取消框選，接著打字。框選時把前面幾段選好了（Rime 只會給後面的候選）：
     // 先放開，沒換過字就回到 Rime 原本的整句與候選清單（例如多個整句候選）；
     // 換過字（和 Rime 的整句不同）就照框選時的樣子選回去，保留換好的字
@@ -1638,7 +1984,12 @@ bool Controller::SelectCandidate(uint64_t id, size_t index) {
       return true;
   }
   CancelCompletion();
-  api_->select_candidate_on_current_page(ss->session_id, index);
+  const bool focused = ss->focus >= 0;
+  const int start = focused ? ss->focus : (int)ConfirmedPrefix(*ss);
+  const std::string input = ss->preview_input;
+  if (api_->select_candidate_on_current_page(ss->session_id, index) &&
+      CaptureManualChoice(*ss, start, input, focused))
+    RestoreManualChoices(*ss);
   return false;
 }
 
@@ -1646,6 +1997,7 @@ void Controller::CommitComposition(uint64_t id) {
   SessionState* ss = frontend_->Session(id);
   if (!ss)
     return;
+  RestoreManualChoices(*ss, false);
   if (ss->mixed_active()) {
     // 混打內容連同組字一起，在下一次回應時送出
     ss->mixed_commit += ss->mixed_text +
@@ -1758,6 +2110,9 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
     return;
   SessionState& ss = *state;
   if (!composing) {
+    ss.manual_choices.clear();
+    ss.manual_input.clear();
+    ss.manual_schema.clear();
     sentence_probs_.clear();
     ++probs_gen_;
     ss.preview_input.clear();
@@ -1966,7 +2321,13 @@ bool Controller::RescoreInput(uint64_t id,
   const auto stale = [this, seq] { return !prediction_->IsCurrent(seq); };
   size_t offset = 0;
   for (size_t len : ss->preview_lens) {
-    homophones->push_back(homophones_->Find(schema_id, input.substr(offset, len), stale));
+    const auto locked = std::find_if(ss->manual_choices.begin(), ss->manual_choices.end(), [&](const auto& c) {
+      return c.start == offset && c.keys == input.substr(offset, len);
+    });
+    if (locked != ss->manual_choices.end())
+      homophones->push_back({locked->text});
+    else
+      homophones->push_back(homophones_->Find(schema_id, input.substr(offset, len), stale));
     if (stale())
       return false;
     offset += len;
@@ -2002,6 +2363,19 @@ bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring
                                 [this, seq] { return !prediction_->IsCurrent(seq); });
   if (!prediction_->IsCurrent(seq))
     return false;
+  // 整句重排只比較符合手動選字的句子。
+  sentences->erase(std::remove_if(sentences->begin(), sentences->end(), [&](const std::wstring& text) {
+    const auto chars = zhuyin_preview::SplitChars(text);
+    size_t offset = 0;
+    for (size_t i = 0; i < ss->preview_lens.size(); ++i) {
+      for (const auto& c : ss->manual_choices) {
+        if (c.start == offset && (i >= chars.size() || chars[i] != c.text))
+          return true;
+      }
+      offset += ss->preview_lens[i];
+    }
+    return false;
+  }), sentences->end());
   // 第一句一定是使用者看到的轉換（選字記憶、手動選過的字都在裡面）
   sentences->erase(std::remove(sentences->begin(), sentences->end(), preview), sentences->end());
   sentences->insert(sentences->begin(), preview);
@@ -2253,6 +2627,10 @@ bool Controller::ConfirmText(SessionState& ss, const std::wstring& desired) {
     return false;
   if (!SelectText(api_, ss.session_id, input, units))
     return false;
+  // 使用者明確套用整句推薦，也是一筆新的手動選字。
+  ss.manual_choices.clear();
+  for (size_t i = 0; i < units.size(); ++i)
+    LockFocusedChoice(ss, (int)i, units[i]);
   ss.focus = -1;
   return true;
 }
@@ -2300,6 +2678,9 @@ bool Controller::CommitPrediction(uint64_t id, size_t index) {
       ss.mixed_text += selected;
       api_->clear_composition(ss.session_id);
       api_->set_input(ss.session_id, input.substr(caret).c_str());
+      EditManualChoices(ss, 0, caret, 0);
+      ss.manual_input = input.substr(caret);
+      RestoreManualChoices(ss, false);
       completion_active_ = false;
       prediction_mode_ = false;
       return true;

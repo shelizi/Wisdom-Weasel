@@ -61,6 +61,7 @@ const char* kKindName[] = {
 };
 
 struct Case {
+  std::wstring context;
   std::wstring zhuyin;
   std::wstring truth;
   std::string keys;
@@ -225,6 +226,7 @@ bool LoadCases(const fs::path& file, std::vector<Case>* cases, size_t limit) {
     if (f.size() < 4)
       continue;
     Case c;
+    c.context = f[0];
     c.zhuyin = Trim(f[1]);
     c.truth = Trim(f[3]);
     if (f.size() > 5 && !Trim(f[5]).empty()) {
@@ -324,31 +326,48 @@ struct Engine {
   RimeApi* api = nullptr;
   RimeSessionId session = 0;
   bool ok = false;
+  int keep_cands = 12;
+  int scan_limit = 40;
   std::string shared_s, user_s;
 
   // schema 用 bopomofo 或 bopomofo_express。free_order 只在快打方案寫進拼寫；
   // 一般注音方案本來就有，這裡不覆寫它的拼寫。
+  // collo_max / collo_min 為 0 表示不寫，沿用 octagram 的詞級預設（4 / 3）。
+  // 字級模型必須自己寫，否則短於預設下限的搭配會吃 weak_collocation_penalty。
   bool Open(const fs::path& shared, const fs::path& user, const fs::path& grammar, bool correction,
-            const std::string& schema = "bopomofo", bool free_order = false, int tone_move = -1) {
+            const std::string& schema = "bopomofo", bool free_order = false, int tone_move = -1,
+            int max_homophones = 7, int max_sentences = 10, bool use_grammar = true,
+            bool use_sentences = true, int collo_max = 0, int collo_min = 0) {
     std::error_code ec;
     fs::create_directories(user, ec);
-    fs::copy_file(grammar, user / grammar.filename(), fs::copy_options::overwrite_existing, ec);
+    if (use_grammar)
+      fs::copy_file(grammar, user / grammar.filename(), fs::copy_options::overwrite_existing, ec);
     {
       std::ofstream out(user / "default.custom.yaml", std::ios::binary);
       out << "patch:\n  schema_list:\n    - schema: " << schema << "\n";
     }
     {
       std::ofstream out(user / (schema + ".custom.yaml"), std::ios::binary);
-      out << "patch:\n"
-             "  grammar:\n    language: "
-          << grammar.stem().string()
-          << "\n  translator/contextual_suggestions: true\n"
-             "  translator/max_homophones: 7\n"
-             "  translator/max_homographs: 7\n"
-             "  translator/max_sentences: 10\n"
-             "  translator/sentence_cutoff_threshold: 100\n"
-             "  translator/enable_correction: "
-          << (correction ? "true\n" : "false\n");
+      out << "patch:\n";
+      if (use_grammar) {
+        out << "  grammar:\n    language: " << grammar.stem().string() << "\n";
+        if (collo_max > 0)
+          out << "    collocation_max_length: " << collo_max << "\n";
+        if (collo_min > 0)
+          out << "    collocation_min_length: " << collo_min << "\n";
+        out << "  translator/contextual_suggestions: true\n"
+               "  translator/max_homophones: "
+            << max_homophones
+            << "\n  translator/max_homographs: 7\n";
+      } else {
+        out << "  grammar: {}\n"
+               "  translator/contextual_suggestions: false\n";
+      }
+      if (use_sentences) {
+        out << "  translator/max_sentences: " << max_sentences
+            << "\n  translator/sentence_cutoff_threshold: 100\n";
+      }
+      out << "  translator/enable_correction: " << (correction ? "true\n" : "false\n");
       if (schema == "bopomofo_express") {
         if (tone_move >= 0) {
           WriteExpressAlgebra(out, tone_move);
@@ -385,9 +404,13 @@ struct Engine {
       return false;
     }
     ok = true;
-    std::printf("librime %s  schema=%s  correction=%s  free_order=%s  tone=%d\n",
-                api->get_version ? api->get_version() : "?", schema.c_str(),
-                correction ? "on" : "off", free_order ? "on" : "off", tone_move);
+    const std::string gram_name = use_grammar ? grammar.stem().string() : "off";
+    std::printf(
+        "librime %s  schema=%s  correction=%s  free_order=%s  tone=%d  homo=%d  sentences=%d  "
+        "grammar=%s  collo=%d/%d\n",
+        api->get_version ? api->get_version() : "?", schema.c_str(), correction ? "on" : "off",
+        free_order ? "on" : "off", tone_move, max_homophones, use_sentences ? max_sentences : 0,
+        gram_name.c_str(), collo_max, collo_min);
     return true;
   }
 
@@ -415,7 +438,9 @@ struct Engine {
     }
     RimeCandidateListIterator iter = {0};
     if (api->candidate_list_begin(session, &iter)) {
-      for (int i = 0; i < 40 && h.cands.size() < 12 && api->candidate_list_next(&iter); ++i) {
+      for (int i = 0; i < scan_limit && (int)h.cands.size() < keep_cands &&
+                      api->candidate_list_next(&iter);
+           ++i) {
         if (!iter.candidate.text)
           continue;
         const std::wstring text = utf8::ToWide(iter.candidate.text);
@@ -899,7 +924,8 @@ std::string PairId(const std::string& tags) {
 // 乾淨按鍵的選字。不造錯鍵。快打方案、聲調可接在第一個符號後面，和目前部署的拼寫相同。
 // 沙盒沒有選字記憶。容錯關、開各打一輪，因為安裝版的開關目前是開。
 int RunSelect(const fs::path& shared, const fs::path& work, const fs::path& grammar,
-              const std::vector<Case>& cases) {
+              const std::vector<Case>& cases, int max_homophones, int max_sentences,
+              bool use_grammar, bool use_sentences, int collo_max, int collo_min) {
   struct Row {
     int off = 0;
     int on = 0;
@@ -913,15 +939,43 @@ int RunSelect(const fs::path& shared, const fs::path& work, const fs::path& gram
   std::string version;
   {
     Engine eng;
-    if (!eng.Open(shared, work / "select-off", grammar, false, "bopomofo_express", false, 3))
+    eng.keep_cands = 30;
+    eng.scan_limit = 120;
+    if (!eng.Open(shared, work / "select-off", grammar, false, "bopomofo_express", false, 3,
+                  max_homophones, max_sentences, use_grammar, use_sentences, collo_max,
+                  collo_min))
       return 1;
     version = eng.api->get_version ? eng.api->get_version() : "?";
+    std::ofstream dump(work / "select-cands.jsonl", std::ios::binary);
+    auto json_str = [](const std::wstring& w) {
+      std::string s = utf8::FromWide(w);
+      std::string o = "\"";
+      for (unsigned char ch : s) {
+        if (ch == '"' || ch == '\\')
+          o.push_back('\\');
+        if (ch == '\n' || ch == '\r' || ch == '\t')
+          o.push_back(' ');
+        else
+          o.push_back(static_cast<char>(ch));
+      }
+      o.push_back('"');
+      return o;
+    };
     for (size_t i = 0; i < cases.size(); ++i) {
       const Hit h = eng.Convert(cases[i].keys);
       rows[i].off = RankOfAny(h, cases[i].alts);
       rows[i].strict_off = RankOf(h, cases[i].truth);
       rows[i].preview_off = h.preview;
       rows[i].ms_off = h.ms;
+      dump << "{\"context\":" << json_str(cases[i].context)
+           << ",\"tags\":" << json_str(utf8::ToWide(cases[i].tags))
+           << ",\"truth\":" << json_str(cases[i].truth) << ",\"alts\":[";
+      for (size_t a = 0; a < cases[i].alts.size(); ++a)
+        dump << (a ? "," : "") << json_str(cases[i].alts[a]);
+      dump << "],\"preview\":" << json_str(h.preview) << ",\"cands\":[";
+      for (size_t c = 0; c < h.cands.size(); ++c)
+        dump << (c ? "," : "") << json_str(h.cands[c]);
+      dump << "]}\n";
       if ((i + 1) % 100 == 0 || i + 1 == cases.size())
         std::printf("off %zu/%zu\n", i + 1, cases.size());
     }
@@ -929,7 +983,11 @@ int RunSelect(const fs::path& shared, const fs::path& work, const fs::path& gram
   }
   {
     Engine eng;
-    if (!eng.Open(shared, work / "select-on", grammar, true, "bopomofo_express", false, 3))
+    eng.keep_cands = 30;
+    eng.scan_limit = 120;
+    if (!eng.Open(shared, work / "select-on", grammar, true, "bopomofo_express", false, 3,
+                  max_homophones, max_sentences, use_grammar, use_sentences, collo_max,
+                  collo_min))
       return 1;
     for (size_t i = 0; i < cases.size(); ++i) {
       const Hit h = eng.Convert(cases[i].keys);
@@ -1027,7 +1085,11 @@ int RunSelect(const fs::path& shared, const fs::path& work, const fs::path& gram
   out << "選字對照（沙盒 bopomofo_express，沒有選字記憶）\n";
   out << "librime " << version << "\n";
   out << "拼寫含聲母介音韻母不分順序，以及聲調可接在第一個符號後面。\n";
-  out << "文法 zh-hant-t-essay-bgw，max_sentences 10，sentence_cutoff_threshold 100。\n";
+  out << (use_grammar ? "文法 " + grammar.stem().string() + " 開" : "文法關");
+  if (collo_max > 0 || collo_min > 0)
+    out << "，collocation_max_length " << collo_max << "，collocation_min_length " << collo_min;
+  out << (use_sentences ? "，整句候選開" : "，整句候選關（回到方案預設）")
+      << "，max_sentences " << max_sentences << "，max_homophones " << max_homophones << "。\n";
   out << "只打題目上的注音，不把前文送進輸入法。容錯關是建議的選字；容錯開是目前安裝版的開關。\n";
   out << "斜線隔開的寫法都算可接受。undecidable 與 llavon 不計入主數字。\n";
   out << "主數字用可接受寫法。嚴格第一名只認斜線前的那一個。\n\n";
@@ -1228,7 +1290,9 @@ int main(int argc, char** argv) {
   if (argc < 5) {
     std::fprintf(stderr,
                  "usage: typo_probe <rime_shared_dir> <work_dir> <cases|--> <grammar.gram> "
-                 "[limit] [--log file] [--sample] [--order] [--select] [--fault]\n");
+                 "[limit] [--log file] [--sample] [--order] [--select] [--fault] [--homo N] "
+                 "[--sentences N] [--no-grammar] [--no-sentences] "
+                 "[--collo-max N] [--collo-min N]\n");
     return 2;
   }
   const fs::path shared = argv[1], work = argv[2], grammar = argv[4];
@@ -1239,6 +1303,12 @@ int main(int argc, char** argv) {
   bool order = false;
   bool select = false;
   bool fault = false;
+  int max_homophones = 7;
+  int max_sentences = 10;
+  bool use_grammar = true;
+  bool use_sentences = true;
+  int collo_max = 0;
+  int collo_min = 0;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--sample")
@@ -1249,6 +1319,18 @@ int main(int argc, char** argv) {
       select = true;
     else if (a == "--fault")
       fault = true;
+    else if (a == "--homo" && i + 1 < argc)
+      max_homophones = std::atoi(argv[++i]);
+    else if (a == "--no-grammar")
+      use_grammar = false;
+    else if (a == "--no-sentences")
+      use_sentences = false;
+    else if (a == "--sentences" && i + 1 < argc)
+      max_sentences = std::atoi(argv[++i]);
+    else if (a == "--collo-max" && i + 1 < argc)
+      collo_max = std::atoi(argv[++i]);
+    else if (a == "--collo-min" && i + 1 < argc)
+      collo_min = std::atoi(argv[++i]);
     else if (a == "--log" && i + 1 < argc)
       log_path = argv[++i];
     else
@@ -1272,7 +1354,8 @@ int main(int argc, char** argv) {
   }
   std::printf("cases %zu  skipped %zu  sample %d\n", cases.size(), skipped, sample ? 1 : 0);
   if (select)
-    return RunSelect(shared, work, grammar, cases);
+    return RunSelect(shared, work, grammar, cases, max_homophones, max_sentences, use_grammar,
+                     use_sentences, collo_max, collo_min);
   if (fault)
     return RunFault(shared, work, grammar, cases);
   if (order)
