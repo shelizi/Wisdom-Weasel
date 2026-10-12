@@ -283,14 +283,18 @@ static void TestChoiceLog(const fs::path& dir) {
   r.text = L"今天\n";
   const std::string plain = ime::FormatChoiceRecord(r);
   CHECK(plain ==
-        "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 ");
+        "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 \t\t\t\t\t\t");
   {
-    // 整句重排評過分：Rime 當時的整句（U+001E 分隔；句子裡的分隔字元換成空白）與分數
+    // 整句候選（U+001E 分隔；句子裡的分隔字元換成空白）、分數與新欄位
     ime::ChoiceRecord shown = r;
     shown.shown = {L"金天", L"今\x1E天"};
     shown.shown_scores = {-12.5, -8.25};
+    shown.shown_personal = {0.5, 1.25};
+    shown.rec = "rerank:3.75";
+    shown.took = "rerank";
+    shown.context_key = L"notepad.exe|標題";
     CHECK(ime::FormatChoiceRecord(shown) ==
-          "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 \t金天\x1E今 天\t-12.5000,-8.2500");
+          "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 \t金天\x1E今 天\t-12.5000,-8.2500\t0.5000,1.2500\trerank:3.75\trerank\tnotepad.exe|標題");
   }
 
   // 加密附加兩筆，讀回來逐筆解開

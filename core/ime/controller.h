@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "choice_log.h"
 #include "session_state.h"
 
 class ContextHistory;
@@ -228,7 +229,8 @@ class Controller {
   // LoadConfig（重新部署）時清掉
   const ZhuyinSpeller& Speller(const char* schema_id);
   void CountCommit(SessionState& ss, const std::wstring& text, bool mixed = false);
-  void LogChoice(SessionState& ss, const std::wstring& text, bool mixed);
+  void LogChoice(SessionState& ss, const std::wstring& text, bool mixed,
+                 const std::string& rec);
   void RecordCommit(const std::wstring& text);  // 前文與個人詞庫
   void WaitRetired();
 
@@ -326,6 +328,9 @@ class Controller {
   std::wstring pending_commit_;     // 待送出的 LLM 候選
   bool mixed_shift_tap_ = false;    // Shift 按下後還沒按其他鍵（放開時算一次切換）
   uint64_t last_commit_ms_ = 0;     // 最近一次送出的時間（算送出後刪除）
+  // 最近一筆選字紀錄：送出後很快在應用程式裡刪字時補記 method=reverted
+  ChoiceRecord last_choice_;
+  bool last_choice_reverted_ = false;
   uint64_t last_grave_ms_ = 0;      // 上次按 ` 的時間（雙擊清空前文）
   // 精煉借用輸入法的模型時：打字或要換模型就讓出來（背景執行緒讀）
   std::atomic<uint64_t> last_key_ms_{0};   // 最近一次按鍵的時間

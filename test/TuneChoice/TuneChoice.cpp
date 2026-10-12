@@ -122,8 +122,8 @@ bool LoadLog(const fs::path& file, std::vector<Case>* cases, size_t* skipped) {
     }
     // 時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換 \t 送出的文字
     const auto f = Split(utf8::ToWide(plain), L'\t');
-    if (f.size() < 7 || f[2] == L"mixed" || f[4].empty() || f[5].empty() ||
-        f[6].empty()) {
+    if (f.size() < 7 || f[2] == L"mixed" || f[2] == L"reverted" || f[4].empty() ||
+        f[5].empty() || f[6].empty()) {
       ++*skipped;
       continue;
     }

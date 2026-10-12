@@ -244,7 +244,8 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
     return;
   const bool rescore = req.rescore && !req.prefix.empty();
   const bool correct = req.correct && !req.zhuyin.empty() && !req.prefix.empty();
-  const bool rerank = (req.rerank || req.rerank_shadow || req.sentence_scores) && !req.prefix.empty();
+  const bool score = req.rerank || req.rerank_shadow || req.sentence_scores;
+  const bool rerank = (score || req.log_sentences) && !req.prefix.empty();
   if (!req.predict && !correct && !rescore && !rerank)
     return;
   std::wstring context = req.history + req.prefix;
@@ -267,14 +268,22 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
     }
     if (sentences.size() >= 2) {
       RerankResult result;
-      {
-        std::lock_guard<std::mutex> infer_lock(state->infer);
-        if (!current())
-          return;
-        if (LLMProvider* scorer = models().rescore)
-          result = RerankSentences(scorer, rerank_tail, sentences, req.rerank_options);
+      if (score) {
+        {
+          std::lock_guard<std::mutex> infer_lock(state->infer);
+          if (!current())
+            return;
+          if (LLMProvider* scorer = models().rescore)
+            result = RerankSentences(scorer, rerank_tail, sentences, req.rerank_options);
+        }
+        // 選字紀錄要記超過評分上限的候選：查到但沒評的尾巴也交出去
+        if (sentences.size() > result.texts.size())
+          result.unscored.assign(sentences.begin() + result.texts.size(), sentences.end());
+      } else {
+        result.unscored = sentences;  // 只記不評（log_sentences）
       }
-      if (!result.scores.empty() && state->hooks.on_scores && current())
+      if ((!result.scores.empty() || !result.unscored.empty()) && state->hooks.on_scores &&
+          current())
         state->hooks.on_scores(req.tag, seq, result);
       if (req.rerank_shadow) {
         if (state->hooks.on_shadow && current())

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -101,6 +102,9 @@ void PopChar(std::wstring& s) {
   if (sizeof(wchar_t) == 2 && !s.empty() && s.back() >= 0xD800 && s.back() <= 0xDBFF)
     s.pop_back();
 }
+
+// 選字紀錄要記的整句候選數上限：超過評分上限的部分只記不評（離線調「評幾句」用）
+constexpr size_t kChoiceLogShown = 20;
 
 }  // namespace
 
@@ -1109,6 +1113,16 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
         // 送出後很快就在應用程式裡刪字：多半是送錯字
         ++Stats(session_id).deleted_after;
         SaveStats();
+        // 選字紀錄補記一筆 method=reverted（欄位同原本那筆）：剛才送出的是錯的
+        if (choice_log_ && !last_choice_.text.empty() && !last_choice_reverted_) {
+          last_choice_reverted_ = true;
+          ChoiceRecord reverted = last_choice_;
+          reverted.time = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+          reverted.method = "reverted";
+          AppendChoiceRecord(options_.user_dir / "personal", reverted);
+        }
       }
       const bool zhuyin = status.is_composing && !status.is_ascii_mode && IsZhuyinSchema(status.schema_id);
       // 音節依 Rime 組字的切法（注音之間以空白分開，省略聲調的連打也切得對），取游標前最後一個音節
@@ -2304,6 +2318,7 @@ void Controller::TriggerPrediction(uint64_t id,
   request.rerank = rerank && rerank_mode_ == 2;
   request.rerank_shadow = rerank && rerank_mode_ == 1;
   request.sentence_scores = rerank && show_probability_;
+  request.log_sentences = choice_log_;  // 選字紀錄：重排沒開也查整句候選（只記不評）
   request.rerank_options.margin = rerank_margin_;
   request.rerank_options.max_sentences = rerank_sentences_;
   request.rerank_options.context_chars = rerank_context_;
@@ -2385,8 +2400,11 @@ bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring
   for (const auto& u : units)
     if (u.empty() || u[0] < 0x3400 || zhuyin_preview::IsBopomofo(u[0]))
       return false;
+  // 選字紀錄要記超過評分上限的候選（離線調「評幾句」用）：開紀錄時多查一些
+  const size_t fetch =
+      choice_log_ ? (std::max)(rerank_sentences_, kChoiceLogShown) : rerank_sentences_;
   // 佔著服務端的鎖掃整句候選：有新的按鍵就提早放棄
-  *sentences = sentences_->Find(schema_id, input, units.size(), rerank_sentences_,
+  *sentences = sentences_->Find(schema_id, input, units.size(), fetch,
                                 [this, seq] { return !prediction_->IsCurrent(seq); });
   if (!prediction_->IsCurrent(seq))
     return false;
@@ -2406,8 +2424,8 @@ bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring
   // 第一句一定是使用者看到的轉換（選字記憶、手動選過的字都在裡面）
   sentences->erase(std::remove(sentences->begin(), sentences->end(), preview), sentences->end());
   sentences->insert(sentences->begin(), preview);
-  if (sentences->size() > rerank_sentences_)
-    sentences->resize(rerank_sentences_);
+  if (sentences->size() > fetch)
+    sentences->resize(fetch);
   return sentences->size() >= 2;
 }
 
@@ -2431,8 +2449,10 @@ void Controller::OnSentenceScores(uint64_t id, uint64_t seq, const RerankResult&
   SessionState* ss = frontend_->Session(id);
   if (!prediction_->IsCurrent(seq) || !ss)
     return;
-  // 選字紀錄：記下 Rime 當時的前幾個整句與模型分數
+  // 選字紀錄：記下 Rime 當時的整句候選與模型分數（含沒評分的尾巴）
   ss->shown_sentences = result.texts;
+  ss->shown_sentences.insert(ss->shown_sentences.end(), result.unscored.begin(),
+                             result.unscored.end());
   ss->shown_scores = result.lm_scores;
   if (!show_probability_)
     return;
@@ -2672,6 +2692,23 @@ bool Controller::CommitPrediction(uint64_t id, size_t index) {
   CandidateKind kind = CandidateKind::kPrediction;
   if (!prediction_->Take(index, &selected, &recommend, &correction, &kind))
     return false;
+  // 選字紀錄：這次組字套用了哪種建議（帶上採用時的差距；RecordSuggestions 會清掉 gain）
+  const char* applied = kind == CandidateKind::kRerank      ? "rerank"
+                        : kind == CandidateKind::kRecommend  ? "recommend"
+                        : kind == CandidateKind::kCorrection ? "correction"
+                                                             : "predict";
+  const double applied_gain =
+      kind == CandidateKind::kRerank      ? ss.rerank_gain
+      : kind == CandidateKind::kRecommend  ? ss.recommend_gain
+      : kind == CandidateKind::kCorrection ? ss.correction_gain
+                                           : std::numeric_limits<double>::quiet_NaN();
+  if (std::isnan(applied_gain)) {
+    ss.applied_suggestion = applied;
+  } else {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%s:%.2f", applied, applied_gain);
+    ss.applied_suggestion = buf;
+  }
   RecordSuggestions(ss, kind);
   // 推薦：用 Rime 逐段選字把整句改成推薦的樣子，留在組字區（送出時 Rime 照常學習）
   if (recommend && ConfirmText(ss, selected)) {
@@ -2793,6 +2830,20 @@ const ZhuyinSpeller& Controller::Speller(const char* schema_id) {
 }
 
 void Controller::CountCommit(SessionState& ss, const std::wstring& text, bool mixed) {
+  // 顯示中的建議先記下（RecordSuggestions 會把 gain 清掉）
+  std::string rec;
+  const auto add_rec = [&rec](const char* kind, double gain) {
+    if (std::isnan(gain))
+      return;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%s:%.2f", kind, gain);
+    rec += (rec.empty() ? "" : ",") + std::string(buf);
+  };
+  add_rec("rerank", ss.rerank_gain);
+  add_rec("recommend", ss.recommend_gain);
+  add_rec("correction", ss.correction_gain);
+  if (rec.empty() && ss.recommend_offered)
+    rec = "offered";  // 出現過推薦但沒來得及算 gain（關閉預測模式時）
   RecordSuggestions(ss, CandidateKind::kPrediction);  // 顯示著推薦／校正卻照 Rime 的送出
   CountShadow(ss, text);
   ChoiceStats& s = Stats(ss.session_id);
@@ -2804,18 +2855,22 @@ void Controller::CountCommit(SessionState& ss, const std::wstring& text, bool mi
     ++s.llm_offered;
   SaveStats();
   last_commit_ms_ = base::MonotonicMs();
-  LogChoice(ss, text, mixed);
+  LogChoice(ss, text, mixed, rec);
   ss.choice_changed = ss.llm_offered = ss.focus_used = ss.recommend_offered = false;
   ss.llm_committed = ss.correction_committed = false;
+  ss.applied_suggestion.clear();
   ss.default_text.clear();
   ss.default_zhuyin.clear();
 }
 
-void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixed) {
+void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixed,
+                           const std::string& rec) {
   if (!choice_log_ || text.empty())
     return;
   ChoiceRecord record;
-  record.time = (int64_t)std::time(nullptr);
+  record.time = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count();
   record.method = ChoiceMethod(mixed, ss.correction_committed, ss.llm_committed, ss.focus_used,
                                ss.choice_changed);
   // 前文：送出之前的最近文字（有些路徑已先把這次送出的文字加進前文）
@@ -2835,7 +2890,17 @@ void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixe
   }
   ss.shown_sentences.clear();
   ss.shown_scores.clear();
-  AppendChoiceRecord(options_.user_dir / "personal", record);
+  record.rec = rec;
+  record.took = ss.applied_suggestion;
+  record.context_key = history_ ? history_->GetActiveKey() : L"";
+  if (personal_)
+    for (const auto& s : record.shown)
+      record.shown_personal.push_back(personal_->SentenceScore(s));
+  if (AppendChoiceRecord(options_.user_dir / "personal", record)) {
+    // 留一份：送出後很快在應用程式裡刪字時補記 method=reverted（送出是錯的訊號）
+    last_choice_ = std::move(record);
+    last_choice_reverted_ = false;
+  }
 }
 
 // ---------------------------------------------------------------------------

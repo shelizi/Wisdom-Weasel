@@ -640,6 +640,8 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     spec.n_threads = o.value("n_threads", 4);
     spec.disable_thinking = true;
     const size_t context_chars = (size_t)p.value("context", 30);
+    const double length_alpha = p.value("alpha", 0.0);
+    const double personal_weight = p.value("personal", 0.0);
 
     std::lock_guard<std::mutex> lock(s.job_mutex);
     if (s.tune_running)
@@ -650,7 +652,8 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     s.tune_running = true;
     Emit emit = s.emit;
     auto cancel = s.tune_cancel;
-    s.tune_job = std::thread([&s, emit, cancel, spec, context_chars]() {
+    s.tune_job =
+        std::thread([&s, emit, cancel, spec, context_chars, length_alpha, personal_weight]() {
       const fs::path paused = s.platform.UserDataDir() / "llm_paused.txt";
       std::error_code ec;
       fs::remove(paused, ec);
@@ -666,8 +669,8 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
           emit("rerank_tune",
                {{"state", "error"},
                 {"message", "有整句候選的選字紀錄只有 " + std::to_string(cases.size()) +
-                                " 筆（至少 30 筆）。請開啟「選字紀錄」與整句重排（只統計或顯示），"
-                                "打一些字之後再試。"}});
+                                " 筆（至少 30 筆）。請開啟「選字紀錄」後打一些字再試"
+                                "（重排關著也會記候選）。"}});
         } else {
           RemoteLLMProvider provider("llamacpp");
           const auto t0 = std::chrono::steady_clock::now();
@@ -680,7 +683,8 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
             // 取消時進行中的評分也中斷（推理行程會定期檢查）
             LLMCancelScope cancel_scope([&cancel] { return cancel->load(); });
             auto report = settings_rerank::Tune(
-                &provider, cases, context_chars, *cancel, [emit](size_t done, size_t total) {
+                &provider, cases, context_chars, length_alpha, personal_weight, *cancel,
+                [emit](size_t done, size_t total) {
                   emit("rerank_tune",
                        {{"state", "score"}, {"done", done}, {"total", total}});
                 });

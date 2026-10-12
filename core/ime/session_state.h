@@ -37,6 +37,9 @@ struct SessionState {
   bool recommend_offered = false;  // 這次組字出現過「推薦」
   bool llm_committed = false;      // 這次送出的是 LLM 候選
   bool correction_committed = false;
+  // 這次組字套用過的建議（"predict"／"recommend"／"correction"／"rerank"，
+  // 有差距時是 "kind:gain"；選字紀錄用）
+  std::string applied_suggestion;
   // 信心校準：目前顯示中的推薦／校正比原句好多少（沒有是 NaN）；送出或選了候選時記成一筆樣本
   double recommend_gain = std::numeric_limits<double>::quiet_NaN();
   double correction_gain = std::numeric_limits<double>::quiet_NaN();

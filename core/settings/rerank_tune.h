@@ -17,10 +17,17 @@ namespace settings_rerank {
 
 // 一筆可用的選字紀錄：當時的整句候選（sentences[0] 是預設轉換）與使用者送出的句子
 struct LoggedCase {
+  int64_t time = 0;
   std::wstring context;
+  std::wstring context_key;  // 前文視窗 key（同一份前文的送出序列；訓練重建用）
+  std::wstring zhuyin;
+  std::string method;  // 送出方式（direct/changed/focus/llm/correction/mixed）
+  std::string rec;     // 顯示中的建議（kind:gain；"offered" = 出現過沒記 gain）
+  std::string took;    // 套用的建議種類
   std::wstring draft;                   // Rime 當時的預設轉換
-  std::wstring truth;                   // 使用者實際送出
-  std::vector<std::wstring> sentences;  // 當時評過的整句（最多 20 句）
+  std::wstring truth;                   // 使用者實際送出（reverted 配對成功時是修正後的）
+  std::vector<std::wstring> sentences;  // 當時的整句候選（最多 20 句）
+  std::vector<double> personal;         // 每句的個人詞庫分數（舊紀錄沒有是空的）
 };
 
 // 從 personal_dir/choice_log.dat 讀出有 Top-K 的紀錄（解密或格式不對的略過）。
@@ -44,10 +51,14 @@ struct TuneReport {
   std::vector<TuneOutcome> grid;  // 全部組合（top、margin 都由小到大）
 };
 
-// 每筆的整句送 ScoreBatch 重新評分後掃網格；每評完一筆呼叫 progress(done, total)
+// 每筆的整句送 ScoreBatch 重新評分後掃網格；每評完一筆呼叫 progress(done, total)。
+// length_alpha／personal_weight 要給表單目前的值：紀錄裡有每句的個人詞庫分數，
+// 掃出來的門檻才對得上線上的計分方式。
 TuneReport Tune(LLMProvider* scorer,
                 const std::vector<LoggedCase>& cases,
                 size_t context_chars,
+                double length_alpha,
+                double personal_weight,
                 const std::atomic<bool>& cancel,
                 const std::function<void(size_t, size_t)>& progress);
 

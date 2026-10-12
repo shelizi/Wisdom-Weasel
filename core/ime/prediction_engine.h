@@ -70,6 +70,9 @@ struct PredictionRequest {
   bool rerank = false;                 // 整句重排：比 Rime 第一句通順的整句當推薦（需要 prefix）
   bool rerank_shadow = false;          // 整句重排只算不顯示，結果交給 on_shadow（驗證用）
   bool sentence_scores = false;        // 評 Rime 的整句並交給 on_scores（候選窗顯示機率）
+  // 選字紀錄：重排沒開時一樣查 Rime 的整句候選交給 on_scores（unscored），不評分、
+  // 不需要模型——純資料收集，結果只用來寫選字紀錄
+  bool log_sentences = false;
   RerankOptions rerank_options;
   unsigned delay_ms = 0;               // 防抖：等這麼久後若已有更新的請求就放棄
 };

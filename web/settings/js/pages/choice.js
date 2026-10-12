@@ -110,6 +110,8 @@ export default {
           n_threads: int(f.local.threads, 4),
         },
         context: int(f.choice.rerank_context, 30),
+        alpha: parseFloat(f.choice.rerank_alpha) || 0,
+        personal: parseFloat(f.choice.rerank_personal) || 0,
       });
     } catch (e) {
       ctx.status(e.message, 'error');

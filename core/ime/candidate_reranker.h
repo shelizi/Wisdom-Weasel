@@ -39,6 +39,8 @@ struct RerankResult {
   std::vector<std::wstring> texts;
   std::vector<double> scores;
   std::vector<double> lm_scores;  // 模型原始的整句 log 機率
+  // 查到但沒評分的尾巴（選字紀錄要記超過評分上限的候選時）
+  std::vector<std::wstring> unscored;
   double ms = 0;                  // 評分花的時間
 };
 

@@ -41,20 +41,24 @@ std::string FormatChoiceRecord(const ChoiceRecord& r) {
   std::ostringstream record;
   record << r.time << '\t' << app << '\t' << r.method << '\t' << clean(r.context) << '\t'
          << clean(r.zhuyin) << '\t' << clean(r.default_text) << '\t' << clean(r.text);
-  if (!r.shown.empty()) {
-    std::wstring shown;
-    for (const auto& s : r.shown) {
-      std::wstring t = s;
-      for (auto& c : t)
-        if (c == kChoiceListSeparator)
-          c = L' ';
-      shown += (shown.empty() ? L"" : std::wstring(1, kChoiceListSeparator)) + t;
-    }
-    record << '\t' << clean(shown) << '\t';
-    record.precision(4);
-    for (size_t i = 0; i < r.shown_scores.size(); ++i)
-      record << (i ? "," : "") << std::fixed << r.shown_scores[i];
+  // 整句候選（U+001E 分隔）
+  std::wstring shown;
+  for (const auto& s : r.shown) {
+    std::wstring t = s;
+    for (auto& c : t)
+      if (c == kChoiceListSeparator)
+        c = L' ';
+    shown += (shown.empty() ? L"" : std::wstring(1, kChoiceListSeparator)) + t;
   }
+  record << '\t' << clean(shown) << '\t';
+  // 模型分數／個人詞庫分數（逗號分隔；後面的欄位一律補上，讀端依欄位數辨識新舊格式）
+  record.precision(4);
+  for (size_t i = 0; i < r.shown_scores.size(); ++i)
+    record << (i ? "," : "") << std::fixed << r.shown_scores[i];
+  record << '\t';
+  for (size_t i = 0; i < r.shown_personal.size(); ++i)
+    record << (i ? "," : "") << std::fixed << r.shown_personal[i];
+  record << '\t' << r.rec << '\t' << r.took << '\t' << clean(r.context_key);
   return record.str();
 }
 
