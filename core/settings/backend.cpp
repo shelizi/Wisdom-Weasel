@@ -902,6 +902,42 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
                   std::to_string(e.margin);
       return AutoResultJson(r);
     }
+    // 學習式排序器的劣化看門狗：模型啟用後修正率明顯上升 → 停用（改名 .bak，
+    // 之後的 rank.train 可用更多資料重訓，匯出仍要贏過現行設定）
+    {
+      const fs::path model_path = personal / "ranker_model.json";
+      std::error_code mec;
+      if (fs::exists(model_path, mec)) {
+        int64_t exported_ts = 0;
+        std::ifstream rin(personal / "rank_train.log");
+        for (std::string line; std::getline(rin, line);) {
+          try {
+            const json j = json::parse(line);
+            if (j.value("exported", false))
+              exported_ts = j.value("ts", (int64_t)0);
+          } catch (...) {
+          }
+        }
+        const auto rcheck =
+            exported_ts ? settings_rerank::CheckDegradation(meta, exported_ts)
+                        : settings_rerank::DegradeCheck{};
+        if (rcheck.degraded) {
+          std::error_code rec;
+          fs::rename(model_path, personal / "ranker_model.json.bak", rec);
+          if (!rec) {
+            settings_rerank::TuneEntry e;
+            e.ts = now_ms;
+            e.action = "rollback";
+            e.apply_rec_ms = meta.empty() ? 0 : meta.back().time;
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), "排序器停用：修正率 %.1f%% → %.1f%%（%zu 筆後段紀錄）",
+                          rcheck.before_rate * 100, rcheck.after_rate * 100, rcheck.after_n);
+            e.note = buf;
+            settings_rerank::AppendTuneHistory(personal, e);
+          }
+        }
+      }
+    }
     if (!force) {
       if (meta.size() < st.last_records + 150)
         return json{{"action", "skip"}, {"reason", "新紀錄未滿 150 筆"}, {"records", meta.size()}};
