@@ -329,4 +329,8 @@ input, textarea, select, button { font: inherit; color: inherit; }
 .font-simple-row { display: flex; align-items: center; gap: 10px; }
 .font-simple-label { width: 56px; flex: none; }
 .font-advanced { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--stroke-strong); }
+
+/* 選字頁：整句重排的進階參數收合區 */
+.adv { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke-strong); display: flex; flex-direction: column; gap: 6px; }
+.adv .row > span:first-child { min-width: 84px; }
 .font-simple-row .grow { max-width: 420px; }
