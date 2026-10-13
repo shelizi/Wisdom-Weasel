@@ -514,9 +514,15 @@ RankTrainReport TrainRanker(LLMProvider* scorer,
   };
   if (!win) {
     write_history(false);
-    rep.message = "驗證沒有贏過目前設定（公式 " +
-                  std::to_string((int)(base.accuracy * 1000) / 10.0) + "% vs " +
-                  rep.type + " " + std::to_string((int)(v.acc * 1000) / 10.0) + "%），不匯出";
+    const auto pct = [](double x) { return std::to_string((int)(x * 1000) / 10.0) + "%"; };
+    std::string why;
+    if (!(v.acc >= base.accuracy + min_gain))
+      why = "準確率沒贏";
+    if (!(v.wrong <= wrong_cap + 1e-9))
+      why += (why.empty() ? "" : "，") + std::string("錯改率 ") + pct(v.wrong) +
+             " 超過上限 " + pct(wrong_cap);
+    rep.message = "驗證沒有贏過目前設定（公式 " + pct(base.accuracy) + " vs " +
+                  rep.type + " " + pct(v.acc) + (why.empty() ? "" : "，" + why) + "），不匯出";
     return rep;
   }
 
