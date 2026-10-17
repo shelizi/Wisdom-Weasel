@@ -1,7 +1,7 @@
 param([string]$DataDir = (Join-Path $PSScriptRoot '..\output\data'))
 $ErrorActionPreference = 'Stop'
 $resource = Join-Path $PSScriptRoot '..\resource\lexicons\taiwan'
-$files = @('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.NOTICE.txt', 'wisdom_taiwan.manifest.json')
+$files = @('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.NOTICE.txt', 'wisdom_taiwan.manifest.json', 'wisdom_taiwan.sources.zip')
 foreach ($name in $files) {
   if (-not (Test-Path -LiteralPath (Join-Path $resource $name) -PathType Leaf)) {
     throw "Missing bundled vocabulary resource: $name"
@@ -13,6 +13,11 @@ $sha = [Security.Cryptography.SHA256]::Create()
 try { $hash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
 finally { $stream.Dispose(); $sha.Dispose() }
 if ($hash -ne $manifest.sha256) { throw 'Bundled vocabulary checksum mismatch' }
+$stream = [IO.File]::OpenRead((Join-Path $resource 'wisdom_taiwan.sources.zip'))
+$sha = [Security.Cryptography.SHA256]::Create()
+try { $hash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+finally { $stream.Dispose(); $sha.Dispose() }
+if ($hash -ne $manifest.sources_sha256) { throw 'Bundled vocabulary source checksum mismatch' }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 foreach ($name in $files) {
   Copy-Item -LiteralPath (Join-Path $resource $name) -Destination (Join-Path $DataDir $name) -Force

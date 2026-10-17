@@ -1,19 +1,22 @@
 """Build/install an independent Taiwan vocabulary pack for the bundled Rime schemas.
 
-Build: python tools/taiwan_lexicon.py build --source-dir <McBopomofo Source/Data>
+Build: python tools/taiwan_lexicon.py build --source-dir <McBopomofo Source/Data> --chewing-source-dir <libchewing-data>
 Install: python tools/taiwan_lexicon.py install --user-dir <Rime user folder>
 Remove: python tools/taiwan_lexicon.py remove --user-dir <Rime user folder>
 Installation preserves personal dictionaries and custom-phrase files. Redeploy Rime
 after installing/removing. Python 3.9+ and PyYAML are required for config validation.
 """
 import argparse
+import csv
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import tempfile
 import time
+import zipfile
 
 import yaml
 
@@ -21,6 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK = "wisdom_taiwan"
 RESOURCE = ROOT / "resource" / "lexicons" / "taiwan"
 REVISION = "be6564acad6c4d3265c34a2e1a872d80f9db6068"
+CHEWING_REVISION = "ed9758d24302592e560ab680b3e10c4bd05f9c03"
+CHEWING_HASH = "c889a1ac3ae1901b3f8f62748bc41b958f010bf995f7f88dbaf9e3494f341428"
+FILES = (PACK + '.dict.yaml', PACK + '.manifest.json', PACK + '.NOTICE.txt',
+         PACK + '.sources.zip')
 SOURCE_HASHES = {
     "BPMFBase.txt": "46e64a53dc9c6baa2cbe6e0b1af572f8ef6aafb50597178b5fd53df804316ce7",
     "BPMFMappings.txt": "394f3946754ebdd9d5e503f0f94c6977e5e19bd7cab21b4b18a6ea0167e00171",
@@ -48,11 +55,55 @@ def atomic_write(path, data):
             os.unlink(temporary)
 
 
-def build(source, terra, resource=RESOURCE):
+def normalize_zhuyin(value):
+    # Chewing also accepts a leading neutral tone; McBopomofo writes it last.
+    tone = ''.join(c for c in value if c in 'ˊˇˋ˙')
+    base = ''.join(c for c in value if c not in 'ˉˊˇˋ˙')
+    return base + tone
+
+
+def merge_chewing(entries, readings, syllables, path):
+    rows, skipped = {}, 0
+    for fields in csv.reader(path.read_text(encoding='utf-8-sig').splitlines()):
+        if len(fields) != 3 or fields[0].startswith('#') or not HAN.fullmatch(fields[0]):
+            continue
+        word, count, pronunciation = fields
+        zh = pronunciation.split()
+        if len(zh) != len(word) or any(normalize_zhuyin(s) not in readings for s in zh):
+            skipped += 1
+            continue
+        frequency = int(count)
+        if frequency < 0:
+            raise ValueError('Negative Chewing frequency: ' + word)
+        code = ' '.join(readings[normalize_zhuyin(s)] for s in zh)
+        if not set(code.split()) <= syllables:
+            raise ValueError('Unsupported Chewing code: ' + word)
+        key = word, code
+        rows[key] = max(rows.get(key, 0), frequency)
+    maximum = max(rows.values(), default=0)
+    added = updated = overlaps = 0
+    for key, frequency in rows.items():
+        # Compress this source's own scale. Conservative 100..1000 weights keep
+        # its corpus counts from overwhelming existing or personal preferences.
+        weight = 100 + round(900 * math.log1p(frequency) / math.log1p(maximum)) if maximum else 100
+        if key in entries:
+            overlaps += 1
+            updated += weight > entries[key]
+        else:
+            added += 1
+        entries[key] = max(entries.get(key, 0), weight)  # Never sum duplicates.
+    return dict(entries=len(rows), added=added, overlaps=overlaps,
+                weights_updated=updated, skipped_readings=skipped, max_frequency=maximum)
+
+
+def build(source, terra, chewing_source, resource=RESOURCE):
     """Keep explicit readings from upstream; never infer proper-name pronunciation."""
     for name, expected in SOURCE_HASHES.items():
         if digest(source / name) != expected:
             raise ValueError("Source does not match the pinned upstream revision: " + name)
+    chewing_file = chewing_source / 'dict/chewing/tsi.csv'
+    if digest(chewing_file) != CHEWING_HASH:
+        raise ValueError('Chewing source does not match the pinned upstream revision')
     syllables = set()
     in_table = False
     for line in terra.read_text(encoding="utf-8-sig").splitlines():
@@ -60,6 +111,8 @@ def build(source, terra, resource=RESOURCE):
             in_table = True
         elif in_table and "\t" in line and not line.startswith("#"):
             syllables.update(line.split("\t")[1].split())
+    if terra.name == 'syllables.txt':
+        syllables = set(terra.read_text(encoding='utf-8').split())
     if len(syllables) < 100:
         raise ValueError("Cannot read the terra_pinyin syllable table")
     readings = {}
@@ -73,7 +126,7 @@ def build(source, terra, resource=RESOURCE):
         # Prefer the tone written in the Zhuyin, including unmarked first tone.
         tone = next((str(i) for i, mark in enumerate("ˉˊˇˋ˙", 1) if mark in zh), "1")
         if py[-1:] == tone and py in syllables:
-            readings[zh] = py
+            readings[normalize_zhuyin(zh)] = py
     frequencies = {}
     for line in (source / "phrase.occ").read_text(encoding="utf-8").splitlines():
         fields = line.rsplit(" ", 1)
@@ -86,13 +139,14 @@ def build(source, terra, resource=RESOURCE):
         if not fields or not HAN.fullmatch(fields[0]):
             continue
         word, zh = fields[0], fields[1:]
-        if len(zh) != len(word) or any(s not in readings for s in zh):
+        if len(zh) != len(word) or any(normalize_zhuyin(s) not in readings for s in zh):
             skipped += 1
             continue
-        code = " ".join(readings[s] for s in zh)
+        code = " ".join(readings[normalize_zhuyin(s)] for s in zh)
         # Public vocabulary gets ordinary, bounded weights, not personal boost scores.
         weight = max(100, min(10000, frequencies.get(word, 0) * 10))
         entries[word, code] = weight
+    chewing_stats = merge_chewing(entries, readings, syllables, chewing_file)
     extra = resource / "supplement.tsv"
     supplement_count = 0
     for line in extra.read_text(encoding="utf-8").splitlines():
@@ -105,18 +159,43 @@ def build(source, terra, resource=RESOURCE):
             raise ValueError("Unsupported supplemental reading: " + word)
         entries[word, code] = max(1000, entries.get((word, code), 0))
         supplement_count += 1
-    header = ("# Taiwan vocabulary: McBopomofo + Wisdom-Weasel supplement.\n"
+    header = ("# Taiwan vocabulary: McBopomofo + libchewing-data + Wisdom-Weasel supplement.\n"
               "# See wisdom_taiwan.NOTICE.txt and wisdom_taiwan.manifest.json.\n"
-              "---\nname: wisdom_taiwan\nversion: '2026.10.17'\nsort: by_weight\n"
+              "---\nname: wisdom_taiwan\nversion: '2026.10.17.2'\nsort: by_weight\n"
               "use_preset_vocabulary: false\ncolumns: [text, code, weight]\n...\n")
     text = header + "".join(f"{word}\t{code}\t{weight}\n"
                             for (word, code), weight in sorted(entries.items()))
     output = resource / (PACK + ".dict.yaml")
     atomic_write(output, text.encode("utf-8"))
+    # Ship the complete conversion inputs and code with the LGPL-derived data.
+    # Fixed ZIP timestamps make source bundles reproducible across builds.
+    archive = resource / (PACK + '.sources.zip')
+    inputs = {f'McBopomofo/{name}': (source / name).read_bytes()
+              for name in (*SOURCE_HASHES, 'LICENSE.txt')}
+    inputs.update({
+        'libchewing-data/dict/chewing/tsi.csv': chewing_file.read_bytes(),
+        'tools/taiwan_lexicon.py': Path(__file__).read_bytes().replace(b'\r\n', b'\n'),
+        'resource/lexicons/taiwan/supplement.tsv': extra.read_bytes().replace(b'\r\n', b'\n'),
+        'resource/lexicons/taiwan/wisdom_taiwan.NOTICE.txt': (resource / (PACK + '.NOTICE.txt')).read_bytes().replace(b'\r\n', b'\n'),
+        'syllables.txt': ('\n'.join(sorted(syllables)) + '\n').encode(),
+        'REBUILD.txt': b'Python 3.9+ and PyYAML required. From the extracted root run:\npython tools/taiwan_lexicon.py build --source-dir McBopomofo --chewing-source-dir libchewing-data --terra syllables.txt\n',
+    })
+    for license_name in ('LGPL-2.1-or-later', 'GPL-2.0-or-later'):
+        inputs['libchewing-data/LICENSES/' + license_name + '.txt'] = (
+            chewing_source / 'LICENSES' / (license_name + '.txt')).read_bytes().replace(b'\r\n', b'\n')
+    with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+        for name, data in sorted(inputs.items()):
+            bundle.writestr(zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)),
+                            data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     manifest = dict(source="https://github.com/openvanilla/McBopomofo",
                     revision=REVISION, entries=len(entries),
                     words=len({w for w, _ in entries}), supplement_entries=supplement_count,
                     skipped_readings=skipped, sha256=digest(output),
+                    chewing=dict(source='https://codeberg.org/chewing/libchewing-data',
+                                 revision=CHEWING_REVISION, sha256=CHEWING_HASH,
+                                 license='LGPL-2.1-or-later', **chewing_stats),
+                    frequency_policy='McBopomofo: count*10 clipped 100..10000; Chewing: log1p normalized 100..1000; duplicate word+reading: max, never sum; supplement: minimum 1000',
+                    sources_sha256=digest(archive),
                     source_sha256={name: digest(source / name) for name in
                                    ("BPMFBase.txt", "BPMFMappings.txt", "phrase.occ")})
     atomic_write(resource / (PACK + ".manifest.json"),
@@ -197,7 +276,9 @@ def install(user, enable=True, resource=RESOURCE):
         dictionary = resource / (PACK + ".dict.yaml")
         if digest(dictionary) != manifest["sha256"]:
             raise ValueError("Pack checksum mismatch")
-        for name in (PACK + ".dict.yaml", PACK + ".manifest.json", PACK + ".NOTICE.txt"):
+        if digest(resource / FILES[3]) != manifest['sources_sha256']:
+            raise ValueError('Source bundle checksum mismatch')
+        for name in FILES:
             changes[user / name] = (resource / name).read_bytes()
     # Validate everything before changing the user folder; keep exact pre-install copies.
     changed = {p: value for p, value in changes.items()
@@ -229,6 +310,7 @@ def main():
     sub = parser.add_subparsers(dest="action", required=True)
     generate = sub.add_parser("build")
     generate.add_argument("--source-dir", type=Path, required=True)
+    generate.add_argument("--chewing-source-dir", type=Path, required=True)
     generate.add_argument("--terra", type=Path,
                           default=Path(r"C:\Program Files\Rime\wisdom-weasel\data\terra_pinyin.dict.yaml"))
     for action in ("install", "remove"):
@@ -236,7 +318,7 @@ def main():
         command.add_argument("--user-dir", type=Path,
                              default=Path(os.environ.get("APPDATA", "~")) / "Rime")
     args = parser.parse_args()
-    result = build(args.source_dir, args.terra) if args.action == "build" else install(
+    result = build(args.source_dir, args.terra, args.chewing_source_dir) if args.action == "build" else install(
         args.user_dir, args.action == "install")
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -161,7 +161,7 @@ keycode 與 modifiers 就是原本傳給 `process_key` 的值（Rime 的 keysym 
 **6. 打包**（`squirrel/` 的 Makefile 與 Xcode 建置步驟會做）
 
 - `web/settings` 複製到 `Squirrel.app/Contents/Resources/web/settings`
-- `resource/lexicons/taiwan/wisdom_taiwan.{dict.yaml,NOTICE.txt,manifest.json}` 放到 `Contents/SharedSupport`
+- `resource/lexicons/taiwan/wisdom_taiwan.{dict.yaml,NOTICE.txt,manifest.json,sources.zip}` 放到 `Contents/SharedSupport`（來源包保留新酷音資料的授權與重建所需檔案）
 - `WisdomLLMHost` 放到 `Squirrel.app/Contents/MacOS`（與鼠鬚管同一資料夾，輸入法從那裡啟動它）；
   llama.cpp 的 dylib 放 `Contents/Frameworks`，推理程式的 rpath 是 `@executable_path/../Frameworks`
 - 設定寫在 `squirrel.custom.yaml` 的 `llm/*`（網頁版設定會寫）

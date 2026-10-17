@@ -50,7 +50,8 @@ fi
 if [ "$rebuild" = 1 ] || [ ! -x "$app/Contents/MacOS/Squirrel" ] ||
    ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.dict.yaml" "$app/Contents/SharedSupport/wisdom_taiwan.dict.yaml" ||
    ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.NOTICE.txt" "$app/Contents/SharedSupport/wisdom_taiwan.NOTICE.txt" ||
-   ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.manifest.json" "$app/Contents/SharedSupport/wisdom_taiwan.manifest.json"; then
+   ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.manifest.json" "$app/Contents/SharedSupport/wisdom_taiwan.manifest.json" ||
+   ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.sources.zip" "$app/Contents/SharedSupport/wisdom_taiwan.sources.zip"; then
   step "建置 Squirrel.app"
   if ! xcodebuild -version > /dev/null 2>&1; then
     echo "需要完整的 Xcode（並執行過 sudo xcodebuild -license accept）" >&2

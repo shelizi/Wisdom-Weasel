@@ -18,7 +18,8 @@ namespace fs = std::filesystem;
 inline constexpr const char* kBegin = "  # >>> wisdom-taiwan-lexicon";
 inline constexpr const char* kEnd = "  # <<< wisdom-taiwan-lexicon";
 inline constexpr const char* kFiles[] = {
-    "wisdom_taiwan.dict.yaml", "wisdom_taiwan.manifest.json", "wisdom_taiwan.NOTICE.txt"};
+    "wisdom_taiwan.dict.yaml", "wisdom_taiwan.manifest.json", "wisdom_taiwan.NOTICE.txt",
+    "wisdom_taiwan.sources.zip"};
 
 inline std::string Read(const fs::path& path) {
   std::ifstream in(path, std::ios::binary);

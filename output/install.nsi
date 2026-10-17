@@ -308,6 +308,7 @@ program_files:
   File "data\wisdom_taiwan.dict.yaml"
   File "data\wisdom_taiwan.NOTICE.txt"
   File "data\wisdom_taiwan.manifest.json"
+  File "data\wisdom_taiwan.sources.zip"
   File /nonfatal "data\*.gram"
   ; opencc data files
   SetOutPath $INSTDIR\data\opencc

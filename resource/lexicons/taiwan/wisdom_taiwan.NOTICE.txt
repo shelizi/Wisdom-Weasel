@@ -11,6 +11,21 @@ Readings are retained from the source, mapped to terra_pinyin tone-number codes.
 Weights are bounded to 100..10000; no personal usage counts are imported.
 The local supplement is in supplement.tsv and follows the project license.
 
+Additional source: libchewing-data (Chewing Input Method)
+https://codeberg.org/chewing/libchewing-data
+Revision: ed9758d24302592e560ab680b3e10c4bd05f9c03
+dict/chewing/tsi.csv: Copyright (c) 2025 libchewing Core Team.
+License: LGPL-2.1-or-later, as stated in the source file metadata.
+Modifications by Wisdom-Weasel, 2026-10-17: selected 2..7-character Han words,
+converted explicit Zhuyin readings to terra_pinyin tone codes, log-normalized
+frequencies to 100..1000 and merged identical word/readings by maximum weight.
+Chewing-derived vocabulary remains available under LGPL-2.1-or-later, without
+warranty. Other inputs retain their respective notices and licenses below.
+The complete source inputs, conversion script, syllable table, supplement,
+rebuild instructions, LGPL 2.1 and GPL 2 license texts are included in
+wisdom_taiwan.sources.zip alongside this dictionary. You may modify and rebuild
+the vocabulary; no personal learning data are included in this source bundle.
+
 Bundled installation: WeaselDeployer (Windows) and WisdomBridge (macOS Squirrel)
 enable this vocabulary automatically when deploying. No Python installation or
 network download is needed at runtime.

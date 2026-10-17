@@ -85,10 +85,11 @@ jobs:
                    Contents/SharedSupport/wisdom_taiwan.dict.yaml \
                    Contents/SharedSupport/wisdom_taiwan.NOTICE.txt \
                    Contents/SharedSupport/wisdom_taiwan.manifest.json \
+                   Contents/SharedSupport/wisdom_taiwan.sources.zip \
                    Contents/Frameworks/librime.1.dylib Contents/Frameworks/libllama.0.dylib; do
             test -e "$app/$f" || { echo "missing $f"; exit 1; }
           done
-          for f in wisdom_taiwan.dict.yaml wisdom_taiwan.NOTICE.txt wisdom_taiwan.manifest.json; do
+          for f in wisdom_taiwan.dict.yaml wisdom_taiwan.NOTICE.txt wisdom_taiwan.manifest.json wisdom_taiwan.sources.zip; do
             cmp "resource/lexicons/taiwan/$f" "$app/Contents/SharedSupport/$f"
           done
           nm "$app/Contents/MacOS/Squirrel" | grep -q WisdomBridge || { echo "WisdomBridge not linked"; exit 1; }

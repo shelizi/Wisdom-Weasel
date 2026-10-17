@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("taiwan_lexicon", ROOT / "tools/taiwan_lexicon.py")
@@ -11,6 +12,44 @@ spec.loader.exec_module(lexicon)
 
 
 class TaiwanLexiconTest(unittest.TestCase):
+    def test_chewing_frequencies_are_normalized_and_duplicates_are_not_summed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_file = Path(tmp) / 'tsi.csv'
+            csv_file.write_text(
+                '# dc:license,LGPL-2.1-or-later,\n'
+                '高鐵,100000,ㄍㄠ ㄊㄧㄝˇ\n'
+                '高鐵,2,ㄍㄠ ㄊㄧㄝˇ\n'
+                '發票,10,ㄈㄚ ㄆㄧㄠˋ\n'
+                '你的,0,ㄋㄧˇ ˙ㄉㄜ\n'
+                '錯音,30,ㄘㄨㄛˋ ㄧㄣ\n', encoding='utf-8')
+            entries = {('高鐵', 'gao1 tie3'): 5000}
+            readings = {'ㄍㄠ': 'gao1', 'ㄊㄧㄝˇ': 'tie3', 'ㄈㄚ': 'fa1',
+                        'ㄆㄧㄠˋ': 'piao4', 'ㄋㄧˇ': 'ni3', 'ㄉㄜ˙': 'de5'}
+            stats = lexicon.merge_chewing(entries, readings, set(readings.values()), csv_file)
+            self.assertEqual(entries['高鐵', 'gao1 tie3'], 5000)
+            self.assertTrue(100 < entries['發票', 'fa1 piao4'] <= 1000)
+            self.assertEqual(entries['你的', 'ni3 de5'], 100)
+            self.assertEqual(stats['added'], 2)
+            self.assertEqual(stats['overlaps'], 1)
+            self.assertEqual(stats['skipped_readings'], 1)
+            self.assertEqual(stats['weights_updated'], 0)
+
+    def test_source_bundle_contains_pinned_sources_licenses_and_rebuild_code(self):
+        manifest = json.loads((lexicon.RESOURCE / 'wisdom_taiwan.manifest.json').read_text())
+        archive = lexicon.RESOURCE / 'wisdom_taiwan.sources.zip'
+        self.assertEqual(lexicon.digest(archive), manifest['sources_sha256'])
+        self.assertEqual(manifest['chewing']['revision'], lexicon.CHEWING_REVISION)
+        with zipfile.ZipFile(archive) as bundle:
+            import hashlib
+            self.assertEqual(hashlib.sha256(bundle.read('libchewing-data/dict/chewing/tsi.csv')).hexdigest(),
+                             lexicon.CHEWING_HASH)
+            for name in ('libchewing-data/LICENSES/LGPL-2.1-or-later.txt',
+                         'libchewing-data/LICENSES/GPL-2.0-or-later.txt',
+                         'McBopomofo/LICENSE.txt', 'REBUILD.txt', 'syllables.txt'):
+                self.assertGreater(len(bundle.read(name)), 100)
+            self.assertEqual(bundle.read('tools/taiwan_lexicon.py'),
+                             (ROOT / 'tools/taiwan_lexicon.py').read_bytes().replace(b'\r\n', b'\n'))
+
     def test_patch_retains_existing_settings_and_line_endings(self):
         original = (b"\xef\xbb\xbf# my configuration\r\npatch:\r\n"
                     b"  translator/dictionary: terra_pinyin.personal\r\n"

@@ -14,7 +14,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES = ('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.NOTICE.txt',
-         'wisdom_taiwan.manifest.json')
+         'wisdom_taiwan.manifest.json', 'wisdom_taiwan.sources.zip')
 
 
 def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
@@ -28,6 +28,8 @@ def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
     digest = hashlib.sha256((resource / FILES[0]).read_bytes()).hexdigest()
     if digest != manifest['sha256'].lower():
         raise RuntimeError('Bundled vocabulary checksum mismatch')
+    if hashlib.sha256((resource / FILES[3]).read_bytes()).hexdigest() != manifest['sources_sha256']:
+        raise RuntimeError('Bundled vocabulary source checksum mismatch')
 
     patch = ROOT / 'mac/squirrel/taiwan-lexicon.patch'
     def git(*args):

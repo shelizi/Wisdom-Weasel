@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix='wisdom-taiwan-') as directory:
     sandbox = Path(directory)
     staged = sandbox / 'shared'
     shutil.copytree(shared, staged)
-    for name in ('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.manifest.json', 'wisdom_taiwan.NOTICE.txt'):
+    for name in ('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.manifest.json', 'wisdom_taiwan.NOTICE.txt', 'wisdom_taiwan.sources.zip'):
         shutil.copyfile(root / 'resource/lexicons/taiwan' / name, staged / name)
     user = sandbox / 'user'
     user.mkdir()

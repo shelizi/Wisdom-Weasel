@@ -1,11 +1,25 @@
 {
   "source": "https://github.com/openvanilla/McBopomofo",
   "revision": "be6564acad6c4d3265c34a2e1a872d80f9db6068",
-  "entries": 145483,
-  "words": 139905,
+  "entries": 161805,
+  "words": 153468,
   "supplement_entries": 99,
   "skipped_readings": 181,
-  "sha256": "667d9836850ba6d29b017b0c06737c8c194094e8bbc0478804b95f3bb5c66c17",
+  "sha256": "d33c6203a85278cd294a85267b12c1437d5e150cc7800a389cb1e3c9f2479a8d",
+  "chewing": {
+    "source": "https://codeberg.org/chewing/libchewing-data",
+    "revision": "ed9758d24302592e560ab680b3e10c4bd05f9c03",
+    "sha256": "c889a1ac3ae1901b3f8f62748bc41b958f010bf995f7f88dbaf9e3494f341428",
+    "license": "LGPL-2.1-or-later",
+    "entries": 134026,
+    "added": 16323,
+    "overlaps": 117703,
+    "weights_updated": 82729,
+    "skipped_readings": 209,
+    "max_frequency": 126134
+  },
+  "frequency_policy": "McBopomofo: count*10 clipped 100..10000; Chewing: log1p normalized 100..1000; duplicate word+reading: max, never sum; supplement: minimum 1000",
+  "sources_sha256": "ab4bc1e666ff572d30abe4a3235d79de17d553b99ed8d732e423315528ef6941",
   "source_sha256": {
     "BPMFBase.txt": "46e64a53dc9c6baa2cbe6e0b1af572f8ef6aafb50597178b5fd53df804316ce7",
     "BPMFMappings.txt": "394f3946754ebdd9d5e503f0f94c6977e5e19bd7cab21b4b18a6ea0167e00171",

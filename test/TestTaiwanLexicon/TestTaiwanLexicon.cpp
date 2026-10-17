@@ -63,11 +63,13 @@ int main(int argc, char** argv) {
   if (api->start_maintenance(True)) api->join_maintenance_thread();
   const auto session = api->create_session();
   const char* schemas[] = {"bopomofo", "bopomofo_express", "bopomofo_tw"};
-  struct Case { const char* text; const char* keys; };
+  struct Case { const char* text; const char* keys; int max_rank = 1; };
   const Case cases[] = {
     {u8"台積電", "w96ru 2u04"}, {u8"悠遊卡", "u. u.6d83"},
     {u8"健保卡", "ru041l3d83"}, {u8"台灣高鐵", "w96j0 el wu,3"},
     {u8"電子發票", "2u04y3z8 qul4"}, {u8"行動支付", "vu/62j/45 zj4"},
+    {u8"設籍", "gk4ru6", 5}, {u8"爆表", "1l41ul3", 5},
+    {u8"發想", "z8 vu;3", 5}, {u8"新檔", "vup 2;3", 5},
   };
   for (const auto schema : schemas) {
     if (!api->select_schema(session, schema)) { ++failures; continue; }
@@ -101,7 +103,7 @@ int main(int argc, char** argv) {
         api->candidate_list_end(&iter);
       }
       std::printf("%s %s rank=%d %s\n", schema, item.text, rank, found ? "OK" : "FAIL");
-      if (!found) ++failures;
+      if (!found || rank > item.max_rank) ++failures;
     }
   }
   api->destroy_session(session);

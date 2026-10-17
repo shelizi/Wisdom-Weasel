@@ -74,6 +74,15 @@ class MacPackagingTest(unittest.TestCase):
         self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
         self.assertFalse((self.source / 'data').exists())
 
+    def test_bad_source_archive_does_not_patch_or_stage(self):
+        resource = Path(self.tmp.name) / 'resource'
+        shutil.copytree(ROOT / 'resource/lexicons/taiwan', resource)
+        (resource / packaging.FILES[3]).write_bytes(b'corrupt source archive')
+        with self.assertRaisesRegex(RuntimeError, 'source checksum mismatch'):
+            packaging.prepare(self.source, resource)
+        self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
+        self.assertFalse((self.source / 'data').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

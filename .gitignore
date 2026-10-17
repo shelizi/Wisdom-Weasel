@@ -29,6 +29,7 @@ compile_commands.json
 /output/data/*.yaml
 /output/data/wisdom_taiwan.NOTICE.txt
 /output/data/wisdom_taiwan.manifest.json
+/output/data/wisdom_taiwan.sources.zip
 /output/archives
 /include/glog
 /ipch
