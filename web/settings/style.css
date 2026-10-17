@@ -334,3 +334,166 @@ input, textarea, select, button { font: inherit; color: inherit; }
 .adv { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke-strong); display: flex; flex-direction: column; gap: 6px; }
 .adv .row > span:first-child { min-width: 84px; }
 .font-simple-row .grow { max-width: 420px; }
+
+/* 詞庫管理：台灣詞庫（內建）與共用編輯區 ------------------------------ */
+.lex-header-row { gap: 10px; }
+.lex-badges { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lex-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-strong);
+  background: var(--input);
+  color: var(--text);
+  white-space: nowrap;
+}
+.lex-badge.ok { border-color: var(--ok); color: var(--ok); }
+.lex-badge.danger { border-color: var(--danger); color: var(--danger); }
+.lex-badge.warn { border-color: var(--warning); color: var(--warning); }
+.lex-badge.accent, .lex-badge.info { border-color: var(--accent); color: var(--accent); background: var(--selected); }
+.lex-badge.muted, .lex-badge.subtle { color: var(--subtle); }
+
+.lex-alert {
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--stroke-strong);
+  background: var(--input);
+  font-size: 12.5px;
+  margin-bottom: 8px;
+  user-select: text;
+}
+.lex-alert.danger { border-color: var(--danger); color: var(--danger); }
+.lex-alert.warn { border-color: var(--warning); color: var(--warning); }
+.lex-alert.info { border-color: var(--accent); }
+.lex-alert.muted { color: var(--subtle); }
+
+.lex-meta-row { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--stroke); }
+
+.lex-pending-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  margin: 6px 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent);
+  background: var(--selected);
+  font-size: 13px;
+}
+
+.lex-table-box {
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background: var(--input);
+  outline: none;
+  overflow: hidden;
+}
+.lex-table-box:focus-visible { border-color: var(--accent); }
+.lex-table-header {
+  display: grid;
+  grid-template-columns: 32px minmax(110px, 1.1fr) minmax(150px, 1.4fr) minmax(130px, 1.1fr) minmax(130px, 1.1fr) minmax(190px, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--subtle);
+  border-bottom: 1px solid var(--stroke-strong);
+  background: var(--card);
+}
+.lex-table-body {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.lex-row {
+  display: grid;
+  grid-template-columns: 32px minmax(110px, 1.1fr) minmax(150px, 1.4fr) minmax(130px, 1.1fr) minmax(130px, 1.1fr) minmax(190px, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--stroke);
+  cursor: default;
+}
+.lex-row:last-child { border-bottom: 0; }
+.lex-row:hover { background: var(--card-hover); }
+.lex-row.selected { background: var(--selected); }
+.lex-row.is-hidden .lex-word-text,
+.lex-row.is-hidden .lex-zhuyin-text { text-decoration: line-through; color: var(--subtle); }
+
+.lex-cell { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lex-col-check { align-items: center; justify-content: center; }
+.lex-col-status { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; }
+.lex-col-actions { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; justify-content: flex-end; }
+.lex-col-actions .button { min-width: 56px; height: 26px; padding: 0 8px; font-size: 12px; }
+
+.lex-word-text { font-weight: 600; font-size: 14px; user-select: text; word-break: break-all; }
+.lex-zhuyin-text { font-size: 13.5px; user-select: text; }
+.lex-subtext { font-size: 11.5px; color: var(--subtle); user-select: text; }
+.lex-pref-tag { font-size: 12.5px; }
+.lex-pref-tag.high { color: var(--ok); font-weight: 600; }
+.lex-pref-tag.low { color: var(--warning); font-weight: 600; }
+
+.lex-pager { margin-top: 8px; }
+.lex-editor-box {
+  padding-top: 10px;
+  border-top: 1px solid var(--stroke-strong);
+}
+
+.dialog.dialog-wide { width: min(760px, calc(100vw - 36px)); }
+.lex-dialog-scroll { max-height: min(65vh, 520px); overflow-y: auto; padding-right: 4px; }
+.lex-notice-box {
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 4px;
+  border: 1px solid var(--input-border);
+  background: var(--input);
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin: 4px 0 0;
+}
+.lex-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.lex-stat-box {
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--stroke);
+  background: var(--input);
+}
+.lex-preview-list {
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background: var(--input);
+  font-size: 12.5px;
+}
+.lex-preview-item { padding: 2px 0; }
+.lex-preview-item.warn { color: var(--warning); }
+.lex-preview-item.danger { color: var(--danger); }
+
+/* 窄視窗：詞庫資料列改為可閱讀的直向摘要 */
+@media (max-width: 860px) {
+  .lex-table-header { display: none; }
+  .lex-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .lex-col-check { align-items: flex-start; }
+  .lex-col-actions { justify-content: flex-start; margin-top: 2px; }
+}

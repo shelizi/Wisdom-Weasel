@@ -1,5 +1,5 @@
 import { call, on } from './bridge.js';
-import { state, loadLlm, collectChanges, validate } from './state.js';
+import { state, loadLlm, loadLexicon, resetLexicon, syncLexiconDirty, lexiconImpactSummary, collectChanges, validate } from './state.js';
 import { h, confirm, button } from './ui.js';
 import schemas from './pages/schemas.js';
 import style from './pages/style.js';
@@ -34,8 +34,23 @@ export const ctx = {
     statusEl.className = 'status ' + kind;
   },
   markDirty(category) {
-    state.dirty.add(category);
+    if (category === 'lexicon') syncLexiconDirty();
+    else state.dirty.add(category);
     updateButtons();
+  },
+  syncLexiconDirty() {
+    const dirty = syncLexiconDirty();
+    updateButtons();
+    return dirty;
+  },
+  cancelLexiconChanges() {
+    resetLexicon();
+    updateButtons();
+    ctx.status('已取消台灣詞庫的未套用變更。');
+    if (current) ctx.rerender();
+  },
+  isApplying() {
+    return applying;
   },
   go(id, options) {
     const page = pages.find((p) => p.id === id);
@@ -99,6 +114,7 @@ function show(page, options = {}) {
   if (current && current !== page && current.onHide) current.onHide(ctx);
   current = page;
   if (options.profile !== undefined) state.selectedProfile = options.profile;
+  if (options.dictSource !== undefined) state.dictSource = options.dictSource;
   renderNav();
   renderPage(page);
   content.scrollTop = 0;
@@ -137,9 +153,11 @@ async function apply() {
     }
   }
   const changes = collectChanges();
+  const lexImpact = changes.lexicon ? lexiconImpactSummary() : '';
   applying = true;
   updateButtons();
-  ctx.status('正在重新部署…', 'busy');
+  if (current) ctx.rerender();
+  ctx.status(lexImpact ? `${lexImpact}（正在重新部署…）` : '正在重新部署…', 'busy');
   try {
     const result = await call('settings.apply', changes);
     state.dirty.clear();
@@ -153,17 +171,30 @@ async function apply() {
       state.loaded.dev_console = state.dev.console;
       if (changes.schemas) state.init.schemas.list = state.schemas.map((s) => ({ ...s }));
       if (changes.style) state.init.style = { ...state.init.style, active: state.style.active, fonts: { ...state.style.fonts } };
+      if (result.lexicons) {
+        state.init.lexicons = result.lexicons;
+        loadLexicon(result.lexicons);
+      }
     }
     ctx.status(result.message, result.message.includes('；') ? 'warning' : 'ok');
     if (current) ctx.rerender();
     if (result.deployed) window.dispatchEvent(new Event('settings-applied'));
     return true;
   } catch (e) {
+    if (changes.lexicon && state.lexicon) {
+      try {
+        const lexStatus = await call('lexicon.status', { refresh: false });
+        if (lexStatus && lexStatus.taiwan) {
+          state.lexicon.info = lexStatus.taiwan;
+        }
+      } catch {}
+    }
     ctx.status(e.message, 'error');
     return false;
   } finally {
     applying = false;
     updateButtons();
+    if (current) ctx.rerender();
   }
 }
 
@@ -197,6 +228,7 @@ async function boot() {
     state.schemas = init.schemas.list.map((s) => ({ ...s }));
     state.style = { active: init.style.active, fonts: { ...init.style.fonts } };
     loadLlm(init.llm);
+    loadLexicon(init.lexicons);
     state.form.choice.grammar = state.loaded.grammar = init.grammar.enabled;
     state.dev = { console: true, ...init.dev };
     state.loaded.dev_console = state.dev.console;

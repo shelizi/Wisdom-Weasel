@@ -140,7 +140,7 @@ export default {
           below: [
             this.statusEl,
             h('div', { class: 'spacer' }),
-            buttons(refineButton, refineAllButton, button('管理詞彙…', () => ctx.go('dict')), clearButton),
+            buttons(refineButton, refineAllButton, button('管理詞彙…', () => ctx.go('dict', { dictSource: 'personal' })), clearButton),
             h('div', { class: 'note' }, '「重新精煉全部」會用所有封存與累積中的原始紀錄從頭重建詞庫，再精煉一次。資料在本機加密（金鑰由系統保管，只有你的帳號能解開），存在使用者資料夾的 personal 目錄。'),
           ],
         })),

@@ -1,4 +1,4 @@
-﻿# 網頁版設定的整合測試：在沙盒使用者資料夾裡真的套用並重新部署，再重新開啟確認讀回來的值。
+# 網頁版設定的整合測試：在沙盒使用者資料夾裡真的套用並重新部署，再重新開啟確認讀回來的值。
 # 真正的使用者資料夾不會被寫入（只複製頂層的設定檔）。重新部署時正在執行的輸入法會暫停片刻。
 param(
   [string]$Install = 'C:\Program Files\Rime\wisdom-weasel',  # 共用資料（方案檔）從這裡的 data 取
@@ -24,6 +24,7 @@ Get-ChildItem $UserDir -File -Filter *.gram | ForEach-Object { cmd /c mklink /H 
 
 $env:WEASEL_TEST_USER_DIR = $sandbox
 $env:WISDOM_SETTINGS_WEB = Join-Path $root 'web\settings'
+$env:WISDOM_LEXICON_SHARED_DIR = Join-Path $root 'output\data'
 foreach ($phase in 'apply', 'verify') {
   $out = Join-Path $work "$phase.json"
   Remove-Item $out -ErrorAction SilentlyContinue  # 沙盒沒能整個清掉時，也不會讀到上次的結果

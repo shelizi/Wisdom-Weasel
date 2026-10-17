@@ -50,7 +50,9 @@ async function applyPhase(ctx) {
   // 唯讀的方法都要能回應
   for (const [method, params] of [['stats.get', { span: 0 }], ['calibration.get', {}], ['choicelog.status', {}], ['grammar.status', {}],
     ['models.files', {}], ['models.scan', { current: '' }], ['dicts.list', {}], ['personal.status', {}],
-    ['llm.probe', {}], ['fonts.list', {}], ['style.preview', { id: state.style.active }], ['schemas.details', { id: state.schemas[0].id }]]) {
+    ['llm.probe', {}], ['fonts.list', {}], ['style.preview', { id: state.style.active }], ['schemas.details', { id: state.schemas[0].id }],
+    ['lexicon.status', { refresh: false }], ['lexicon.search', { id: 'wisdom_taiwan', query: '發想', filter: 'all', offset: 0, limit: 10 }],
+    ['lexicon.validateEdit', { id: 'wisdom_taiwan', op: 'add', word: '發想', reading: 'ㄈㄚ ㄒㄧㄤˇ', pref: 'normal' }]]) {
     try {
       const r = await ctx.call(method, params);
       results.checks.push({ name: method, ok: true, detail: JSON.stringify(r).slice(0, 160) });
@@ -58,6 +60,8 @@ async function applyPhase(ctx) {
       results.checks.push({ name: method, ok: false, detail: e.message });
     }
   }
+  await expectError(ctx, 'lexicon.validateEdit', { id: 'wisdom_taiwan', op: 'add', word: '發想', reading: 'ㄈㄚ', pref: 'normal' }, results, 'lexicon.validateEdit rejects mismatched syllable count');
+  await expectError(ctx, 'lexicon.search', { id: '../outside', query: '' }, results, 'lexicon.search rejects unregistered lexicon id');
   await expectError(ctx, 'models.download', { url: 'https://example.com/not-a-model.txt' }, results, 'models.download rejects non-gguf url');
   await expectError(ctx, 'models.add', { path: 'C:\\Windows\\win.ini' }, results, 'models.add rejects non-gguf file');
   await expectError(ctx, 'bench.start', { profiles: [newProfile({ name: 'x' })], predict: '只有一欄', correct: '' }, results, 'bench.start rejects malformed cases');

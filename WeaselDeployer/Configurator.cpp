@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "WeaselDeployer.h"
 #include "Configurator.h"
 #include "../core/settings/taiwan_lexicon.h"
@@ -92,8 +92,15 @@ int Configurator::UpdateWorkspace(bool report_errors) {
 
   {
     RimeApi* rime = rime_get_api();
+    std::filesystem::path lexicon_shared = WeaselSharedDataPath();
+    wchar_t lexicon_env[MAX_PATH * 2] = {0};
+    if (GetEnvironmentVariableW(L"WISDOM_LEXICON_SHARED_DIR", lexicon_env,
+                                _countof(lexicon_env)) &&
+        lexicon_env[0]) {
+      lexicon_shared = lexicon_env;
+    }
     std::string lexicon_error;
-    if (!settings::taiwan_lexicon::Prepare(rime, WeaselSharedDataPath(), WeaselUserDataPath(),
+    if (!settings::taiwan_lexicon::Prepare(rime, lexicon_shared, WeaselUserDataPath(),
                                           &lexicon_error)) {
       // A conflicting user patch or damaged resource must not disable basic input.
       LOG(WARNING) << "Bundled Taiwan vocabulary: " << lexicon_error;

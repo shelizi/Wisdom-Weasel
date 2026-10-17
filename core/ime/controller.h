@@ -185,6 +185,7 @@ class Controller {
   std::vector<std::unique_ptr<LLMProvider>> TakeModels();
   void PauseModels();
   void ResumeModels();
+  void WriteLexiconRuntimeStatus();
   void UpdateContextKey(uint64_t id);
 
   bool HandleSimplifiedKey(uint64_t id, int keycode, int mask);

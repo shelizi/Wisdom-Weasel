@@ -22,6 +22,7 @@
 #include "rerank_tune.h"
 #include "auto_tune.h"
 #include "rank_train.h"
+#include "taiwan_lexicon.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -255,6 +256,16 @@ struct Backend::State {
   std::atomic<bool> tune_running{false};
   std::atomic<unsigned> probe_id{0};
 
+  // 內建詞庫（台灣詞庫）快取與部署狀態
+  fs::path cached_lexicon_dir;
+  fs::file_time_type cached_dict_mtime{};
+  bool base_lexicon_loaded = false;
+  std::string base_lexicon_error;
+  taiwan_lexicon::BaseLexicon base_lexicon;
+  taiwan_lexicon::SyllableTable syllable_table;
+  std::string last_lexicon_deploy_stage;
+  std::string last_lexicon_deploy_error;
+
   State(Platform& p, Options o, Emit e) : platform(p), options(std::move(o)), emit(std::move(e)) {}
 
   ~State() {
@@ -407,7 +418,620 @@ struct Backend::State {
             {"downloading", grammar_job.joinable() && grammar_cancel && !*grammar_cancel}};
   }
 
-  // 與原本設定視窗的「套用」相同的順序：方案 → llm → 注音排序 → Rime 容錯 → 外觀 → 語言模型 → 部署
+  fs::path SharedLexiconDir() {
+#ifdef _WIN32
+    wchar_t env[MAX_PATH * 2] = {0};
+    if (GetEnvironmentVariableW(L"WISDOM_LEXICON_SHARED_DIR", env, _countof(env)) && env[0])
+      return fs::path(env);
+#else
+    if (const char* env = std::getenv("WISDOM_LEXICON_SHARED_DIR")) {
+      if (*env)
+        return Path(env);
+    }
+#endif
+    return platform.FromRimePath(rime->get_shared_data_dir());
+  }
+
+  bool EnsureBaseLexicon(const taiwan_lexicon::BaseLexicon** out_base,
+                         const taiwan_lexicon::SyllableTable** out_syllables,
+                         std::string* error) {
+    const fs::path shared_dir = SharedLexiconDir();
+    std::error_code ec;
+    for (const char* name : taiwan_lexicon::kFiles) {
+      const fs::path f = shared_dir / name;
+      if (!fs::exists(f, ec) || fs::is_directory(f, ec)) {
+        if (error)
+          *error = "內建詞庫資源缺失：找不到 " + std::string(name);
+        return false;
+      }
+    }
+    try {
+      const std::string m_text = taiwan_lexicon::Read(shared_dir / "wisdom_taiwan.manifest.json");
+      const json m_json = json::parse(m_text, nullptr, false);
+      if (!m_json.is_object() || m_json.value("words", 0) <= 0 || m_json.value("entries", 0) <= 0) {
+        if (error)
+          *error = "內建詞庫來源資訊檔 (wisdom_taiwan.manifest.json) 格式損壞。";
+        return false;
+      }
+    } catch (const std::exception& ex) {
+      if (error)
+        *error = std::string("無法讀取 wisdom_taiwan.manifest.json：") + ex.what();
+      return false;
+    }
+
+    const fs::path dict_path = shared_dir / "wisdom_taiwan.dict.yaml";
+    const auto mtime = fs::last_write_time(dict_path, ec);
+    if (!base_lexicon_loaded || cached_lexicon_dir != shared_dir || cached_dict_mtime != mtime) {
+      base_lexicon_loaded = false;
+      base_lexicon_error.clear();
+      try {
+        const std::string dict_text = taiwan_lexicon::Read(dict_path);
+        if (!taiwan_lexicon::ParseDictText(dict_text, &base_lexicon, &base_lexicon_error)) {
+          if (error)
+            *error = base_lexicon_error;
+          return false;
+        }
+        const fs::path rime_shared = platform.FromRimePath(rime->get_shared_data_dir());
+        taiwan_lexicon::LoadSyllableTable(shared_dir, rime_shared, &syllable_table);
+        cached_lexicon_dir = shared_dir;
+        cached_dict_mtime = mtime;
+        base_lexicon_loaded = true;
+      } catch (const std::exception& ex) {
+        base_lexicon_error = std::string("無法讀取內建詞庫：") + ex.what();
+        if (error)
+          *error = base_lexicon_error;
+        return false;
+      }
+    }
+    if (out_base)
+      *out_base = &base_lexicon;
+    if (out_syllables)
+      *out_syllables = &syllable_table;
+    return true;
+  }
+
+  json LexiconJson(bool refresh_service) {
+    const fs::path shared_dir = SharedLexiconDir();
+    const fs::path user_dir = platform.UserDataDir();
+    std::error_code ec;
+
+    const taiwan_lexicon::BaseLexicon* base = nullptr;
+    const taiwan_lexicon::SyllableTable* syllables = nullptr;
+    std::string resource_error;
+    const bool resource_ok = EnsureBaseLexicon(&base, &syllables, &resource_error);
+
+    json manifest = json::object();
+    std::string notice;
+    uint64_t sources_zip_size = 0;
+    const bool sources_zip_exists =
+        fs::exists(shared_dir / "wisdom_taiwan.sources.zip", ec) && !ec;
+    if (sources_zip_exists)
+      sources_zip_size = fs::file_size(shared_dir / "wisdom_taiwan.sources.zip", ec);
+    if (resource_ok) {
+      try {
+        manifest = json::parse(taiwan_lexicon::Read(shared_dir / "wisdom_taiwan.manifest.json"),
+                               nullptr, false);
+        if (!manifest.is_object())
+          manifest = json::object();
+      } catch (...) {
+      }
+      try {
+        notice = taiwan_lexicon::Read(shared_dir / "wisdom_taiwan.NOTICE.txt");
+      } catch (...) {
+      }
+    }
+
+    taiwan_lexicon::UserConfig user_cfg;
+    std::string user_cfg_error;
+    if (!taiwan_lexicon::LoadUserConfig(rime, user_dir, &user_cfg, &user_cfg_error)) {
+      user_cfg = taiwan_lexicon::UserConfig{};
+    }
+
+    const std::string base_version = (resource_ok && base) ? base->version : "";
+    const std::string expected_dict_version =
+        taiwan_lexicon::EffectiveDictVersion(base_version, user_cfg.edits, user_cfg.edits_revision);
+
+    json edits_json = json::array();
+    size_t conflict_count = 0;
+    size_t hidden_count = 0;
+    for (const auto& e : user_cfg.edits) {
+      json ej = taiwan_lexicon::EditToJson(e);
+      bool in_base = false;
+      int base_w = e.base_weight;
+      if (resource_ok && base) {
+        const auto it = base->weights.find({e.word, e.code});
+        if (it != base->weights.end()) {
+          in_base = true;
+          base_w = it->second;
+        }
+      }
+      const bool upstream_removed = resource_ok && !in_base && e.origin_base && !e.hidden;
+      const bool dedup_upstream = resource_ok && in_base && !e.origin_base && !e.hidden;
+      if (upstream_removed)
+        ++conflict_count;
+      if (e.hidden)
+        ++hidden_count;
+      ej["in_base"] = in_base;
+      ej["base_weight"] = base_w;
+      ej["effective_weight"] = taiwan_lexicon::EffectiveWeight(in_base, base_w, e.pref);
+      ej["upstream_removed"] = upstream_removed;
+      ej["dedup_upstream"] = dedup_upstream;
+      edits_json.push_back(std::move(ej));
+    }
+
+    // 檢查目前啟用的輸入方案是否包含適用方案（bopomofo / bopomofo_express / bopomofo_tw）
+    const json schemas_info = SchemasJson();
+    bool schema_applicable = false;
+    json selected_schemas = json::array();
+    json selected_applicable = json::array();
+    for (const auto& s_item : schemas_info.value("list", json::array())) {
+      if (s_item.value("selected", false)) {
+        const std::string sid = s_item.value("id", "");
+        selected_schemas.push_back(sid);
+        for (const char* app : taiwan_lexicon::kApplicableSchemas) {
+          if (sid == app) {
+            schema_applicable = true;
+            selected_applicable.push_back(sid);
+          }
+        }
+      }
+    }
+
+    // 檢查磁碟上已部署的檔案狀態
+    bool patch_present = false;
+    {
+      const fs::path bopo_custom = user_dir / "bopomofo.custom.yaml";
+      if (fs::exists(bopo_custom, ec)) {
+        try {
+          const std::string text = taiwan_lexicon::Read(bopo_custom);
+          patch_present = text.find(taiwan_lexicon::kBegin) != std::string::npos;
+        } catch (...) {
+        }
+      }
+    }
+    std::string deployed_dict_version;
+    {
+      const fs::path user_dict = user_dir / "wisdom_taiwan.dict.yaml";
+      if (fs::exists(user_dict, ec)) {
+        std::ifstream in(user_dict);
+        std::string line;
+        for (int i = 0; i < 25 && std::getline(in, line); ++i) {
+          const std::string t = Trim(line);
+          if (t == "...")
+            break;
+          if (t.rfind("version:", 0) == 0) {
+            std::string v = Trim(t.substr(8));
+            if (v.size() >= 2 && ((v.front() == '\'' && v.back() == '\'') ||
+                                  (v.front() == '"' && v.back() == '"'))) {
+              v = v.substr(1, v.size() - 2);
+            }
+            deployed_dict_version = v;
+            break;
+          }
+        }
+      }
+    }
+    const bool table_compiled_on_disk =
+        fs::exists(user_dir / "build" / "wisdom_taiwan.table.bin", ec) && !ec;
+    const bool deployed_on_disk =
+        user_cfg.enabled
+            ? (patch_present && table_compiled_on_disk &&
+               (!resource_ok || deployed_dict_version == expected_dict_version))
+            : !patch_present;
+
+    // 向執行中的輸入法服務查詢實際載入狀態（lexicon_runtime.txt）
+    auto resolve_rt_path = [&]() -> fs::path {
+      const fs::path p1 = user_dir / "lexicon_runtime.txt";
+      const fs::path p2 = user_dir / "personal" / "lexicon_runtime.txt";
+      std::error_code e1, e2;
+      const bool ex1 = fs::exists(p1, e1) && !e1;
+      const bool ex2 = fs::exists(p2, e2) && !e2;
+      if (ex1 && ex2) {
+        return fs::last_write_time(p2, e2) > fs::last_write_time(p1, e1) ? p2 : p1;
+      }
+      return ex2 ? p2 : p1;
+    };
+    fs::path rt_path = resolve_rt_path();
+    const auto before_mtime =
+        fs::exists(rt_path, ec) ? fs::last_write_time(rt_path, ec) : (fs::file_time_type::min)();
+    const bool ipc_connected = platform.SendPersonalCommand(1);
+    if (ipc_connected && (refresh_service || !fs::exists(rt_path, ec))) {
+      for (int i = 0; i < 12; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        rt_path = resolve_rt_path();
+        if (fs::exists(rt_path, ec) && fs::last_write_time(rt_path, ec) > before_mtime)
+          break;
+      }
+    }
+
+    int64_t rt_ts = 0;
+    bool rt_pack_mounted = false;
+    bool rt_table_compiled = false;
+    bool rt_force_online = false;
+    std::string rt_loaded_version;
+    rt_path = resolve_rt_path();
+    if (fs::exists(rt_path, ec)) {
+      std::ifstream in(rt_path);
+      std::string line;
+      while (std::getline(in, line)) {
+        const std::string t = Trim(line);
+        if (t.rfind("ts=", 0) == 0)
+          rt_ts = std::atoll(t.substr(3).c_str());
+        else if (t.rfind("pack_mounted=", 0) == 0)
+          rt_pack_mounted = (t.substr(13) == "1");
+        else if (t.rfind("table_compiled=", 0) == 0)
+          rt_table_compiled = (t.substr(15) == "1");
+        else if (t.rfind("loaded_dict_version=", 0) == 0)
+          rt_loaded_version = t.substr(20);
+        else if (t.rfind("force_online=", 0) == 0)
+          rt_force_online = (t.substr(13) == "1");
+      }
+    }
+
+    const bool service_responding = (ipc_connected || rt_force_online) && rt_ts > 0;
+    bool service_confirmed = false;
+    if (service_responding && deployed_on_disk) {
+      if (user_cfg.enabled) {
+        service_confirmed = rt_pack_mounted && rt_table_compiled &&
+                            (!resource_ok || rt_loaded_version == expected_dict_version);
+      } else {
+        service_confirmed = !rt_pack_mounted;
+      }
+    }
+
+    const bool deploy_failed = !last_lexicon_deploy_error.empty() || !user_cfg_error.empty();
+    const std::string deploy_stage = !last_lexicon_deploy_stage.empty()
+                                         ? last_lexicon_deploy_stage
+                                         : (!user_cfg_error.empty() ? "讀取使用者詞庫設定檔" : "");
+    const std::string deploy_error = !last_lexicon_deploy_error.empty() ? last_lexicon_deploy_error
+                                                                        : user_cfg_error;
+
+    // 組合狀態標籤：不適用目前方案與服務載入待確認可同時並存
+    json badges = json::array();
+    std::string primary_state = "pending_confirmation";
+    if (!resource_ok) {
+      primary_state = "resource_error";
+      badges.push_back({{"code", "resource_error"}, {"label", "資源缺失或損壞"}, {"tone", "danger"}});
+    } else if (deploy_failed) {
+      primary_state = "deploy_failed";
+      badges.push_back(
+          {{"code", "deploy_failed"}, {"label", "部署失敗／服務無回應"}, {"tone", "danger"}});
+    } else if (!user_cfg.enabled) {
+      if (!patch_present) {
+        primary_state = "disabled";
+        badges.push_back({{"code", "disabled"}, {"label", "已停用"}, {"tone", "muted"}});
+      } else {
+        primary_state = "pending_confirmation";
+        badges.push_back(
+            {{"code", "pending_confirmation"}, {"label", "已部署，載入待確認"}, {"tone", "info"}});
+      }
+    } else {
+      if (!schema_applicable) {
+        badges.push_back(
+            {{"code", "schema_not_applicable"}, {"label", "不適用目前方案"}, {"tone", "warn"}});
+      }
+      if (service_confirmed && schema_applicable) {
+        primary_state = "active";
+        badges.push_back({{"code", "active"}, {"label", "已啟用"}, {"tone", "ok"}});
+      } else {
+        primary_state = !schema_applicable ? "schema_not_applicable" : "pending_confirmation";
+        if (!service_confirmed) {
+          badges.push_back(
+              {{"code", "pending_confirmation"}, {"label", "已部署，載入待確認"}, {"tone", "info"}});
+        }
+      }
+    }
+
+    return {{"id", taiwan_lexicon::kLexiconId},
+            {"name", "台灣詞庫"},
+            {"description", "繁體中文（台灣）公開常用詞彙擴充包（整合小麥注音、新酷音與本專案補充詞）"},
+            {"applicable_schemas", {"bopomofo", "bopomofo_express", "bopomofo_tw"}},
+            {"applicable_schema_names", {"注音", "注音（快打）", "注音（臺灣正體）"}},
+            {"resource_ok", resource_ok},
+            {"resource_error", resource_error},
+            {"version", base_version},
+            {"words", manifest.value("words", 0)},
+            {"entries", manifest.value("entries", resource_ok && base ? (int)base->entries.size() : 0)},
+            {"supplement_entries", manifest.value("supplement_entries", 0)},
+            {"manifest", manifest},
+            {"notice", notice},
+            {"sources_zip_exists", sources_zip_exists},
+            {"sources_zip_size", sources_zip_size},
+            {"sources_zip_size_text", sources_zip_exists ? FormatSize(sources_zip_size) : ""},
+            {"enabled", user_cfg.enabled},
+            {"user_format_version", user_cfg.version},
+            {"edits_revision", user_cfg.edits_revision},
+            {"expected_dict_version", expected_dict_version},
+            {"edits", edits_json},
+            {"edits_count", user_cfg.edits.size()},
+            {"conflict_count", conflict_count},
+            {"hidden_count", hidden_count},
+            {"status",
+             {{"state", primary_state},
+              {"badges", badges},
+              {"enabled", user_cfg.enabled},
+              {"schema_applicable", schema_applicable},
+              {"selected_schemas", selected_schemas},
+              {"selected_applicable_schemas", selected_applicable},
+              {"deployed_on_disk", deployed_on_disk},
+              {"patch_present", patch_present},
+              {"table_compiled", table_compiled_on_disk},
+              {"deployed_dict_version", deployed_dict_version},
+              {"expected_dict_version", expected_dict_version},
+              {"service_responding", service_responding},
+              {"service_confirmed", service_confirmed},
+              {"runtime_pack_mounted", rt_pack_mounted},
+              {"runtime_table_compiled", rt_table_compiled},
+              {"runtime_loaded_version", rt_loaded_version},
+              {"deploy_failed", deploy_failed},
+              {"deploy_stage", deploy_stage},
+              {"deploy_error", deploy_error}}}};
+  }
+
+  json LexiconsJson(bool refresh_service) {
+    return {{"taiwan", LexiconJson(refresh_service)}};
+  }
+
+  json SearchLexicon(const json& p) {
+    const std::string id = p.value("id", std::string(taiwan_lexicon::kLexiconId));
+    if (id != taiwan_lexicon::kLexiconId)
+      throw Error("不支援的詞庫識別：「" + id + "」。");
+    const taiwan_lexicon::BaseLexicon* base = nullptr;
+    const taiwan_lexicon::SyllableTable* syllables = nullptr;
+    std::string res_err;
+    if (!EnsureBaseLexicon(&base, &syllables, &res_err))
+      throw Error(res_err);
+
+    taiwan_lexicon::UserConfig saved_cfg;
+    taiwan_lexicon::LoadUserConfig(rime, platform.UserDataDir(), &saved_cfg);
+    std::map<std::pair<std::string, std::string>, taiwan_lexicon::UserEdit> saved_map;
+    for (const auto& e : saved_cfg.edits)
+      saved_map[{e.word, e.code}] = e;
+
+    std::vector<taiwan_lexicon::UserEdit> active_edits;
+    if (p.contains("pending_edits") && p["pending_edits"].is_array()) {
+      for (const auto& item : p["pending_edits"]) {
+        taiwan_lexicon::UserEdit e;
+        if (taiwan_lexicon::EditFromJson(item, &e))
+          active_edits.push_back(std::move(e));
+      }
+    } else {
+      active_edits = saved_cfg.edits;
+    }
+
+    std::map<std::pair<std::string, std::string>, taiwan_lexicon::UserEdit> edit_map;
+    for (const auto& e : active_edits)
+      edit_map[{e.word, e.code}] = e;
+
+    const std::string q_raw = Str(p, "query");
+    const std::string q_trimmed = taiwan_lexicon::TrimSpaces(q_raw);
+    const std::string q_compact = taiwan_lexicon::CompactZhuyin(q_trimmed);
+    const std::string q_lower = ToLower(q_trimmed);
+    const std::string filter = p.value("filter", "all");
+    const size_t offset = (size_t)(std::max)(0, p.value("offset", 0));
+    const size_t limit = (size_t)(std::min)(200, (std::max)(1, p.value("limit", 50)));
+
+    // 計算統計筆數
+    size_t count_modified = active_edits.size();
+    size_t count_hidden = 0;
+    size_t count_conflicts = 0;
+    size_t extra_non_base = 0;
+    for (const auto& [key, e] : edit_map) {
+      const bool in_base = base->weights.count(key) > 0;
+      if (!in_base)
+        ++extra_non_base;
+      if (e.hidden)
+        ++count_hidden;
+      if (!in_base && e.origin_base && !e.hidden)
+        ++count_conflicts;
+    }
+    const size_t count_all = base->entries.size() + extra_non_base;
+
+    auto make_row = [&](const std::string& word, const std::string& code,
+                        const std::string& zhuyin, bool in_base, int base_w) -> json {
+      const std::pair<std::string, std::string> key{word, code};
+      const auto eit = edit_map.find(key);
+      const bool has_edit = (eit != edit_map.end());
+      const auto sit = saved_map.find(key);
+      const bool has_saved = (sit != saved_map.end());
+      const bool dirty = (has_edit != has_saved) || (has_edit && eit->second != sit->second);
+
+      std::string pref = has_edit ? eit->second.pref : "normal";
+      bool hidden = has_edit ? eit->second.hidden : false;
+      bool origin_base = has_edit ? eit->second.origin_base : in_base;
+      int eff_w = taiwan_lexicon::EffectiveWeight(
+          in_base, in_base ? base_w : (has_edit ? eit->second.base_weight : 1000), pref);
+
+      std::string status = "builtin";
+      bool upstream_removed = false;
+      bool dedup_upstream = false;
+      if (has_edit) {
+        if (hidden) {
+          status = "hidden";
+        } else if (!in_base && origin_base) {
+          status = "conflict_removed";
+          upstream_removed = true;
+        } else if (!in_base && !origin_base) {
+          status = "added";
+        } else {
+          status = "modified";
+          if (in_base && !origin_base)
+            dedup_upstream = true;
+        }
+      }
+      json row = {{"word", word},
+                  {"code", code},
+                  {"zhuyin", zhuyin},
+                  {"in_base", in_base},
+                  {"base_weight", in_base ? base_w : (has_edit ? eit->second.base_weight : 1000)},
+                  {"effective_weight", eff_w},
+                  {"pref", pref},
+                  {"hidden", hidden},
+                  {"modified", has_edit},
+                  {"dirty", dirty},
+                  {"origin_base", origin_base},
+                  {"status", status},
+                  {"upstream_removed", upstream_removed},
+                  {"dedup_upstream", dedup_upstream}};
+      if (has_edit && !eit->second.replaced_from_word.empty()) {
+        row["replaced_from_word"] = eit->second.replaced_from_word;
+        row["replaced_from_code"] = eit->second.replaced_from_code;
+        row["replaced_from_zhuyin"] = taiwan_lexicon::CodeToZhuyin(eit->second.replaced_from_code);
+      }
+      return row;
+    };
+
+    auto matches_query = [&](const std::string& word, const std::string& code,
+                             const std::string& zhuyin, const std::string& zh_compact,
+                             int* match_rank) -> bool {
+      if (q_trimmed.empty()) {
+        *match_rank = 0;
+        return true;
+      }
+      if (word == q_trimmed || zhuyin == q_trimmed ||
+          (!q_compact.empty() && zh_compact == q_compact) ||
+          (!q_lower.empty() && code == q_lower)) {
+        *match_rank = 3;
+        return true;
+      }
+      if (word.rfind(q_trimmed, 0) == 0 || zhuyin.rfind(q_trimmed, 0) == 0 ||
+          (!q_compact.empty() && zh_compact.rfind(q_compact, 0) == 0) ||
+          (!q_lower.empty() && code.rfind(q_lower, 0) == 0)) {
+        *match_rank = 2;
+        return true;
+      }
+      if (word.find(q_trimmed) != std::string::npos ||
+          zhuyin.find(q_trimmed) != std::string::npos ||
+          (!q_compact.empty() && zh_compact.find(q_compact) != std::string::npos) ||
+          (!q_lower.empty() && code.find(q_lower) != std::string::npos)) {
+        *match_rank = 1;
+        return true;
+      }
+      return false;
+    };
+
+    // 快速路徑：無搜尋字詞且篩選為 all，直接將個人修改置頂後對基底詞庫分頁切片
+    if (q_trimmed.empty() && filter == "all") {
+      std::vector<json> top_rows;
+      for (const auto& [key, e] : edit_map) {
+        const auto bit = base->weights.find(key);
+        const bool in_base = (bit != base->weights.end());
+        const int bw = in_base ? bit->second : e.base_weight;
+        top_rows.push_back(
+            make_row(e.word, e.code, taiwan_lexicon::CodeToZhuyin(e.code), in_base, bw));
+      }
+      json rows = json::array();
+      size_t cur_idx = 0;
+      for (const auto& r : top_rows) {
+        if (cur_idx >= offset && rows.size() < limit)
+          rows.push_back(r);
+        ++cur_idx;
+      }
+      for (const auto& be : base->entries) {
+        if (edit_map.count({be.word, be.code}))
+          continue;
+        if (cur_idx >= offset && rows.size() < limit)
+          rows.push_back(make_row(be.word, be.code, be.zhuyin, true, be.weight));
+        ++cur_idx;
+        if (rows.size() >= limit && cur_idx >= offset + limit)
+          break;
+      }
+      return {{"total", count_all},
+              {"offset", offset},
+              {"limit", limit},
+              {"counts",
+               {{"all", count_all},
+                {"modified", count_modified},
+                {"hidden", count_hidden},
+                {"conflicts", count_conflicts}}},
+              {"rows", rows}};
+    }
+
+    struct CandidateHit {
+      std::string word;
+      std::string code;
+      std::string zhuyin;
+      bool in_base = false;
+      int base_weight = 0;
+      int effective_weight = 0;
+      bool modified = false;
+      int match_rank = 0;
+    };
+    std::vector<CandidateHit> hits;
+
+    // 1. 先掃描不在基底詞庫中的個人修改（新增或上游已移除）
+    for (const auto& [key, e] : edit_map) {
+      if (base->weights.count(key))
+        continue;
+      if (filter == "hidden" && !e.hidden)
+        continue;
+      const std::string zh = taiwan_lexicon::CodeToZhuyin(e.code);
+      const std::string zhc = taiwan_lexicon::CompactZhuyin(zh);
+      int mrank = 0;
+      if (!matches_query(e.word, e.code, zh, zhc, &mrank))
+        continue;
+      hits.push_back({e.word, e.code, zh, false, e.base_weight,
+                      taiwan_lexicon::EffectiveWeight(false, e.base_weight, e.pref), true, mrank});
+    }
+
+    // 2. 掃描基底詞庫（若只看修改或已隱藏，只需檢查 edit_map 即可！）
+    if (filter == "modified" || filter == "hidden") {
+      for (const auto& [key, e] : edit_map) {
+        const auto bit = base->weights.find(key);
+        if (bit == base->weights.end())
+          continue;
+        if (filter == "hidden" && !e.hidden)
+          continue;
+        const std::string zh = taiwan_lexicon::CodeToZhuyin(e.code);
+        const std::string zhc = taiwan_lexicon::CompactZhuyin(zh);
+        int mrank = 0;
+        if (!matches_query(e.word, e.code, zh, zhc, &mrank))
+          continue;
+        hits.push_back({e.word, e.code, zh, true, bit->second,
+                        taiwan_lexicon::EffectiveWeight(true, bit->second, e.pref), true, mrank});
+      }
+    } else {
+      for (const auto& be : base->entries) {
+        int mrank = 0;
+        if (!matches_query(be.word, be.code, be.zhuyin, be.zhuyin_compact, &mrank))
+          continue;
+        const auto eit = edit_map.find({be.word, be.code});
+        const bool has_edit = (eit != edit_map.end());
+        const std::string pref = has_edit ? eit->second.pref : "normal";
+        hits.push_back({be.word, be.code, be.zhuyin, true, be.weight,
+                        taiwan_lexicon::EffectiveWeight(true, be.weight, pref), has_edit, mrank});
+      }
+    }
+
+    std::sort(hits.begin(), hits.end(), [](const CandidateHit& a, const CandidateHit& b) {
+      if (a.match_rank != b.match_rank)
+        return a.match_rank > b.match_rank;
+      if (a.modified != b.modified)
+        return a.modified > b.modified;
+      if (a.effective_weight != b.effective_weight)
+        return a.effective_weight > b.effective_weight;
+      if (a.word != b.word)
+        return a.word < b.word;
+      return a.code < b.code;
+    });
+
+    json rows = json::array();
+    for (size_t i = offset; i < hits.size() && rows.size() < limit; ++i) {
+      const auto& h = hits[i];
+      rows.push_back(make_row(h.word, h.code, h.zhuyin, h.in_base, h.base_weight));
+    }
+    return {{"total", hits.size()},
+            {"offset", offset},
+            {"limit", limit},
+            {"counts",
+             {{"all", count_all},
+              {"modified", count_modified},
+              {"hidden", count_hidden},
+              {"conflicts", count_conflicts}}},
+            {"rows", rows}};
+  }
+
+  // 與原本設定視窗的「套用」相同的順序：方案 → llm → 注音排序 → Rime 容錯 → 外觀 → 語言模型 → 內建詞庫 → 部署
   json Apply(const json& c) {
     bool saved = false;
     std::string errors;
@@ -479,6 +1103,95 @@ struct Backend::State {
         add_error("語言模型：", error);
       saved = true;
     }
+    if (c.contains("lexicon") && c["lexicon"].is_object()) {
+      last_lexicon_deploy_stage.clear();
+      last_lexicon_deploy_error.clear();
+      const json& lex = c["lexicon"];
+      const std::string lex_id = lex.value("id", std::string(taiwan_lexicon::kLexiconId));
+      if (lex_id != taiwan_lexicon::kLexiconId) {
+        last_lexicon_deploy_stage = "驗證詞庫識別";
+        last_lexicon_deploy_error = "不支援的詞庫識別：「" + lex_id + "」";
+        throw Error("台灣詞庫（" + last_lexicon_deploy_stage + "）：" + last_lexicon_deploy_error);
+      }
+      const taiwan_lexicon::BaseLexicon* base = nullptr;
+      const taiwan_lexicon::SyllableTable* syllables = nullptr;
+      std::string err;
+      if (!EnsureBaseLexicon(&base, &syllables, &err)) {
+        last_lexicon_deploy_stage = "讀取與驗證內建詞庫資源";
+        last_lexicon_deploy_error = err;
+        throw Error("台灣詞庫（" + last_lexicon_deploy_stage + "）：" + err);
+      }
+
+      const fs::path user_dir = platform.UserDataDir();
+      const fs::path pref_path = user_dir / "wisdom_taiwan.user.yaml";
+      std::error_code ec;
+      const bool pref_existed = fs::exists(pref_path, ec);
+      const std::string pref_before = pref_existed ? taiwan_lexicon::Read(pref_path) : std::string();
+
+      taiwan_lexicon::UserConfig old_cfg;
+      if (!taiwan_lexicon::LoadUserConfig(rime, user_dir, &old_cfg, &err)) {
+        old_cfg = taiwan_lexicon::UserConfig{};
+      }
+
+      std::vector<taiwan_lexicon::UserEdit> raw_edits;
+      if (lex.contains("edits") && lex["edits"].is_array()) {
+        for (const auto& item : lex["edits"]) {
+          taiwan_lexicon::UserEdit e;
+          if (!taiwan_lexicon::EditFromJson(item, &e)) {
+            last_lexicon_deploy_stage = "驗證個人修改項目";
+            last_lexicon_deploy_error = "個人修改項目缺少必要欄位（詞彙或讀音）。";
+            throw Error("台灣詞庫（" + last_lexicon_deploy_stage + "）：" +
+                        last_lexicon_deploy_error);
+          }
+          raw_edits.push_back(std::move(e));
+        }
+      } else {
+        raw_edits = old_cfg.edits;
+      }
+
+      std::vector<taiwan_lexicon::UserEdit> validated_edits;
+      if (!taiwan_lexicon::ValidateEditsList(raw_edits, *syllables, &validated_edits, &err)) {
+        last_lexicon_deploy_stage = "驗證個人修改與注音讀音";
+        last_lexicon_deploy_error = err;
+        throw Error("台灣詞庫（" + last_lexicon_deploy_stage + "）：" + err);
+      }
+
+      taiwan_lexicon::UserConfig new_cfg = old_cfg;
+      new_cfg.enabled = lex.value("enabled", old_cfg.enabled);
+      const bool edits_changed = (validated_edits != old_cfg.edits);
+      new_cfg.edits = std::move(validated_edits);
+      if (edits_changed)
+        new_cfg.edits_revision = old_cfg.edits_revision + 1;
+      if (!new_cfg.edits.empty() || old_cfg.version >= 1 || new_cfg.edits_revision > 0)
+        new_cfg.version = taiwan_lexicon::kUserFormatVersion;
+      new_cfg.deployed_base_version = base->version;
+      new_cfg.deployed_edits_revision = new_cfg.edits_revision;
+
+      if (!taiwan_lexicon::SaveUserConfigWithMigrationBackup(rime, user_dir, new_cfg, &err)) {
+        last_lexicon_deploy_stage = "寫入使用者詞庫設定檔 (wisdom_taiwan.user.yaml)";
+        last_lexicon_deploy_error = err;
+        throw Error("台灣詞庫（" + last_lexicon_deploy_stage + "）：" + err);
+      }
+
+      bool prep_changed = false;
+      std::string prep_stage;
+      if (!taiwan_lexicon::Prepare(rime, SharedLexiconDir(), user_dir, &err, &prep_changed,
+                                   &prep_stage)) {
+        // 回滾 wisdom_taiwan.user.yaml 至套用前狀態
+        try {
+          if (pref_existed)
+            taiwan_lexicon::Write(pref_path, pref_before);
+          else
+            fs::remove(pref_path, ec);
+        } catch (...) {
+        }
+        last_lexicon_deploy_stage =
+            prep_stage.empty() ? "產生有效詞庫與更新方案設定" : prep_stage;
+        last_lexicon_deploy_error = err;
+        throw Error("台灣詞庫部署失敗（階段：" + last_lexicon_deploy_stage + "）：" + err);
+      }
+      saved = true;
+    }
     if (!saved)
       return {{"deployed", false}, {"message", "沒有需要套用的變更。"}};
     platform.Deploy();
@@ -489,7 +1202,8 @@ struct Backend::State {
             {"message", errors.empty() ? "已套用。" : "已套用；" + errors},
             {"llm", LLMJson()},
             {"grammar", GrammarJson()},
-            {"dev", DevJson()}};
+            {"dev", DevJson()},
+            {"lexicons", LexiconsJson(true)}};
   }
 
   void StartModelJob(const std::string& src, const fs::path& dest, bool download) {
@@ -568,10 +1282,14 @@ Backend::Backend(Platform& platform, Options options, Emit emit)
 Backend::~Backend() = default;
 
 Backend::Thread Backend::ThreadOf(const std::string& method) {
-  static const std::set<std::string> kUi = {"models.pickFile", "dicts.pickFile", "app.setTheme"};
-  static const std::set<std::string> kRime = {"init", "schemas.details", "schemas.install", "style.preview",
-                                              "settings.apply", "dicts.list", "dicts.run", "llm.reload",
-                                              "rerank.auto", "rerank.apply", "rank.train"};
+  static const std::set<std::string> kUi = {"models.pickFile", "dicts.pickFile", "lexicon.pickFile",
+                                            "app.setTheme"};
+  static const std::set<std::string> kRime = {
+      "init",         "schemas.details",      "schemas.install",    "style.preview",
+      "settings.apply", "dicts.list",         "dicts.run",          "llm.reload",
+      "rerank.auto",  "rerank.apply",         "rank.train",         "lexicon.status",
+      "lexicon.search", "lexicon.validateEdit", "lexicon.exportEdits", "lexicon.importPreview",
+      "lexicon.sourceArchive"};
   if (kUi.count(method))
     return Thread::kUi;
   if (kRime.count(method))
@@ -594,6 +1312,7 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
             {"llm", s.LLMJson()},
             {"grammar", s.GrammarJson()},
             {"dev", s.DevJson()},
+            {"lexicons", s.LexiconsJson(false)},
             {"platform", s.PlatformJson()},
             {"defaults",
              {{"correct_instruction", s.options.correct_instruction},
@@ -1519,6 +2238,195 @@ json Backend::Call(const std::string& method, const json& p, void* owner) {
     if (!reveal.empty())
       platform.Reveal(reveal);
     return report;
+  }
+
+  // --- 內建詞庫（台灣詞庫） --------------------------------------------------
+  if (method == "lexicon.status") {
+    return s.LexiconsJson(p.value("refresh", true));
+  }
+  if (method == "lexicon.search") {
+    return s.SearchLexicon(p);
+  }
+  if (method == "lexicon.validateEdit") {
+    const std::string id = p.value("id", std::string(taiwan_lexicon::kLexiconId));
+    if (id != taiwan_lexicon::kLexiconId)
+      throw Error("不支援的詞庫識別：「" + id + "」。");
+    const taiwan_lexicon::BaseLexicon* base = nullptr;
+    const taiwan_lexicon::SyllableTable* syllables = nullptr;
+    std::string err;
+    if (!s.EnsureBaseLexicon(&base, &syllables, &err))
+      throw Error(err);
+
+    const std::string raw_word = Str(p, "word");
+    const std::string raw_reading = Str(p, "reading");
+    const std::string pref = p.value("pref", "normal");
+    if (!taiwan_lexicon::IsValidPref(pref))
+      throw Error("無效的排序偏好設定：「" + pref + "」。");
+
+    std::string norm_word, norm_code, norm_zhuyin;
+    if (!taiwan_lexicon::ParseAndValidateReading(raw_word, raw_reading, *syllables, &norm_word,
+                                                 &norm_code, &norm_zhuyin, &err)) {
+      throw Error(err);
+    }
+    const auto bit = base->weights.find({norm_word, norm_code});
+    const bool in_base = (bit != base->weights.end());
+    const int base_w = in_base ? bit->second : 1000;
+    const int eff_w = taiwan_lexicon::EffectiveWeight(in_base, base_w, pref);
+
+    const std::string orig_word = Str(p, "orig_word");
+    const std::string orig_code = Str(p, "orig_code");
+    bool orig_in_base = false;
+    int orig_base_w = 1000;
+    if (!orig_word.empty() && !orig_code.empty()) {
+      const auto oit = base->weights.find({orig_word, orig_code});
+      if (oit != base->weights.end()) {
+        orig_in_base = true;
+        orig_base_w = oit->second;
+      }
+    }
+
+    return {{"word", norm_word},
+            {"code", norm_code},
+            {"zhuyin", norm_zhuyin},
+            {"pref", pref},
+            {"in_base", in_base},
+            {"base_weight", base_w},
+            {"effective_weight", eff_w},
+            {"orig_in_base", orig_in_base},
+            {"orig_base_weight", orig_base_w}};
+  }
+  if (method == "lexicon.pickFile") {
+    const std::string op = Str(p, "op");
+    fs::path path;
+    if (op == "export") {
+      path = platform.SaveFileDialog(
+          owner, "匯出台灣詞庫個人修改",
+          {{"詞庫修改備份 (*.json)", "*.json"}, {"所有檔案 (*.*)", "*.*"}},
+          "wisdom_taiwan_edits.json", "json");
+    } else if (op == "import") {
+      path = platform.OpenFileDialog(
+          owner, "匯入台灣詞庫個人修改",
+          {{"詞庫修改備份 (*.json)", "*.json"}, {"所有檔案 (*.*)", "*.*"}}, "", "json");
+    } else if (op == "exportSources") {
+      path = platform.SaveFileDialog(
+          owner, "匯出台灣詞庫來源包",
+          {{"ZIP 壓縮檔 (*.zip)", "*.zip"}, {"所有檔案 (*.*)", "*.*"}},
+          "wisdom_taiwan.sources.zip", "zip");
+    } else {
+      throw Error("bad op");
+    }
+    return path.empty() ? json(nullptr) : json(U8(path));
+  }
+  if (method == "lexicon.exportEdits") {
+    const std::string id = p.value("id", std::string(taiwan_lexicon::kLexiconId));
+    if (id != taiwan_lexicon::kLexiconId)
+      throw Error("不支援的詞庫識別：「" + id + "」。");
+    const taiwan_lexicon::BaseLexicon* base = nullptr;
+    const taiwan_lexicon::SyllableTable* syllables = nullptr;
+    std::string err;
+    if (!s.EnsureBaseLexicon(&base, &syllables, &err))
+      throw Error(err);
+
+    std::vector<taiwan_lexicon::UserEdit> raw_edits;
+    for (const auto& item : p.value("edits", json::array())) {
+      taiwan_lexicon::UserEdit e;
+      if (taiwan_lexicon::EditFromJson(item, &e))
+        raw_edits.push_back(std::move(e));
+    }
+    std::vector<taiwan_lexicon::UserEdit> validated;
+    if (!taiwan_lexicon::ValidateEditsList(raw_edits, *syllables, &validated, &err))
+      throw Error(err);
+
+    const fs::path dest = Path(Str(p, "path"));
+    if (dest.empty())
+      throw Error("未指定匯出檔案路徑。");
+    const std::string exported_text = taiwan_lexicon::ExportEditsJson(
+        base->version, validated, FormatTime((int64_t)std::time(nullptr)));
+    try {
+      taiwan_lexicon::Write(dest, exported_text);
+    } catch (const std::exception& ex) {
+      throw Error(std::string("無法寫入匯出檔案：") + ex.what());
+    }
+    if (p.value("reveal", true))
+      platform.Reveal(dest);
+    return {{"exported", validated.size()}, {"path", U8(dest)}};
+  }
+  if (method == "lexicon.importPreview") {
+    const std::string id = p.value("id", std::string(taiwan_lexicon::kLexiconId));
+    if (id != taiwan_lexicon::kLexiconId)
+      throw Error("不支援的詞庫識別：「" + id + "」。");
+    const taiwan_lexicon::BaseLexicon* base = nullptr;
+    const taiwan_lexicon::SyllableTable* syllables = nullptr;
+    std::string err;
+    if (!s.EnsureBaseLexicon(&base, &syllables, &err))
+      throw Error(err);
+
+    std::string content = Str(p, "content");
+    if (content.empty()) {
+      const fs::path src = Path(Str(p, "path"));
+      if (src.empty())
+        throw Error("未指定匯入檔案路徑。");
+      std::error_code ec;
+      if (!fs::exists(src, ec) || fs::is_directory(src, ec))
+        throw Error("找不到指定的匯入檔案。");
+      const auto fsize = fs::file_size(src, ec);
+      if (!ec && fsize > taiwan_lexicon::kMaxImportBytes)
+        throw Error("匯入檔案過大（上限為 2 MB）。");
+      try {
+        content = taiwan_lexicon::Read(src);
+      } catch (const std::exception& ex) {
+        throw Error(std::string("無法讀取匯入檔案：") + ex.what());
+      }
+    }
+
+    std::vector<taiwan_lexicon::UserEdit> cur_edits;
+    if (p.contains("current_edits") && p["current_edits"].is_array()) {
+      for (const auto& item : p["current_edits"]) {
+        taiwan_lexicon::UserEdit e;
+        if (taiwan_lexicon::EditFromJson(item, &e))
+          cur_edits.push_back(std::move(e));
+      }
+    } else {
+      taiwan_lexicon::UserConfig saved_cfg;
+      taiwan_lexicon::LoadUserConfig(s.rime, platform.UserDataDir(), &saved_cfg);
+      cur_edits = std::move(saved_cfg.edits);
+    }
+
+    json preview;
+    if (!taiwan_lexicon::PreviewImportEdits(content, *base, *syllables, cur_edits, &preview, &err))
+      throw Error(err);
+    return preview;
+  }
+  if (method == "lexicon.sourceArchive") {
+    const std::string id = p.value("id", std::string(taiwan_lexicon::kLexiconId));
+    if (id != taiwan_lexicon::kLexiconId)
+      throw Error("不支援的詞庫識別：「" + id + "」。");
+    const std::string op = Str(p, "op");
+    std::error_code ec;
+    fs::path zip_path = s.SharedLexiconDir() / "wisdom_taiwan.sources.zip";
+    if (!fs::exists(zip_path, ec)) {
+      const fs::path user_zip = platform.UserDataDir() / "wisdom_taiwan.sources.zip";
+      if (fs::exists(user_zip, ec))
+        zip_path = user_zip;
+      else
+        throw Error("找不到隨附來源包 wisdom_taiwan.sources.zip。");
+    }
+    if (op == "reveal") {
+      platform.Reveal(zip_path);
+      return {{"ok", true}, {"path", U8(zip_path)}};
+    }
+    if (op == "export") {
+      const fs::path dest = Path(Str(p, "dest"));
+      if (dest.empty())
+        throw Error("未指定匯出路徑。");
+      fs::copy_file(zip_path, dest, fs::copy_options::overwrite_existing, ec);
+      if (ec)
+        throw Error("無法匯出來源包檔案：" + ec.message());
+      if (p.value("reveal", true))
+        platform.Reveal(dest);
+      return {{"ok", true}, {"path", U8(dest)}};
+    }
+    throw Error("bad op");
   }
 
   throw Error("unknown method: " + method);

@@ -525,6 +525,7 @@ void Controller::LoadConfig(RimeConfig* config) {
   }
   last_plan_ = std::make_unique<ModelPlan>(*plan);
   PostModels(std::move(plan), std::move(retired));
+  WriteLexiconRuntimeStatus();
 }
 
 std::vector<std::unique_ptr<LLMProvider>> Controller::TakeModels() {
@@ -3038,7 +3039,74 @@ void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixe
 // ---------------------------------------------------------------------------
 // 設定程式的指令
 
+void Controller::WriteLexiconRuntimeStatus() {
+  bool pack_mounted = false;
+  for (const char* schema_name : {"bopomofo", "bopomofo_express", "bopomofo_tw"}) {
+    RimeConfig schema_cfg = {0};
+    if (api_ && api_->schema_open(schema_name, &schema_cfg)) {
+      RimeConfigIterator iter = {0};
+      if (api_->config_begin_list(&iter, &schema_cfg, "translator/packs")) {
+        while (api_->config_next(&iter)) {
+          if (const char* v = api_->config_get_cstring(&schema_cfg, iter.path)) {
+            if (std::strcmp(v, "wisdom_taiwan") == 0) {
+              pack_mounted = true;
+              break;
+            }
+          }
+        }
+        api_->config_end(&iter);
+      }
+      api_->config_close(&schema_cfg);
+      if (pack_mounted)
+        break;
+    }
+  }
+  std::string dict_version;
+  {
+    std::ifstream in(options_.user_dir / "wisdom_taiwan.dict.yaml", std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line == "...") break;
+      if (line.rfind("version:", 0) == 0) {
+        std::string v = line.substr(8);
+        while (!v.empty() && (v.front() == ' ' || v.front() == '\t' || v.front() == '\'' || v.front() == '"'))
+          v.erase(v.begin());
+        while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\'' || v.back() == '"'))
+          v.pop_back();
+        dict_version = v;
+        break;
+      }
+    }
+  }
+  std::error_code ec;
+  const bool table_compiled =
+      fs::exists(options_.user_dir / "build" / "wisdom_taiwan.table.bin", ec) ||
+      fs::exists(options_.shared_dir / "build" / "wisdom_taiwan.table.bin", ec);
+  const int64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+  const fs::path dir = options_.user_dir / "personal";
+  fs::create_directories(dir, ec);
+  auto write_status_file = [&](const fs::path& target_dir) {
+    const fs::path tmp = target_dir / "lexicon_runtime.tmp";
+    {
+      std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      f << "ts=" << ts << "\n"
+        << "pack_mounted=" << (pack_mounted ? 1 : 0) << "\n"
+        << "table_compiled=" << (table_compiled ? 1 : 0) << "\n"
+        << "loaded_dict_version=" << dict_version << "\n";
+    }
+    fs::rename(tmp, target_dir / "lexicon_runtime.txt", ec);
+  };
+  write_status_file(options_.user_dir);
+  write_status_file(dir);
+}
+
 void Controller::PersonalCommand(int command) {
+  if (command == 1) {
+    WriteLexiconRuntimeStatus();
+  }
   if (command == 8) {
     choice_store_->Reset();
     return;

@@ -11,7 +11,8 @@ export const state = {
   schemas: [],        // [{id, name, selected}]，已選的在前
   style: null,        // {active, fonts}
   dev: { console: true },  // 開發：開發終端（dev_console/enabled）
-  dirty: new Set(),   // schemas / style / llm / grammar / dev
+  lexicon: null,      // 內建詞庫（台灣詞庫）：{info, savedEnabled, enabled, savedEdits, edits, undoStack}
+  dirty: new Set(),   // schemas / style / llm / grammar / dev / lexicon
 };
 
 // 這個平台做得到的事（設定後端 init 的 platform）；沒有資料時當作都可以
@@ -402,6 +403,75 @@ export function loadLlm(llm) {
   state.loaded.sentences = sentenceCount(state.form);
 }
 
+function normalizeEditForCompare(e) {
+  return {
+    word: str(e.word),
+    code: str(e.code),
+    hidden: Boolean(e.hidden),
+    pref: ['low', 'normal', 'high'].includes(str(e.pref)) ? str(e.pref) : 'normal',
+    origin_base: Boolean(e.origin_base),
+    base_weight: int(e.base_weight, 1000),
+    replaced_from_word: str(e.replaced_from_word),
+    replaced_from_code: str(e.replaced_from_code),
+  };
+}
+
+export function editsEqual(a, b) {
+  const listA = Array.isArray(a) ? a.map(normalizeEditForCompare) : [];
+  const listB = Array.isArray(b) ? b.map(normalizeEditForCompare) : [];
+  if (listA.length !== listB.length) return false;
+  const keyOf = (x) => `${x.word}\t${x.code}`;
+  const sortedA = [...listA].sort((x, y) => keyOf(x).localeCompare(keyOf(y)));
+  const sortedB = [...listB].sort((x, y) => keyOf(x).localeCompare(keyOf(y)));
+  return JSON.stringify(sortedA) === JSON.stringify(sortedB);
+}
+
+export function loadLexicon(lexicons) {
+  const tw = (lexicons && lexicons.taiwan) || {};
+  const savedEdits = Array.isArray(tw.edits) ? clone(tw.edits) : [];
+  state.lexicon = {
+    info: clone(tw),
+    savedEnabled: tw.enabled !== false,
+    enabled: tw.enabled !== false,
+    savedEdits,
+    edits: clone(savedEdits),
+    undoStack: [],
+  };
+  state.loaded.lexicon_enabled = state.lexicon.savedEnabled;
+}
+
+export function syncLexiconDirty() {
+  if (!state.lexicon) return false;
+  const enabledChanged = state.lexicon.enabled !== state.lexicon.savedEnabled;
+  const editsChanged = !editsEqual(state.lexicon.edits, state.lexicon.savedEdits);
+  const isDirty = enabledChanged || editsChanged;
+  if (isDirty) state.dirty.add('lexicon');
+  else state.dirty.delete('lexicon');
+  return isDirty;
+}
+
+export function resetLexicon() {
+  if (!state.lexicon) return;
+  state.lexicon.enabled = state.lexicon.savedEnabled;
+  state.lexicon.edits = clone(state.lexicon.savedEdits);
+  state.lexicon.undoStack = [];
+  state.dirty.delete('lexicon');
+}
+
+export function lexiconImpactSummary() {
+  if (!state.lexicon) return '';
+  const parts = [];
+  if (state.lexicon.enabled !== state.lexicon.savedEnabled) {
+    parts.push(state.lexicon.enabled ? '啟用台灣詞庫' : '停用台灣詞庫');
+  }
+  if (!editsEqual(state.lexicon.edits, state.lexicon.savedEdits)) {
+    const n = state.lexicon.edits.length;
+    parts.push(n > 0 ? `套用台灣詞庫個人修改（共 ${n} 筆）` : '還原台灣詞庫全部個人修改');
+  }
+  if (!parts.length) return '';
+  return parts.join('、') + '；重新部署期間輸入法會暫停片刻';
+}
+
 // 套用：收集變更的部分
 export function collectChanges() {
   const changes = {};
@@ -420,5 +490,12 @@ export function collectChanges() {
   }
   if (dirty.has('grammar') && form.choice.grammar !== state.loaded.grammar) changes.grammar = form.choice.grammar;
   if (dirty.has('dev') && state.dev.console !== state.loaded.dev_console) changes.dev_console = state.dev.console;
+  if (dirty.has('lexicon') && state.lexicon) {
+    changes.lexicon = {
+      id: (state.lexicon.info && state.lexicon.info.id) || 'wisdom_taiwan',
+      enabled: state.lexicon.enabled,
+      edits: state.lexicon.edits.map(normalizeEditForCompare),
+    };
+  }
   return changes;
 }
