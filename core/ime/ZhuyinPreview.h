@@ -150,6 +150,21 @@ inline std::wstring Format(const ZhuyinSpeller& sp, const std::string& raw) {
   return out;
 }
 
+inline bool IsUnfinishedSyllable(const ZhuyinSpeller& sp, const std::string& raw) {
+  if (raw.empty())
+    return false;
+  int last = -1;
+  for (wchar_t c : Format(sp, raw)) {
+    const int part = c >= 0x3105 && c <= 0x3119 ? 0 :
+                     c >= 0x3127 && c <= 0x3129 ? 1 :
+                     c >= 0x311A && c <= 0x3126 ? 2 : -1;
+    if (part < 0 || part <= last)
+      return false;
+    last = part;
+  }
+  return last >= 0 && raw.find_first_of(sp.finals + sp.delimiter) == std::string::npos;
+}
+
 // trailing zhuyin syllables of the preedit that have no tone mark yet
 inline std::vector<std::wstring> PendingSyllables(const std::wstring& pre) {
   std::vector<std::wstring> pending;
@@ -261,6 +276,27 @@ inline std::vector<size_t> SyllableLengths(const ZhuyinSpeller& sp,
   return lens;
 }
 
+// 原始音節與邊界都沒變時，延續已成字的狀態，字的內容仍由當次 Rime 轉換決定。
+inline bool WasConverted(size_t index,
+                         const std::string& input,
+                         const std::vector<size_t>& lens,
+                         const std::string& old_input,
+                         const std::vector<std::wstring>& old_units,
+                         const std::vector<size_t>& old_lens) {
+  if (index >= lens.size() || index >= old_units.size() || index >= old_lens.size() ||
+      old_units[index].empty() || IsBopomofo(old_units[index].front()) ||
+      IsTone(old_units[index].front()))
+    return false;
+  size_t end = 0;
+  for (size_t i = 0; i <= index; ++i) {
+    if (lens[i] != old_lens[i])
+      return false;
+    end += lens[i];
+  }
+  return end <= input.size() && end <= old_input.size() &&
+         old_input.compare(0, end, input, 0, end) == 0;
+}
+
 }  // namespace zhuyin_preview
 
 // preview: RIME's commit_text_preview, which covers the input up to the caret;
@@ -301,11 +337,19 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
     // typing at the end: convert all but the syllables still being typed
     auto units = SplitChars(head);
     auto pending = PendingSyllables(pre);
-    if (pending.size() <= units.size()) {
-      units.resize(units.size() - pending.size());
-      units.insert(units.end(), pending.begin(), pending.end());
-    }
     auto lens = SyllableLengths(sp, pre, input, cache_input, cache_lens);
+    if (pending.size() <= units.size()) {
+      for (size_t i = 0; i < pending.size(); ++i) {
+        const size_t index = units.size() - pending.size() + i;
+        // 省略聲調的音節一旦因後續輸入成字，即使後面的注音被刪光，
+        // 相同原始音節也不能重新當成「正在拼」。只保留成字狀態，
+        // 字的內容仍取 Rime 這次的轉換結果，讓未手動選過的字可重新造句。
+        const bool converted = lens.size() == units.size() &&
+                               WasConverted(index, input, lens, cache_input, cache_units, cache_lens);
+        if (!converted)
+          units[index] = pending[i];
+      }
+    }
     if (!lens.empty() && lens.size() == units.size()) {
       cache_input = input;
       cache_units = units;
@@ -346,6 +390,56 @@ inline ZhuyinPreview BuildZhuyinPreview(const std::string& preview,
     }
     return out;
   };
+  // 句中插入時，游標後的原始按鍵仍是快取裡完整的音節。
+  // 新音節尚未打聲調也要保留這段中文，並建立可供下次移動／刪除使用的完整快取。
+  if (!focused && !at_start && rem.empty() && caret < input.size()) {
+    const size_t suffix_keys = input.size() - caret;
+    if (suffix_keys <= cache_input.size()) {
+      const size_t old_start = cache_input.size() - suffix_keys;
+      if (cache_input.compare(old_start, suffix_keys, input, caret, suffix_keys) == 0) {
+        size_t sum = 0, index = 0;
+        while (index < cache_lens.size() && sum < old_start)
+          sum += cache_lens[index++];
+        if (sum == old_start && cache_lens.size() == cache_units.size()) {
+          auto prefix_units = SplitChars(head);
+          const auto pending = PendingSyllables(pre);
+          const std::string prefix = input.substr(0, caret);
+          auto prefix_lens = SyllableLengths(sp, pre, prefix, cache_input, cache_lens);
+          if (pending.size() <= prefix_units.size()) {
+            for (size_t i = 0; i < pending.size(); ++i) {
+              const size_t unit = prefix_units.size() - pending.size() + i;
+              if (prefix_lens.size() != prefix_units.size() ||
+                  !WasConverted(unit, prefix, prefix_lens, cache_input, cache_units, cache_lens))
+                prefix_units[unit] = pending[i];
+            }
+          }
+          // Rime 有時把句中的 ㄊㄧ 拆成 ㄊ／ㄧ 並提早選字；若新增的按鍵
+          // 仍能組成同一個未完成音節，沿用原本的音節起點，直到打聲調或下一音節。
+          if (index > 0 && !cache_units[index - 1].empty() &&
+              IsBopomofo(cache_units[index - 1].front())) {
+            const size_t begin = old_start - cache_lens[index - 1];
+            if (begin < caret && input.compare(0, begin, cache_input, 0, begin) == 0 &&
+                IsUnfinishedSyllable(sp, input.substr(begin, caret - begin))) {
+              prefix_units.assign(cache_units.begin(), cache_units.begin() + index - 1);
+              prefix_units.push_back(Format(sp, input.substr(begin, caret - begin)));
+              prefix_lens.assign(cache_lens.begin(), cache_lens.begin() + index - 1);
+              prefix_lens.push_back(caret - begin);
+            }
+          }
+          head = Join(prefix_units);
+          const std::wstring after = Join(cache_units, index);
+          if (!prefix_lens.empty() && prefix_lens.size() == prefix_units.size()) {
+            prefix_units.insert(prefix_units.end(), cache_units.begin() + index, cache_units.end());
+            prefix_lens.insert(prefix_lens.end(), cache_lens.begin() + index, cache_lens.end());
+            cache_input = input;
+            cache_units = std::move(prefix_units);
+            cache_lens = std::move(prefix_lens);
+          }
+          return finish(L"", after);
+        }
+      }
+    }
+  }
   // 輸入和最後一次整句轉換相同：照記下的切法取後面的字
   if (cache_input == input && !cache_lens.empty() && cache_lens.size() == cache_units.size()) {
     size_t sum = 0, k = std::string::npos, m = std::string::npos;

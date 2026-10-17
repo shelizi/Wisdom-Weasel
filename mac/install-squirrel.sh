@@ -42,11 +42,15 @@ model_path="$rime_dir/models/$model_name"
 step() { printf '\n==> %s\n' "$*"; }
 
 # ---- 1. 建置
-if [ ! -d "$squirrel/.git" ]; then
+if [ ! -e "$squirrel/.git" ]; then
   echo "找不到 ${squirrel}（鼠鬚管的修改版）：先取得 squirrel/ 再執行" >&2
   exit 1
 fi
-if [ "$rebuild" = 1 ] || [ ! -x "$app/Contents/MacOS/Squirrel" ]; then
+# Rebuild an older cached app that predates the bundled vocabulary.
+if [ "$rebuild" = 1 ] || [ ! -x "$app/Contents/MacOS/Squirrel" ] ||
+   ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.dict.yaml" "$app/Contents/SharedSupport/wisdom_taiwan.dict.yaml" ||
+   ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.NOTICE.txt" "$app/Contents/SharedSupport/wisdom_taiwan.NOTICE.txt" ||
+   ! cmp -s "$root/resource/lexicons/taiwan/wisdom_taiwan.manifest.json" "$app/Contents/SharedSupport/wisdom_taiwan.manifest.json"; then
   step "建置 Squirrel.app"
   if ! xcodebuild -version > /dev/null 2>&1; then
     echo "需要完整的 Xcode（並執行過 sudo xcodebuild -license accept）" >&2
@@ -71,7 +75,7 @@ if [ "$rebuild" = 1 ] || [ ! -x "$app/Contents/MacOS/Squirrel" ]; then
   if [ ! -d "$root/output/llama-mac/lib" ]; then
     "$root/mac/get-llama-runtime.sh"
   fi
-  make -C "$squirrel" release
+  bash "$root/mac/build-squirrel.sh" release
 fi
 
 # ---- 2. 模型

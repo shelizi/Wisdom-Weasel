@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "WeaselDeployer.h"
 #include "Configurator.h"
+#include "../core/settings/taiwan_lexicon.h"
 #include <WeaselConstants.h>
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
@@ -91,6 +92,12 @@ int Configurator::UpdateWorkspace(bool report_errors) {
 
   {
     RimeApi* rime = rime_get_api();
+    std::string lexicon_error;
+    if (!settings::taiwan_lexicon::Prepare(rime, WeaselSharedDataPath(), WeaselUserDataPath(),
+                                          &lexicon_error)) {
+      // A conflicting user patch or damaged resource must not disable basic input.
+      LOG(WARNING) << "Bundled Taiwan vocabulary: " << lexicon_error;
+    }
     // initialize default config, preset schemas
     rime->deploy();
     // initialize weasel config

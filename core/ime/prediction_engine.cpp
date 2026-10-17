@@ -86,6 +86,7 @@ void PredictionEngine::Cancel() {
     std::lock_guard<std::mutex> lock(state_->queue_mutex);
     state_->queued = false;
   }
+  state_->cv.notify_one();
 }
 
 void PredictionEngine::WorkerLoop(const std::shared_ptr<State>& state) {
@@ -100,7 +101,7 @@ void PredictionEngine::WorkerLoop(const std::shared_ptr<State>& state) {
     // 防抖：等待期間有更新的請求排進來就丟掉這個，直接換新的
     if (req.delay_ms > 0) {
       if (state->cv.wait_for(lock, std::chrono::milliseconds(req.delay_ms),
-                             [&] { return state->stop || state->queued; }))
+                             [&] { return state->stop || state->queued || seq != state->seq.load(); }))
         continue;
       if (state->stop)
         return;
@@ -161,7 +162,10 @@ bool PredictionEngine::Take(size_t index, std::wstring* text, bool* recommend, b
   *correction = set.IsCorrection(index);
   if (kind)
     *kind = set.Kind(index);
+  // 採用中途發布的候選也要作廢整個請求，避免後續校正／續寫把候選重新放回來。
+  ++state_->seq;
   set = PredictionSet();
+  state_->cv.notify_one();
   return true;
 }
 
@@ -207,13 +211,16 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
     if (HasConfidence(p) && p < req.min_confidence)
       return false;
     head.push_back({std::move(text), kind, gain, p});
-    // 都有機率時高的排前面；還沒校準的維持原本順序（推薦、校正）
+    // 已校準的優先；未校準的維持原本順序。比較必須滿足 strict weak ordering，
+    // 不能讓 NaN 同時與兩個不同機率「相等」。
     std::stable_sort(head.begin(), head.end(), [](const Suggestion& a, const Suggestion& b) {
-      return HasConfidence(a.confidence) && HasConfidence(b.confidence) && a.confidence > b.confidence;
+      const bool ac = HasConfidence(a.confidence), bc = HasConfidence(b.confidence);
+      return ac != bc ? ac : ac && a.confidence > b.confidence;
     });
     return true;
   };
   // 寫入候選並通知呼叫端；已有更新的請求時丟棄
+  bool published = false;
   const auto publish = [&](const std::vector<std::wstring>& more) {
     PredictionSet set;
     std::vector<std::wstring> texts;
@@ -233,7 +240,18 @@ void PredictionEngine::Run(const std::shared_ptr<State>& state, uint64_t seq,
       std::lock_guard<std::mutex> lock(state->mutex);
       if (!current())
         return false;
+      // 同一請求的分段結果完全相同時不再刷新候選窗。NaN 表示未校準，兩個 NaN 視為相同。
+      const auto same_scores = [](const std::vector<double>& a, const std::vector<double>& b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](double x, double y) {
+          return x == y || (std::isnan(x) && std::isnan(y));
+        });
+      };
+      const PredictionSet& old = state->current;
+      if (published && old.candidates == set.candidates && old.kinds == set.kinds &&
+          same_scores(old.gains, set.gains) && same_scores(old.confidences, set.confidences))
+        return true;
       state->current = set;
+      published = true;
     }
     if (state->hooks.on_update)
       state->hooks.on_update(req.tag, seq, set);

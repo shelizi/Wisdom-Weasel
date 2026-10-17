@@ -1,0 +1,5 @@
+# Dictionary checksums and POSIX build inputs must survive Windows checkouts.
+resource/lexicons/taiwan/wisdom_taiwan.dict.yaml text eol=lf
+mac/build-squirrel.sh text eol=lf
+mac/install-squirrel.sh text eol=lf
+mac/squirrel/taiwan-lexicon.patch text eol=lf

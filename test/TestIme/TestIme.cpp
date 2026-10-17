@@ -170,6 +170,26 @@ static void TestZhuyin() {
   CHECK(RepairEarlyTone("dj841j4") == "dj841j4");
   CHECK(UnconvertedTail("\xe4\xbb\x8a\xe5\xa4\xa9vu84", "rup vu84") == 4);
   CHECK(UnconvertedTail("\xe4\xbb\x8a\xe5\xa4\xa9", "rup wu0") == 0);
+  // 刪光後字的注音：只延續前字已成字的狀態，不固定自動選字的內容。
+  std::string cached_input = "rupw";
+  Strings cached_units = {L"今", L"ㄊ"};
+  std::vector<size_t> cached_lens = {3, 1};
+  auto preview = BuildZhuyinPreview(utf8::FromWide(L"金"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0,
+                                   sp, cached_input, cached_units, cached_lens);
+  CHECK(preview.text == L"金" && preview.cursor == 1);
+  preview = BuildZhuyinPreview(utf8::FromWide(L"今"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0,
+                              sp, cached_input, cached_units, cached_lens);
+  CHECK(preview.text == L"今");
+  // 音節本身被改動就不能沿用成字狀態。
+  preview = BuildZhuyinPreview(utf8::FromWide(L"機"), utf8::FromWide(L"ㄐㄧ"), "ru", 2, "", 0,
+                              sp, cached_input, cached_units, cached_lens);
+  CHECK(preview.text == L"ㄐㄧ");
+  cached_input.clear();
+  cached_units.clear();
+  cached_lens.clear();
+  preview = BuildZhuyinPreview(utf8::FromWide(L"今"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0,
+                              sp, cached_input, cached_units, cached_lens);
+  CHECK(preview.text == L"ㄐㄧㄣ");
 }
 
 static void TestRescore() {
@@ -204,6 +224,79 @@ static void TestRescore() {
                              {{L"今", L"金"}, {}})
             .empty());
   CHECK(scorer.calls == 0);
+}
+
+static void TestRescoreBatch() {
+  class BatchScorer : public FakeScorer {
+   public:
+    int single_calls = 0, batch_calls = 0;
+    Strings batched;
+    bool malformed = false;
+    bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
+                   std::vector<double>* per_char) override {
+      ++single_calls;
+      return FakeScorer::ScoreText(context, text, total, per_char);
+    }
+    bool ScoreBatch(const std::wstring& context, const Strings& texts,
+                    std::vector<double>* totals) override {
+      ++batch_calls;
+      batched = texts;
+      totals->clear();
+      if (malformed)
+        return true;
+      for (const auto& text : texts) {
+        double total = 0;
+        FakeScorer::ScoreText(context, text, &total, nullptr);
+        totals->push_back(total);
+      }
+      return true;
+    }
+  } scorer;
+  scorer.score = {{L'甲', -10}, {L'乙', -10}, {L'丙', -10}, {L'丁', -10},
+                  {L'好', -1}, {L'佳', -2}, {L'優', -3}};
+  const Strings units = {L"甲", L"乙", L"丙", L"丁"};
+  const std::vector<Strings> homophones = {
+      {L"甲", L"好", L"佳", L"優"}, {L"乙", L"好", L"佳", L"優"},
+      {L"丙", L"好", L"佳", L"優"}, {L"丁", L"好", L"佳", L"優"}};
+  double gain = 0;
+  CHECK(ime::RescoreSentence(&scorer, L"前文", units, homophones, &gain) == L"好好好好");
+  CHECK(gain == 36);
+  // 保留原本 12 個單點候選；從最多 16 次 provider 呼叫降為 1 次批次 + 4 次單句。
+  CHECK(scorer.batch_calls == 1 && scorer.batched.size() == 12 && scorer.single_calls == 4);
+  CHECK(scorer.calls == 16);
+
+  // 重複候選不浪費評分額度，也不擠掉後面的有效候選。
+  CHECK(ime::RescoreSentence(&scorer, L"", {L"甲", L"乙"},
+                             {{L"甲", L"好", L"好", L"佳"}, {L"乙"}}) == L"好乙");
+  CHECK(scorer.batched.size() == 2);
+  scorer.malformed = true;
+  CHECK(ime::RescoreSentence(&scorer, L"", units, homophones).empty());
+  CHECK(ime::RescoreSentence(nullptr, L"", units, homophones).empty());
+
+  // 已過時的請求不再開始評分。
+  const int before = scorer.calls;
+  std::vector<double> cancelled_totals;
+  {
+    LLMCancelScope cancel([] { return true; });
+    CHECK(ime::RescoreSentence(&scorer, L"", units, homophones).empty());
+    CHECK(!scorer.LLMProvider::ScoreBatch(L"", units, &cancelled_totals));
+  }
+  CHECK(scorer.calls == before);
+
+  FakeScorer interrupted;
+  interrupted.score = scorer.score;
+  {
+    // baseline + 12 個單點候選後，在第一個組合替換時取消，不得繼續評剩下的組合。
+    LLMCancelScope cancel([&] { return interrupted.calls >= 14; });
+    CHECK(ime::RescoreSentence(&interrupted, L"", units, homophones).empty());
+  }
+  CHECK(interrupted.calls == 14);
+  interrupted.calls = 0;
+  {
+    LLMCancelScope cancel([&] { return interrupted.calls >= 1; });
+    CHECK(interrupted.ScoreBatch(L"", units, &cancelled_totals));
+  }
+  CHECK(interrupted.calls == 1 && std::isnan(cancelled_totals[1]));
 }
 
 static void TestChoiceStats(const fs::path& dir) {
@@ -475,6 +568,73 @@ static void TestPredictionEngine() {
   CHECK(WaitFor([&] { return update_count() == 1; }));
 }
 
+static void TestPredictionConsumptionAndDuplicates() {
+  class GatedModel : public FakeScorer {
+   public:
+    std::mutex gate;
+    std::condition_variable cv;
+    std::atomic<bool> entered{false}, finished{false};
+    bool released = false;
+    Strings PredictCandidates(const std::wstring&, const std::wstring&, size_t) override {
+      std::unique_lock<std::mutex> lock(gate);
+      entered = true;
+      cv.wait(lock, [&] { return released; });
+      // 刻意忽略取消並回傳結果，驗證引擎本身仍擋得住舊結果。
+      finished = true;
+      return {L"遲到的候選"};
+    }
+  } model;
+  std::atomic<int> updates{0};
+  ime::PredictionEngine::Hooks hooks;
+  hooks.models = [&] {
+    ime::PredictionModels m;
+    m.predict = &model;
+    return m;
+  };
+  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) { ++updates; };
+  ime::PredictionEngine engine(hooks);
+  ime::PredictionRequest request;
+  request.personal = {L"先選這個"};
+  request.predict = true;
+  const uint64_t seq = engine.Request(request);
+  CHECK(WaitFor([&] { return model.entered.load(); }));
+  std::wstring text;
+  bool recommend = false, correction = false;
+  // 無效的選取不應取消請求。
+  CHECK(!engine.Take(9, &text, &recommend, &correction) && engine.IsCurrent(seq));
+  CHECK(engine.Take(0, &text, &recommend, &correction) && text == L"先選這個");
+  CHECK(!engine.IsCurrent(seq));
+  {
+    std::lock_guard<std::mutex> lock(model.gate);
+    model.released = true;
+  }
+  model.cv.notify_one();
+  CHECK(WaitFor([&] { return model.finished.load(); }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK(updates == 1 && !engine.HasCandidates());
+
+  // 個人詞庫已涵蓋所有續寫時，最終結果相同（包含 NaN 欄位），只刷新一次。
+  FakeScorer duplicate;
+  duplicate.predictions = {L"一樣"};
+  hooks.models = [&] {
+    ime::PredictionModels m;
+    m.predict = &duplicate;
+    return m;
+  };
+  updates = 0;
+  ime::PredictionEngine dedup(hooks);
+  request.personal = {L"一樣"};
+  dedup.Request(request);
+  CHECK(WaitFor([&] { return duplicate.predict_calls == 1; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK(updates == 1 && dedup.Snapshot().candidates == Strings{L"一樣"});
+  // 新請求仍需發布第一次結果，讓呼叫端更新組字與統計。
+  dedup.Request(request);
+  CHECK(WaitFor([&] { return duplicate.predict_calls == 2; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK(updates == 2);
+}
+
 // 可重現的亂數（0～1）
 static double Uniform(uint64_t* state) {
   *state = *state * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -635,6 +795,33 @@ static void TestConfidenceOrdering() {
   {
     std::lock_guard<std::mutex> lock(mutex);
     CHECK(asked.empty());
+  }
+
+  // 未校準的整句重排、已校準的推薦與校正混排時，已校準的按機率排序。
+  // NaN 不能同時與 0.3、0.9 視為等價，否則比較器不符合排序要求。
+  hooks.rerank_input = [&](uint64_t, uint64_t, Strings* sentences) {
+    *sentences = {L"今天汽", L"金天氣"};
+    return true;
+  };
+  hooks.confidence = [&](ime::SuggestionKind kind, double) {
+    return kind == ime::SuggestionKind::kRerank ? ime::NoConfidence()
+           : kind == ime::SuggestionKind::kRecommend ? 0.3 : 0.9;
+  };
+  std::atomic<int> mixed_updates{0};
+  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) { ++mixed_updates; };
+  ime::PredictionEngine mixed(hooks);
+  typing.prefix = L"今天汽";
+  typing.rescore = typing.rerank = true;
+  model.correction = L"今天天氣";
+  mixed.Request(typing);
+  CHECK(WaitFor([&] { return mixed_updates == 4; }));
+  set = mixed.Snapshot();
+  CHECK(set.candidates.size() >= 3);
+  if (set.candidates.size() >= 3) {
+    CHECK(set.IsCorrection(0) && set.Kind(1) == ime::CandidateKind::kRecommend &&
+          set.Kind(2) == ime::CandidateKind::kRerank);
+    CHECK(set.candidates[0] == L"今天天氣" && set.candidates[1] == L"今天氣" &&
+          set.candidates[2] == L"金天氣");
   }
 }
 
@@ -880,6 +1067,8 @@ int main() {
   TestTextRules();
   TestZhuyin();
   TestRescore();
+  TestRescoreBatch();
+  TestPredictionConsumptionAndDuplicates();
   TestPredictionEngine();
   TestConfidenceOrdering();
   TestRerank();

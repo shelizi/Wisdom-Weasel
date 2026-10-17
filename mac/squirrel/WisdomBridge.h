@@ -48,6 +48,9 @@ typedef NS_OPTIONS(NSUInteger, WisdomKeyResult) {
 
 // 在 Rime setup 與 initialize 之後呼叫；userDir 通常是 ~/Library/Rime，sharedDir 是 app 的 SharedSupport
 - (void)startWithUserDirectory:(NSString*)userDir sharedDirectory:(NSString*)sharedDir;
+// initialize 之後、start_maintenance 之前呼叫；回傳是否更新詞庫，需強制檢查部署。
+// 失敗會寫入紀錄並回傳 NO，讓原本輸入方案繼續可用。
+- (BOOL)prepareTaiwanLexiconWithUserDirectory:(NSString*)userDir sharedDirectory:(NSString*)sharedDir;
 // 部署完成後重新讀設定（squirrel.yaml 的 llm/*）
 - (void)reloadConfig;
 // Rime finalize 之前呼叫：停止精煉並存檔

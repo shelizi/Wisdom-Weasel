@@ -122,7 +122,7 @@ class PredictionEngine {
 
   PredictionSet Snapshot() const;
   bool HasCandidates() const;
-  // 取出第 index 個候選並清掉候選；沒有時回傳 false
+  // 取出第 index 個候選、清掉候選並作廢進行中的請求；沒有時回傳 false
   bool Take(size_t index, std::wstring* text, bool* recommend, bool* correction,
             CandidateKind* kind = nullptr);
 

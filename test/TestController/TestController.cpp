@@ -295,6 +295,40 @@ int main(int argc, char** argv) {
     CHECK(!t.Composing());
   }
 
+  // 省略聲調的前字已成字：刪光後字的未完成注音，不得退回注音。
+  for (bool soft_cursor : {false, true}) {
+    api->set_option(t.Rime(), "soft_cursor", soft_cursor);
+    t.Type("sucl");  // ㄋㄧ ㄏㄠ：前字未打聲調，但已因下一音節成字。
+    const std::wstring first = t.preedit.text.substr(0, 1);
+    CHECK(first.size() == 1 && IsCJK(first.front()));
+    CHECK(t.preedit.text == first + L"ㄏㄠ");
+    t.Key(key::kBackSpace);
+    CHECK(t.Input() == "suc" && t.preedit.text == first + L"ㄏ");
+    t.Key(key::kBackSpace);
+    CHECK(t.Input() == "su" && t.preedit.text.size() == 1 && IsCJK(t.preedit.text.front()));
+    CHECK(t.preedit.cursor == 1);
+    t.Respond();  // 重畫組字區也必須保留成字狀態。
+    CHECK(t.preedit.text.size() == 1 && IsCJK(t.preedit.text.front()));
+    t.Type("cl3");
+    CHECK(t.preedit.text.size() == 2 && IsCJK(t.preedit.text.back()));
+    t.Key(key::kBackSpace);
+    CHECK(t.Input() == "su" && t.preedit.text.size() == 1 && IsCJK(t.preedit.text.front()));
+    t.Key(key::kBackSpace);
+    CHECK(t.Input().empty() && !t.Composing());
+    t.Type("su");  // 全新輸入仍是尚未完成的注音。
+    CHECK(t.preedit.text == L"ㄋㄧ");
+    t.Key(key::kEscape);
+    CHECK(!t.Composing());
+    t.Type("sucl");
+    t.Key(key::kBackSpace);
+    t.Key(key::kBackSpace);
+    const std::wstring shown = t.preedit.text;
+    t.Key(key::kReturn);
+    CHECK(!t.Composing() && t.commits.size() == 1 && t.commits.back() == shown);
+    t.commits.clear();
+  }
+  api->set_option(t.Rime(), "soft_cursor", false);
+
   // 中英混打：組字中按 Shift 切英文，打的英文接在轉好的中文後面，再按 Shift
   // 回中文，Enter 一起送出
   {
@@ -457,6 +491,131 @@ int main(int argc, char** argv) {
   }
   api->set_option(t.Rime(), "soft_cursor", false);
 
+  for (bool soft_cursor : {false, true}) {
+    api->set_option(t.Rime(), "soft_cursor", soft_cursor);
+    // 在未完成注音前的顯示游標按 Delete，必須刪右邊的符號，不能刪句尾。
+    t.Type("5j4up");
+    t.Key(key::kHome);
+    t.Key(key::kRight);
+    CHECK(t.preedit.cursor == 1);
+    t.Key(key::kDelete);
+    CHECK(t.Input() == "5j4p");
+    CHECK(t.preedit.text.substr(1) == L"ㄣ" && t.preedit.cursor == 1);
+    t.Key(key::kDelete);
+    CHECK(t.Input() == "5j4" && t.preedit.cursor == 1);
+    t.Key(key::kDelete);
+    CHECK(t.Input() == "5j4");
+    t.Type("up ");
+    CHECK(t.Input() == "5j4up " && t.preedit.text.size() == 2);
+    CHECK(t.commits.empty());
+    t.Key(key::kEscape);
+    t.Key(key::kEscape);
+    // 未完成注音左方的字刪除後，不能把正在拼的音節變成中文字。
+    t.Type("5j4up");
+    t.Key(key::kHome);
+    t.Key(key::kRight);
+    t.Key(key::kBackSpace);
+    CHECK(t.Input() == "up");
+    CHECK(t.preedit.text == L"ㄧㄣ");
+    CHECK(t.preedit.cursor == 0);
+    t.Key(key::kBackSpace);
+    CHECK(t.Input() == "up" && t.preedit.cursor == 0);
+    t.Key(key::kDelete);
+    CHECK(t.Input() == "p" && t.preedit.text == L"ㄣ" && t.preedit.cursor == 0);
+    t.Key(key::kDelete);
+    CHECK(!t.Composing() && t.Input().empty());
+    t.Key(key::kEscape);
+    t.Key(key::kEscape);
+  }
+  api->set_option(t.Rime(), "soft_cursor", false);
+
+  // 方向鍵移到顯示游標後開始打字：應在游標處插入，未完成注音與後綴都保持可見。
+  for (const char* schema : {"bopomofo", "bopomofo_express"}) {
+    CHECK(api->select_schema(t.Rime(), schema));
+    for (bool soft_cursor : {false, true}) {
+      api->set_option(t.Rime(), "soft_cursor", soft_cursor);
+      t.Type("5j4up 2j/4");
+      const std::wstring shown = t.preedit.text;
+      t.Key(key::kLeft);
+      t.Key(key::kLeft);
+      CHECK(t.preedit.cursor == 1 && ss.focus == 1);
+      t.Type("s");
+      CHECK(t.Input() == "5j4sup 2j/4");
+      CHECK(IsCJK(t.preedit.text.front()) && t.preedit.text.substr(1) == L"ㄋ" + shown.substr(1));
+      CHECK(t.preedit.cursor == 2);
+      t.Type("u");
+      CHECK(t.Input() == "5j4suup 2j/4");
+      CHECK(IsCJK(t.preedit.text.front()) && t.preedit.text.substr(1) == L"ㄋㄧ" + shown.substr(1));
+      CHECK(t.preedit.cursor == 3);
+      t.Type("3");
+      CHECK(t.Input() == "5j4su3up 2j/4");
+      CHECK(t.preedit.text.size() == 4 && t.preedit.cursor == 2);
+      CHECK(ss.preview_input == t.Input() && ss.preview_lens.size() == 4);
+      CHECK(t.commits.empty());
+      t.Key(key::kLeft);
+      CHECK(ss.focus == 1 && t.preedit.cursor == 1);
+      t.Key(key::kRight);
+      CHECK(ss.focus == 2 && t.preedit.cursor == 2);
+      // 再插一次、刪光這次未完成的注音，後面的字仍保持完整。
+      const std::wstring before_pending = t.preedit.text;
+      t.Type("su");
+      CHECK(t.Input() == "5j4su3suup 2j/4");
+      CHECK(t.preedit.text.substr(2) == L"ㄋㄧ" + before_pending.substr(2));
+      t.Key(key::kBackSpace);
+      t.Key(key::kBackSpace);
+      CHECK(t.Input() == "5j4su3up 2j/4");
+      CHECK(t.preedit.text.size() == 4 && t.preedit.cursor == 2);
+      t.Key(key::kRight);
+      CHECK(ss.focus == 3 && t.preedit.cursor == 3);
+      t.Key(key::kEnd);
+      const std::wstring completed = t.preedit.text;
+      t.Key(key::kReturn);
+      CHECK(t.commits.size() == 1 && t.commits.back() == completed);
+      t.commits.clear();
+      api->clear_composition(t.Rime());
+      t.Respond();
+      for (int cursor : {0, 2}) {
+        t.Type("5j4up 2j/4");
+        const std::string original = t.Input();
+        const std::wstring original_text = t.preedit.text;
+        for (int i = cursor; i < 3; ++i)
+          t.Key(key::kLeft);
+        CHECK(t.preedit.cursor == cursor);
+        const size_t start = cursor == 0 ? 0 : 6;
+        const std::string inserted = cursor == 0 ? "1j4" : "su3";
+        const std::wstring pending = cursor == 0 ? L"ㄅ" : L"ㄋ";
+        t.Type(inserted.substr(0, 1));
+        CHECK(t.Input() == original.substr(0, start) + inserted.substr(0, 1) + original.substr(start));
+        CHECK(t.preedit.text.substr(cursor) == pending + original_text.substr(cursor));
+        t.Type(inserted.substr(1));
+        CHECK(t.Input() == original.substr(0, start) + inserted + original.substr(start));
+        CHECK(t.preedit.text.size() == 4 && t.preedit.cursor == cursor + 1);
+        t.Key(key::kLeft);
+        CHECK(t.preedit.cursor == cursor && ss.focus == cursor);
+        t.Key(key::kDelete);
+        CHECK(t.Input() == original && t.preedit.cursor == cursor);
+        t.Key(key::kEnd);
+        for (int i = 0; i < 5 && t.Composing(); ++i)
+          t.Key(key::kEscape);
+        CHECK(!t.Composing() && t.commits.empty());
+      }
+      // 省略聲調的前字：句中插入再刪光注音，也不能把前字退回注音。
+      t.Type("sucl3");
+      t.Key(key::kLeft);
+      t.Type("s");
+      CHECK(t.Input() == "suscl3" && t.preedit.text.substr(1, 1) == L"ㄋ");
+      t.Key(key::kBackSpace);
+      CHECK(t.Input() == "sucl3" && t.preedit.text.size() == 2 && IsCJK(t.preedit.text.front()));
+      CHECK(t.preedit.cursor == 1);
+      t.Key(key::kEnd);
+      for (int i = 0; i < 5 && t.Composing(); ++i)
+        t.Key(key::kEscape);
+      CHECK(!t.Composing());
+    }
+  }
+  CHECK(api->select_schema(t.Rime(), "bopomofo"));
+  api->set_option(t.Rime(), "soft_cursor", false);
+
   // 逐字選字後沒換字就回到句尾：恢復原本的整句與候選清單（框選時選好的前段要放開）
   {
     // Rime 目前這段的前 10 個候選（不管選單有沒有展開）
@@ -585,9 +744,18 @@ int main(int argc, char** argv) {
         CHECK(ss.manual_choices.size() == 2);
         CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(3, 1) == later);
         // 在鎖定字前插入音節，鎖定回到第四字的位置。
-        const size_t insert_caret = api->get_caret_pos(t.Rime());
+        size_t insert_caret = 0;
+        for (int i = 0; i < ss.focus; ++i)
+          insert_caret += ss.preview_lens[i];
         const std::string before_insert = t.Input();
-        t.Type("wu0 ");
+        t.Type("w");
+        CHECK(t.Input() == before_insert.substr(0, insert_caret) + "w" + before_insert.substr(insert_caret));
+        CHECK(t.preedit.text.substr(1, 1) == L"ㄊ");
+        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
+        t.Type("u");
+        CHECK(t.preedit.text.substr(1, 2) == L"ㄊㄧ");
+        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(5, 1) == later);
+        t.Type("0 ");
         CHECK(t.Input() == before_insert.substr(0, insert_caret) + "wu0 " + before_insert.substr(insert_caret));
         CHECK(ss.manual_choices.size() == 2);
         CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
@@ -712,6 +880,11 @@ int main(int argc, char** argv) {
     }
     t.commits.clear();
     t.Type("rup wu0 wu0 fu4cp3cl3");
+    // 前面的手動選字測試與重跑會改變 Rime 詞頻；驗證的是超時後轉換當前初稿，
+    // 不要求已學習的詞庫仍把「氣」排在「器」前面。
+    ScriptConverter fallback;
+    CHECK(fallback.Load(fs::path(shared) / "opencc" / "tw2sp.json"));
+    const std::wstring expected_fallback = fallback.Convert(t.preedit.text);
     const auto t0 = std::chrono::steady_clock::now();
     {
       std::lock_guard<std::mutex> lock(frontend.mutex);
@@ -720,7 +893,7 @@ int main(int argc, char** argv) {
     t.Respond();
     const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     std::printf("  simplified fallback after %lld ms -> %s\n", (long long)waited, U8(t.commits.empty() ? L"" : t.commits.back()).c_str());
-    CHECK(t.commits.size() == 1 && t.commits.back() == L"今天天气很好");
+    CHECK(t.commits.size() == 1 && t.commits.back() == expected_fallback);
     CHECK(waited < 1200);
     {
       std::lock_guard<std::mutex> lock(frontend.mutex);

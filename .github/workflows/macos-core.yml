@@ -8,6 +8,7 @@ on:
     paths:
       - 'core/**'
       - 'mac/**'
+      - 'resource/lexicons/**'
       - 'include/**'
       - 'test/**'
       - 'web/**'
@@ -17,6 +18,7 @@ on:
     paths:
       - 'core/**'
       - 'mac/**'
+      - 'resource/lexicons/**'
       - 'include/**'
       - 'test/**'
       - 'web/**'
@@ -67,15 +69,27 @@ jobs:
           ../mac/get-llama-runtime.sh
 
       - name: Build Squirrel.app
-        run: make -C squirrel release
+        run: bash mac/build-squirrel.sh release
+
+      - name: Test bundled vocabulary with macOS librime
+        run: |
+          cmake -S mac -B squirrel/build/wisdom -DRIME_SHARED="$PWD/squirrel/build/Build/Products/Release/Squirrel.app/Contents/SharedSupport"
+          cmake --build squirrel/build/wisdom --target TestTaiwanLexicon
+          ctest --test-dir squirrel/build/wisdom --output-on-failure -R 'TestTaiwanLexicon|TestSquirrelPackaging'
 
       - name: Check the app
         run: |
           app=squirrel/build/Build/Products/Release/Squirrel.app
           for f in Contents/MacOS/Squirrel Contents/MacOS/WisdomLLMHost \
                    Contents/Resources/web/settings/index.html \
+                   Contents/SharedSupport/wisdom_taiwan.dict.yaml \
+                   Contents/SharedSupport/wisdom_taiwan.NOTICE.txt \
+                   Contents/SharedSupport/wisdom_taiwan.manifest.json \
                    Contents/Frameworks/librime.1.dylib Contents/Frameworks/libllama.0.dylib; do
             test -e "$app/$f" || { echo "missing $f"; exit 1; }
+          done
+          for f in wisdom_taiwan.dict.yaml wisdom_taiwan.NOTICE.txt wisdom_taiwan.manifest.json; do
+            cmp "resource/lexicons/taiwan/$f" "$app/Contents/SharedSupport/$f"
           done
           nm "$app/Contents/MacOS/Squirrel" | grep -q WisdomBridge || { echo "WisdomBridge not linked"; exit 1; }
           otool -l "$app/Contents/MacOS/WisdomLLMHost" | grep -q "@executable_path/../Frameworks" ||

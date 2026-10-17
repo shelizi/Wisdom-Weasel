@@ -32,4 +32,5 @@ powershell -NoProfile -Command "$t=[IO.File]::ReadAllText('%~dp0weasel.props.tem
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0gen_buildinfo.ps1"
 msbuild.exe "%~dp0weasel.sln" /t:WeaselServer;WeaselDeployer;WeaselTSF;WeaselIME /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=%PLATFORM_TOOLSET% /v:minimal || exit /b 1
 msbuild.exe "%~dp0weasel.sln" /t:WeaselTSF;WeaselIME /m /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=%PLATFORM_TOOLSET% /v:minimal || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\stage_taiwan_lexicon.ps1" || exit /b 1
 exit /b 0

@@ -163,6 +163,8 @@ if(RIME_LIB)
   target_link_libraries(TestLLMHttp PRIVATE CURL::libcurl ${RIME_LIB})
   find_package(Python3 COMPONENTS Interpreter)
   if(Python3_FOUND)
+    add_test(NAME TestSquirrelPackaging
+             COMMAND ${Python3_EXECUTABLE} ${ROOT}/test/TestTaiwanLexicon/test_mac_packaging.py)
     add_test(NAME TestLLMHttp
              COMMAND ${ROOT}/test/TestLLMHttp/run_posix.sh ${Python3_EXECUTABLE} $<TARGET_FILE:TestLLMHttp>)
   endif()
@@ -172,5 +174,13 @@ if(RIME_LIB)
   target_link_libraries(TestController PRIVATE wisdom_core)
   if(RIME_SHARED)
     add_test(NAME TestController COMMAND TestController ${RIME_SHARED} ${CMAKE_BINARY_DIR}/rime-user)
+    add_executable(TestTaiwanLexicon ${ROOT}/test/TestTaiwanLexicon/TestTaiwanLexicon.cpp)
+    target_include_directories(TestTaiwanLexicon PRIVATE ${COMMON_INCLUDES})
+    target_link_libraries(TestTaiwanLexicon PRIVATE ${RIME_LIB})
+    if(Python3_FOUND)
+      add_test(NAME TestTaiwanLexicon
+               COMMAND ${Python3_EXECUTABLE} ${ROOT}/test/TestTaiwanLexicon/run_native.py
+                       $<TARGET_FILE:TestTaiwanLexicon> ${RIME_SHARED})
+    endif()
   endif()
 endif()

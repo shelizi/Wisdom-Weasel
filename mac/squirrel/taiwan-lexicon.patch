@@ -1,0 +1,16 @@
+diff --git a/sources/SquirrelApplicationDelegate.swift b/sources/SquirrelApplicationDelegate.swift
+index 40e3d56..b5eb962 100644
+--- a/sources/SquirrelApplicationDelegate.swift
++++ b/sources/SquirrelApplicationDelegate.swift
+@@ -195,7 +195,10 @@ final class SquirrelApplicationDelegate: NSObject, NSApplicationDelegate, SPUSta
+   func startRime(fullCheck: Bool) -> Bool {
+     print("Initializing la rime...")
+     rimeAPI.initialize(nil)
+-    if rimeAPI.start_maintenance(fullCheck) {
++    // Prepare before maintenance starts, including first launch and menu/settings redeploy.
++    let vocabularyChanged = WisdomBridge.shared.prepareTaiwanLexicon(
++      withUserDirectory: SquirrelApp.userDir.path(), sharedDirectory: Bundle.main.sharedSupportPath!)
++    if rimeAPI.start_maintenance(fullCheck || vocabularyChanged) {
+       _ = rimeAPI.deploy_config_file("squirrel.yaml", "config_version")
+       return true
+     }

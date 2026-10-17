@@ -302,8 +302,12 @@ program_files:
   File "WeaselSetup.exe"
   ; shared data files
   SetOutPath $INSTDIR\data
-  File "data\*.yaml"
-  File /nonfatal "data\*.txt"
+  File /x wisdom_taiwan.dict.yaml "data\*.yaml"
+  File /nonfatal /x wisdom_taiwan.NOTICE.txt "data\*.txt"
+  ; Required resources: never ship the lexicon without its attribution/provenance.
+  File "data\wisdom_taiwan.dict.yaml"
+  File "data\wisdom_taiwan.NOTICE.txt"
+  File "data\wisdom_taiwan.manifest.json"
   File /nonfatal "data\*.gram"
   ; opencc data files
   SetOutPath $INSTDIR\data\opencc

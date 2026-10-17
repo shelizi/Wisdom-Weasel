@@ -1092,6 +1092,29 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     }
   }
 
+  // 逐字選字的內部游標在選中字末端，但畫面游標在它前面。
+  // 開始輸入新音節時先退出選字，依畫面位置插入，不能沿用選字用的游標。
+  if (ss.focus >= 0 && !release && !(mask & (other_mod_mask | mod::kShift)) &&
+      keycode > 0x20 && keycode < 0x7f) {
+    char schema[256] = {0};
+    api_->get_current_schema(session_id, schema, sizeof(schema));
+    const auto& sp = Speller(schema);
+    const char* raw = api_->get_input(session_id);
+    if (IsZhuyinSchema(schema) && raw && ss.preview_input == raw &&
+        ss.focus < (int)ss.preview_lens.size() &&
+        sp.alphabet.find((char)keycode) != std::string::npos &&
+        sp.finals.find((char)keycode) == std::string::npos && keycode != sp.delimiter) {
+      size_t caret = 0;
+      for (int i = 0; i < ss.focus; ++i)
+        caret += ss.preview_lens[i];
+      const std::string input = raw;
+      api_->clear_composition(session_id);
+      api_->set_input(session_id, input.c_str());
+      api_->set_caret_pos(session_id, caret);
+      ss.focus = -1;
+    }
+  }
+
   // 注音組字中按 Backspace：游標前的音節已打聲調（成字）就整個字刪掉，還在拼的才一次刪一鍵
   const bool choice_focused = ss.focus >= 0;
   int choice_start = ss.focus;
@@ -1580,6 +1603,25 @@ bool Controller::RestoreManualChoices(SessionState& ss, bool keep_focus) {
       keep_focus && ss.focus_input == input && ss.focus_caret == caret
           ? ss.focus
           : -1;
+  // 重播後段鎖定字時會暫時把游標移到句尾，不能因此把句中正在拼的音節當成已成字。
+  // 先記下實際游標處的預覽，最後只還原其中未完成的音節。
+  std::vector<std::wstring> editing_units;
+  std::vector<size_t> editing_lens;
+  RIME_STRUCT(RimeContext, ctx);
+  if (keep_focus && focus < 0 && caret > 0 && caret < input.size() &&
+      api_->get_context(ss.session_id, &ctx)) {
+    std::string preedit = ctx.composition.preedit ? ctx.composition.preedit : "";
+    if (ctx.composition.cursor_pos >= 0 && (size_t)ctx.composition.cursor_pos < preedit.size())
+      preedit.resize(ctx.composition.cursor_pos);
+    BuildZhuyinPreview(ctx.commit_text_preview ? ctx.commit_text_preview : "", preedit,
+                       input, caret, "", 0, Speller(schema),
+                       ss.preview_input, ss.preview_units, ss.preview_lens);
+    if (ss.preview_input == input) {
+      editing_units = ss.preview_units;
+      editing_lens = ss.preview_lens;
+    }
+    api_->free_context(&ctx);
+  }
   auto failed = [&] {
     api_->clear_composition(ss.session_id);
     api_->set_input(ss.session_id, input.c_str());
@@ -1589,7 +1631,6 @@ bool Controller::RestoreManualChoices(SessionState& ss, bool keep_focus) {
   ss.focus = -1;
   api_->clear_composition(ss.session_id);
   api_->set_input(ss.session_id, input.c_str());
-  RIME_STRUCT(RimeContext, ctx);
   if (!api_->get_context(ss.session_id, &ctx))
     return failed();
   BuildZhuyinPreview(ctx.commit_text_preview ? ctx.commit_text_preview : "",
@@ -1658,6 +1699,25 @@ bool Controller::RestoreManualChoices(SessionState& ss, bool keep_focus) {
   }
   if (focus >= 0 && focus < (int)ss.preview_lens.size())
     return FocusSyllable(ss, focus);
+  size_t editing_end = 0;
+  bool unfinished = false;
+  for (size_t i = 0; i < editing_units.size() && i < editing_lens.size(); ++i) {
+    editing_end += editing_lens[i];
+    if (editing_end == caret && !editing_units[i].empty() &&
+        zhuyin_preview::IsBopomofo(editing_units[i].front()))
+      unfinished = true;
+  }
+  if (unfinished) {
+    ss.preview_units = std::move(editing_units);
+    ss.preview_lens = std::move(editing_lens);
+  } else if (ss.preview_lens == editing_lens && ss.preview_units.size() == editing_units.size()) {
+    for (size_t i = 0; i < editing_units.size(); ++i) {
+      if (!editing_units[i].empty() &&
+          (zhuyin_preview::IsBopomofo(editing_units[i].front()) ||
+           zhuyin_preview::IsTone(editing_units[i].front())))
+        ss.preview_units[i] = editing_units[i];
+    }
+  }
   // 句中正在拼音節時，游標後的鎖定先留在完整預覽快取。
   // 引擎只確認游標前的鎖，避免把正在拼的音節提早選掉，讓空白仍能輸入一聲。
   if (keep_focus && caret < input.size() && !replay(caret))
@@ -1680,8 +1740,11 @@ bool Controller::HandleZhuyinDelete(SessionState& ss, int keycode, int mask) {
     return false;
   RIME_STRUCT(RimeStatus, status);
   bool zhuyin = false;
+  std::string schema;
   if (api_->get_status(session_id, &status)) {
     zhuyin = status.is_composing && !status.is_ascii_mode && IsZhuyinSchema(status.schema_id);
+    if (status.schema_id)
+      schema = status.schema_id;
     api_->free_status(&status);
   }
   if (!zhuyin)
@@ -1705,17 +1768,30 @@ bool Controller::HandleZhuyinDelete(SessionState& ss, int keycode, int mask) {
   }
   if (total != input.size() || index < 0 || index >= (int)ss.preview_lens.size())
     return false;
-  // 尚未拼完的注音仍逐鍵刪除。
-  const auto& unit = ss.preview_units[index];
-  if (unit.empty() || zhuyin_preview::IsBopomofo(unit.front()) || zhuyin_preview::IsTone(unit.front()))
-    return false;
   for (int i = 0; i < index; ++i)
     start += ss.preview_lens[i];
-  EditManualChoices(ss, start, ss.preview_lens[index], 0);
-  input.erase(start, ss.preview_lens[index]);
+  // 尚未拼完的注音逐符號刪除。框選時內部游標在音節末端，
+  // Delete 要從顯示游標所在的音節開頭刪，不能交給 Rime 刪句尾。
+  const auto& unit = ss.preview_units[index];
+  if (unit.empty())
+    return false;
+  const bool pending = zhuyin_preview::IsBopomofo(unit.front()) ||
+                       zhuyin_preview::IsTone(unit.front());
+  if (pending && (ss.focus < 0 || keycode != key::kDelete))
+    return false;
+  const size_t erased = pending ? 1 : ss.preview_lens[index];
+  EditManualChoices(ss, start, erased, 0);
+  input.erase(start, erased);
   ss.manual_input = input;
-  ss.preview_units.erase(ss.preview_units.begin() + index);
-  ss.preview_lens.erase(ss.preview_lens.begin() + index);
+  if (pending && ss.preview_lens[index] > erased) {
+    ss.preview_lens[index] -= erased;
+    ss.preview_units[index] = zhuyin_preview::Format(
+        Speller(schema.c_str()),
+        input.substr(start, ss.preview_lens[index]));
+  } else {
+    ss.preview_units.erase(ss.preview_units.begin() + index);
+    ss.preview_lens.erase(ss.preview_lens.begin() + index);
+  }
   ss.preview_input = input;
   ss.focus = -1;
   api_->clear_composition(session_id);
@@ -1765,14 +1841,33 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   if (ss.preview_input != input || ss.preview_lens.empty())
     return false;
   const int count = (int)ss.preview_lens.size();
+  int cursor = ss.focus;
+  if (cursor < 0) {
+    // 句中輸入完成後沒有框選，內部游標卻仍在句中，不能一律當成句尾。
+    const size_t caret = api_->get_caret_pos(session_id);
+    size_t start = 0;
+    cursor = count;
+    for (int i = 0; i < count; ++i) {
+      if (caret == start) {
+        cursor = i;
+        break;
+      }
+      const size_t end = start + ss.preview_lens[i];
+      if (caret < end) {
+        cursor = keycode == key::kLeft ? i + 1 : i;
+        break;
+      }
+      start = end;
+    }
+  }
   int target;
   if (keycode == key::kLeft) {
-    target = ss.focus < 0 ? count - 1 : (std::max)(0, ss.focus - 1);
+    target = (std::max)(0, cursor - 1);
   } else if (keycode == key::kHome) {
     target = 0;
-  } else if (ss.focus < 0) {
+  } else if (cursor >= count) {
     return false;  // 本來就在句尾
-  } else if (keycode == key::kEnd || ss.focus + 1 >= count) {
+  } else if (keycode == key::kEnd || cursor + 1 >= count) {
     if (!ss.manual_choices.empty()) {
       RestoreManualChoices(ss, false);
       return true;
@@ -1791,13 +1886,13 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
         sentence = utf8::ToWide(ctx.commit_text_preview);
       api_->free_context(&ctx);
     }
-    if (sentence != shown)
+    if (sentence != shown && focus >= 0)
       FocusSyllable(ss, focus);
     api_->set_caret_pos(session_id, input.size());
     ss.focus = -1;
     return true;
   } else {
-    target = ss.focus + 1;
+    target = cursor + 1;
   }
   if (!FocusSyllable(ss, target))
     return false;  // 對不上（例如省略聲調的連打），交回 Rime 原本的游標移動
@@ -2214,11 +2309,27 @@ bool Controller::PreviewPreedit(uint64_t id, const RimeContext& ctx, bool ascii_
   if (ss.focus >= 0 &&
       (ctx.menu.num_candidates == 0 || ss.focus_input != (input ? input : "") || ss.focus_caret != caret))
     ss.focus = -1;
+  std::string preedit = ctx.composition.preedit ? ctx.composition.preedit : "";
+  // 句中正在輸入：只有游標前的 preedit 能判斷最後一個音節是否仍在拼。
+  // 游標後方是原本的整字，不能把它混進待輸入注音一起解析。
+  if (ss.focus < 0 && caret > 0 && input && caret < std::strlen(input) &&
+      ctx.composition.cursor_pos >= 0 && (size_t)ctx.composition.cursor_pos < preedit.size())
+    preedit.resize(ctx.composition.cursor_pos);
   ZhuyinPreview pv = BuildZhuyinPreview(ctx.commit_text_preview,
-                                        ctx.composition.preedit ? ctx.composition.preedit : "",
+                                        preedit,
                                         input ? input : "", caret, cand ? cand : "", hl,
                                         Speller(schema_id), ss.preview_input,
                                         ss.preview_units, ss.preview_lens, ss.focus >= 0);
+  // 未完成音節的候選是中文字，與畫面注音不同，不能用候選文字定位游標。
+  if (ss.focus >= 0 && ss.preview_input == (input ? input : "") &&
+      ss.focus < (int)ss.preview_units.size()) {
+    const auto& unit = ss.preview_units[ss.focus];
+    if (!unit.empty() && (zhuyin_preview::IsBopomofo(unit.front()) ||
+                          zhuyin_preview::IsTone(unit.front()))) {
+      pv.cursor = pv.sel_start = (int)zhuyin_preview::Join(ss.preview_units, 0, ss.focus).size();
+      pv.sel_end = pv.sel_start + (int)unit.size();
+    }
+  }
   // without a chosen word the whole preedit is the selection
   if (pv.sel_start == pv.sel_end) {
     pv.sel_start = 0;

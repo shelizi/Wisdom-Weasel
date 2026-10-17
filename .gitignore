@@ -27,6 +27,8 @@ compile_commands.json
 /output/data/essay.txt
 /output/data/opencc/
 /output/data/*.yaml
+/output/data/wisdom_taiwan.NOTICE.txt
+/output/data/wisdom_taiwan.manifest.json
 /output/archives
 /include/glog
 /ipch

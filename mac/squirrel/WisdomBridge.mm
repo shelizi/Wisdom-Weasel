@@ -13,6 +13,7 @@
 #include "../../core/ime/controller.h"
 #include "../../core/ime/prediction_engine.h"
 #include "../../core/llm/ContextHistory.h"
+#include "../../core/settings/taiwan_lexicon.h"
 #include "../settings/WisdomSettingsWindow.h"
 
 namespace {
@@ -113,6 +114,17 @@ class MacFrontend : public ime::Frontend {
     bridge = [[WisdomBridge alloc] init];
   });
   return bridge;
+}
+
+- (BOOL)prepareTaiwanLexiconWithUserDirectory:(NSString*)userDir sharedDirectory:(NSString*)sharedDir {
+  std::string error;
+  bool changed = false;
+  if (!settings::taiwan_lexicon::Prepare(rime_get_api(), U8(sharedDir), U8(userDir),
+                                       &error, &changed)) {
+    NSLog(@"Bundled Taiwan vocabulary: %s", error.c_str());
+    return NO;
+  }
+  return changed;
 }
 
 - (void)startWithUserDirectory:(NSString*)userDir sharedDirectory:(NSString*)sharedDir {

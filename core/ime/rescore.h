@@ -18,6 +18,7 @@ struct RescoreOptions {
 
 // 找出更通順的同音字整句：先算目前整句每個字的機率，只在最不通順的幾個位置試同音字；
 // 比原句好超過門檻（log 機率）才推薦。units 每個音節一個字，homophones 是各位置的同音字。
+// 單點候選透過 ScoreBatch 一次評分；預設最多 1 次 baseline、1 次批次與 3 次組合驗證。
 // 沒有更好的就回傳空字串；還在拼的注音與之後的內容照原樣接在推薦後面。
 // gain：推薦比原句好多少（整句 log 機率差，給信心校準用）
 std::wstring RescoreSentence(LLMProvider* scorer,

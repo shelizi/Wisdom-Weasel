@@ -57,8 +57,18 @@ cd squirrel
 git submodule update --init librime   # 要在 action-install.sh 之前：它會把預先建好的 librime 放進 librime/
 bash action-install.sh                # 下載預先建好的 librime 與 Sparkle
 ../mac/get-llama-runtime.sh           # 可省略：有 output/llama-mac 時一起打包本機 LLM 推理程式
-make release                          # build/Build/Products/Release/Squirrel.app
+bash ../mac/build-squirrel.sh release # build/Build/Products/Release/Squirrel.app
 ```
+
+建置請經過 `mac/build-squirrel.sh`（也接受 `debug`、`package` 等 Makefile 目標）。它會先驗證並加入
+台灣詞庫、授權 NOTICE 與來源 manifest，再套用父專案管理的部署補丁；重跑不會重複套用。
+這些資源在 Xcode 簽章前放進 SharedSupport。建置準備使用 Python 3 標準函式庫，安裝後不需要 Python 或連網下載詞庫。
+
+啟動及重新部署時會自動啟用詞庫；若內容有更新會強制檢查部署，沒有變更則沿用原本的啟動檢查。
+要停用，在 `~/Library/Rime/wisdom_taiwan.user.yaml` 設定 `enabled: false` 後重新部署，升級會保留此選擇。
+個人詞庫、選字次數與其他設定會保留，修改前會備份。準備失敗會寫入紀錄並繼續使用原本方案。
+
+本次詞庫整合的 macOS 編譯、打包內容與真實 librime 查詞驗證已加入 CI；是否通過以實際工作結果為準。
 
 安裝（輸入法要放在 `/Library/Input Methods`）：
 
@@ -87,6 +97,17 @@ WisdomBridge.shared.reloadConfig()
 
 // rimeAPI.finalize 之前
 WisdomBridge.shared.stop()
+```
+
+在 `startRime(fullCheck:)` 的 `initialize` 之後、`start_maintenance` 之前加上
+（`mac/prepare-squirrel.py` 會替目前固定版本的子模組套用）：
+
+```swift
+let vocabularyChanged = WisdomBridge.shared.prepareTaiwanLexicon(
+  withUserDirectory: SquirrelApp.userDir.path(), sharedDirectory: Bundle.main.sharedSupportPath!)
+if rimeAPI.start_maintenance(fullCheck || vocabularyChanged) {
+  // 原本的部署流程
+}
 ```
 
 選單加一項「網頁版設定」呼叫 `WisdomBridge.shared.showSettings()`。
@@ -140,6 +161,7 @@ keycode 與 modifiers 就是原本傳給 `process_key` 的值（Rime 的 keysym 
 **6. 打包**（`squirrel/` 的 Makefile 與 Xcode 建置步驟會做）
 
 - `web/settings` 複製到 `Squirrel.app/Contents/Resources/web/settings`
+- `resource/lexicons/taiwan/wisdom_taiwan.{dict.yaml,NOTICE.txt,manifest.json}` 放到 `Contents/SharedSupport`
 - `WisdomLLMHost` 放到 `Squirrel.app/Contents/MacOS`（與鼠鬚管同一資料夾，輸入法從那裡啟動它）；
   llama.cpp 的 dylib 放 `Contents/Frameworks`，推理程式的 rpath 是 `@executable_path/../Frameworks`
 - 設定寫在 `squirrel.custom.yaml` 的 `llm/*`（網頁版設定會寫）

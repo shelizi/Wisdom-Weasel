@@ -29,5 +29,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0gen_buildinfo.ps1"
 msbuild.exe "%~dp0weasel.sln" /t:WeaselServer;WeaselDeployer;WisdomLLMHost /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=%PLATFORM_TOOLSET% /v:minimal /fl /flp:logfile=msbuild_x64.log;verbosity=normal
 if errorlevel 1 exit /b 1
 rem web settings pages
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\stage_taiwan_lexicon.ps1" || exit /b 1
 xcopy /E /I /Y /Q "%~dp0web" "%~dp0output\web" >nul
 exit /b %errorlevel%

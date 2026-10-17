@@ -78,6 +78,8 @@ class LLMProvider {
     totals->assign(texts.size(), std::numeric_limits<double>::quiet_NaN());
     bool any = false;
     for (size_t i = 0; i < texts.size(); ++i) {
+      if (LLMCancelled())
+        break;
       double total = 0;
       if (ScoreText(context, texts[i], &total, nullptr)) {
         (*totals)[i] = total;

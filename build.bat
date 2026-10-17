@@ -137,7 +137,10 @@ if %build_weasel% == 1 (
     set build_data=1
   )
 )
-if %build_data% == 1 call :build_data
+if %build_data% == 1 (
+  call :build_data
+  if errorlevel 1 exit /b 1
+)
 
 if %build_weasel% == 0 goto end
 
@@ -196,6 +199,8 @@ if %build_arm64% == 1 (
 )
 
 rem web settings pages (the installer takes them from output\web)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%WEASEL_ROOT%\tools\stage_taiwan_lexicon.ps1"
+if errorlevel 1 goto error
 xcopy /E /I /Y /Q web output\web >nul
 if errorlevel 1 goto error
 
@@ -265,6 +270,8 @@ rem ---------------------------------------------------------------------------
   set rime_dir=output/data
   set WSLENV=plum_dir:rime_dir
   bash plum/rime-install %WEASEL_BUNDLED_RECIPES%
+  if errorlevel 1 goto error
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%WEASEL_ROOT%\tools\stage_taiwan_lexicon.ps1"
   if errorlevel 1 goto error
   exit /b
 
