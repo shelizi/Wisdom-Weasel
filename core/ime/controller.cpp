@@ -1242,10 +1242,11 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   // 簡體在地化：先在背景改寫目前的整句（停頓一下才開始），送出時就不必等
   if (handled && !release && simplified_ && localize_on_)
     RequestLocalize(ComposingSentence(session_id), false);
-  // 打字中補全：正在組字時，停頓 300ms 後以 Rime 目前的轉換結果續寫；組字結束則清除補全候選
+  // 打字中補全：正在組字時，停頓 300ms 後以 Rime 目前的轉換結果續寫；組字結束則清除補全候選。
+  // 開選字紀錄時也要排：查整句候選記下來（只記不評）
   const bool rescore = ScoringWanted();
   if (handled && !release && (!deleted_syllable || ss.focus < 0) &&
-      (PredictionAvailable() || TypoAvailable() || rescore)) {
+      (PredictionAvailable() || TypoAvailable() || rescore || choice_log_)) {
     bool composing = false;
     char schema_id[256] = {0};
     RIME_STRUCT(RimeStatus, status);
@@ -1255,7 +1256,8 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
         std::strncpy(schema_id, status.schema_id, sizeof(schema_id) - 1);
       api_->free_status(&status);
     }
-    if (composing && ((while_typing_ && PredictionAvailable()) || TypoAvailable() || rescore)) {
+    if (composing &&
+        ((while_typing_ && PredictionAvailable()) || TypoAvailable() || rescore || choice_log_)) {
       ScheduleCompletion(id, kCompletionDelayMs, schema_id);
     } else if (composing && prediction_mode_) {
       // 未開啟打字中補全：開始打字後，送出後留下的下一詞預測已不適用，直接清掉
@@ -2395,9 +2397,11 @@ void Controller::TriggerPrediction(uint64_t id,
   // 整句重排顯示時取代同音字推薦（兩者都標「推薦」）
   const bool rerank = scoring && (rerank_mode_ > 0 || show_probability_);
   const bool rescore = scoring && rescore_on_ && rerank_mode_ != 2;
+  // 選字紀錄：重排沒開也查整句候選（只記不評）；打字中（有 Rime 轉換結果）才有
+  const bool log_sentences = choice_log_ && !completion_prefix.empty();
   sentence_probs_.clear();  // 上一次的機率不再對應目前的輸入
   ++probs_gen_;
-  if (!llm_available && !personal_ && !correct && !rescore && !rerank) {
+  if (!llm_available && !personal_ && !correct && !rescore && !rerank && !log_sentences) {
     LOG(WARNING) << "[LLM] neither LLM provider nor personal lexicon is available";
     return;
   }
@@ -2416,7 +2420,8 @@ void Controller::TriggerPrediction(uint64_t id,
         std::remove(request.personal.begin(), request.personal.end(), completion_prefix),
         request.personal.end());
   }
-  if (!llm_available && request.personal.empty() && !correct && !rescore && !rerank)
+  if (!llm_available && request.personal.empty() && !correct && !rescore && !rerank &&
+      !log_sentences)
     return;
 
   // 前文：目前視窗最近的前文；中英混打中尚未送出的部分也是前文
@@ -2431,7 +2436,7 @@ void Controller::TriggerPrediction(uint64_t id,
   request.rerank = rerank && rerank_mode_ == 2;
   request.rerank_shadow = rerank && rerank_mode_ == 1;
   request.sentence_scores = rerank && show_probability_;
-  request.log_sentences = choice_log_;  // 選字紀錄：重排沒開也查整句候選（只記不評）
+  request.log_sentences = log_sentences;
   request.rerank_options.margin = rerank_margin_;
   request.rerank_options.max_sentences = rerank_sentences_;
   request.rerank_options.context_chars = rerank_context_;
@@ -2707,7 +2712,8 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms, const char* 
     return;
   const bool predict = PredictionAvailable();
   const bool rescore = ScoringWanted();
-  if (!predict && !TypoAvailable() && !rescore)
+  // 選字紀錄：其他功能都沒開時也要查整句候選（只記不評），訓練排序器要用
+  if (!predict && !TypoAvailable() && !rescore && !choice_log_)
     return;
   // 呼叫端沒查到方案時才自己查（按鍵路徑已經有 status 的直接傳進來）
   char schema_buf[256] = {0};
@@ -2742,17 +2748,24 @@ void Controller::ScheduleCompletion(uint64_t id, unsigned delay_ms, const char* 
   const bool complete = predict && (while_typing_ || delay_ms == 0);
   const std::wstring zhuyin =
       TypoAvailable() ? ComposingZhuyin(ss->session_id, schema_id) : std::wstring();
-  if (!complete && zhuyin.empty() && !rescore) {
+  const bool log_only = !complete && zhuyin.empty() && !rescore;
+  if (log_only && !choice_log_) {
     CancelCompletion();
     return;
   }
 
   // 舊候選（上一個鍵的補全或送出後的下一詞預測）已不適用，先清掉
-  prediction_->Cancel();
-  prediction_mode_ = true;
-  completion_active_ = true;
-  Log(L"[LLM] 输入中补全（" + std::to_wstring(delay_ms) + L"ms 后）: " + preview +
-      (zhuyin.empty() ? L"" : L"，注音: " + zhuyin));
+  if (log_only) {
+    // 只記整句候選：不會有候選要顯示，不進預測模式（不影響選字鍵與候選欄）
+    CancelCompletion();
+    prediction_->Cancel();
+  } else {
+    prediction_->Cancel();
+    prediction_mode_ = true;
+    completion_active_ = true;
+    Log(L"[LLM] 输入中补全（" + std::to_wstring(delay_ms) + L"ms 后）: " + preview +
+        (zhuyin.empty() ? L"" : L"，注音: " + zhuyin));
+  }
   TriggerPrediction(id, L"", delay_ms, preview, zhuyin, complete);
 }
 

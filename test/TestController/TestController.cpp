@@ -1129,6 +1129,30 @@ int main(int argc, char** argv) {
     refiner.Stop();
   }
 
+  // 選字紀錄：LLM、評分、校正都沒開時也要查到整句候選（訓練排序器要用），且不進預測模式。
+  // 只檢查送出前記下的整句：寫紀錄檔要用鑰匙圈的金鑰
+  {
+    RimeConfig config = {0};
+    CHECK(api->config_load_string(&config,
+                                  "llm:\n"
+                                  "  enabled: false\n"
+                                  "  personal: {enabled: false}\n"
+                                  "  choice: {log: true}\n"));
+    controller.LoadConfig(&config);
+    api->config_close(&config);
+    t.Type("rupwu0wu0fu4cp3cl3");  // ㄐㄧㄣ ㄊㄧㄢ ㄊㄧㄢ ㄑㄧˋ ㄏㄣˇ ㄏㄠˇ
+    CHECK(WaitFor([&] {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      return ss.shown_sentences.size() >= 2;
+    }));
+    CHECK(!controller.ShowingPredictions());
+    if (!ss.shown_sentences.empty())
+      std::printf("  choice log top-%zu: %s\n", ss.shown_sentences.size(),
+                  U8(ss.shown_sentences[0]).c_str());
+    t.Key(key::kEscape);
+    CHECK(!t.Composing());
+  }
+
   {
     std::lock_guard<std::mutex> lock(frontend.mutex);
     api->destroy_session(ss.session_id);
