@@ -1164,6 +1164,9 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     }
   }
 
+  if (!release && !deleted_syllable && (keycode == key::kReturn || keycode == key::kKPEnter))
+    EnsureLoggedSentences(ss);
+
   const uint64_t pk_us = base::MonotonicUs();
   Bool handled = deleted_syllable ? True : api_->process_key(session_id, keycode, mask);
   for (size_t i = 1; i < backspaces; ++i)
@@ -2523,39 +2526,45 @@ bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring
   const SessionState* ss = frontend_->Session(id);
   if (!ss)
     return false;
-  const char* raw = api_->get_input(ss->session_id);
+  // 選字紀錄要記超過評分上限的候選（離線調「評幾句」用）：開紀錄時多查一些
+  const size_t fetch =
+      choice_log_ ? (std::max)(rerank_sentences_, kChoiceLogShown) : rerank_sentences_;
+  // 佔著服務端的鎖掃整句候選：有新的按鍵就提早放棄
+  return FindSentences(*ss, fetch, [this, seq] { return !prediction_->IsCurrent(seq); }, sentences);
+}
+
+// 呼叫端持有 ApiMutex
+bool Controller::FindSentences(const SessionState& ss, size_t fetch,
+                               const std::function<bool()>& cancelled,
+                               std::vector<std::wstring>* sentences) {
+  const char* raw = api_->get_input(ss.session_id);
   const std::string input = raw ? raw : "";
   char schema_id[256] = {0};
-  api_->get_current_schema(ss->session_id, schema_id, sizeof(schema_id));
+  api_->get_current_schema(ss.session_id, schema_id, sizeof(schema_id));
   // 只在整串都轉好（沒有還在拼的注音）、沒有往回選字時重排
-  if (input.empty() || ss->preview_input != input || ss->focus >= 0 ||
-      api_->get_caret_pos(ss->session_id) != input.size() || !IsZhuyinSchema(schema_id))
+  if (input.empty() || ss.preview_input != input || ss.focus >= 0 ||
+      api_->get_caret_pos(ss.session_id) != input.size() || !IsZhuyinSchema(schema_id))
     return false;
-  const std::wstring preview = zhuyin_preview::Join(ss->preview_units);
+  const std::wstring preview = zhuyin_preview::Join(ss.preview_units);
   const std::vector<std::wstring> units = zhuyin_preview::SplitChars(preview);
   if (units.size() < 2)
     return false;
   for (const auto& u : units)
     if (u.empty() || u[0] < 0x3400 || zhuyin_preview::IsBopomofo(u[0]))
       return false;
-  // 選字紀錄要記超過評分上限的候選（離線調「評幾句」用）：開紀錄時多查一些
-  const size_t fetch =
-      choice_log_ ? (std::max)(rerank_sentences_, kChoiceLogShown) : rerank_sentences_;
-  // 佔著服務端的鎖掃整句候選：有新的按鍵就提早放棄
-  *sentences = sentences_->Find(schema_id, input, units.size(), fetch,
-                                [this, seq] { return !prediction_->IsCurrent(seq); });
-  if (!prediction_->IsCurrent(seq))
+  *sentences = sentences_->Find(schema_id, input, units.size(), fetch, cancelled);
+  if (cancelled && cancelled())
     return false;
   // 整句重排只比較符合手動選字的句子。
   sentences->erase(std::remove_if(sentences->begin(), sentences->end(), [&](const std::wstring& text) {
     const auto chars = zhuyin_preview::SplitChars(text);
     size_t offset = 0;
-    for (size_t i = 0; i < ss->preview_lens.size(); ++i) {
-      for (const auto& c : ss->manual_choices) {
+    for (size_t i = 0; i < ss.preview_lens.size(); ++i) {
+      for (const auto& c : ss.manual_choices) {
         if (c.start == offset && (i >= chars.size() || chars[i] != c.text))
           return true;
       }
-      offset += ss->preview_lens[i];
+      offset += ss.preview_lens[i];
     }
     return false;
   }), sentences->end());
@@ -2565,6 +2574,21 @@ bool Controller::RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring
   if (sentences->size() > fetch)
     sentences->resize(fetch);
   return sentences->size() >= 2;
+}
+
+// 選字紀錄：打完馬上送出（停頓不到補全的延遲）時背景還沒查到這句的整句候選，送出前當場查。
+// 要在 Rime 送出前：送出後選字記憶已經學了這句，查到的順序會偏向送出的句子
+void Controller::EnsureLoggedSentences(SessionState& ss) {
+  if (!choice_log_ || ss.default_text.empty())
+    return;
+  if (!ss.shown_sentences.empty() &&
+      TaiwanIfZhuyin(api_, ss.session_id, ss.shown_sentences[0]) == ss.default_text)
+    return;
+  std::vector<std::wstring> sentences;
+  if (!FindSentences(ss, kChoiceLogShown, {}, &sentences))
+    return;
+  ss.shown_sentences = std::move(sentences);
+  ss.shown_scores.clear();  // 沒有評分
 }
 
 void Controller::OnShadow(uint64_t id, uint64_t seq, const std::wstring& first,

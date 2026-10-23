@@ -190,7 +190,10 @@ if(RIME_LIB)
   endif()
 
   # 控制器：需要注音方案的資料（-DRIME_SHARED=<含 bopomofo.schema.yaml 的資料夾>）
-  add_executable(TestController ${ROOT}/test/TestController/TestController.cpp)
+  # 加密用測試金鑰檔（與 TestIme 相同）：自己編的 personal_crypto 優先於 wisdom_core 裡的，不碰登入鑰匙圈
+  add_executable(TestController ${ROOT}/test/TestController/TestController.cpp
+                                ${CORE}/crypto/personal_crypto.cpp ${CORE}/platform/mac/key_store_mac.cpp)
+  target_compile_definitions(TestController PRIVATE PERSONAL_CRYPTO_TEST_KEY_FILE="${TEST_KEY}")
   target_link_libraries(TestController PRIVATE wisdom_core)
   if(RIME_SHARED)
     add_test(NAME TestController COMMAND TestController ${RIME_SHARED} ${CMAKE_BINARY_DIR}/rime-user)

@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -211,6 +212,10 @@ class Controller {
                     std::vector<std::vector<std::wstring>>* homophones);
   // 整句重排：Rime 對目前輸入的整句候選（第一句是使用者看到的轉換）
   bool RerankInput(uint64_t id, uint64_t seq, std::vector<std::wstring>* sentences);
+  // Rime 目前輸入的整句候選，第一句是使用者看到的轉換；至少兩句才回傳 true
+  bool FindSentences(const SessionState& ss, size_t fetch, const std::function<bool()>& cancelled,
+                     std::vector<std::wstring>* sentences);
+  void EnsureLoggedSentences(SessionState& ss);
   void OnShadow(uint64_t id, uint64_t seq, const std::wstring& first, const RerankResult& result);
   void OnSentenceScores(uint64_t id, uint64_t seq, const RerankResult& result);
   // 送出時對照 shadow 的結果（選字統計與校準）

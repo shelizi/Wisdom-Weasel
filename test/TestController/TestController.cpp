@@ -11,13 +11,17 @@
 #include "../../core/personal/PersonalRefiner.h"
 #include "../../core/settings/bench.h"
 
+#include <PersonalCrypto.h>
+
 #include <rime_api.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <string>
@@ -1129,8 +1133,7 @@ int main(int argc, char** argv) {
     refiner.Stop();
   }
 
-  // 選字紀錄：LLM、評分、校正都沒開時也要查到整句候選（訓練排序器要用），且不進預測模式。
-  // 只檢查送出前記下的整句：寫紀錄檔要用鑰匙圈的金鑰
+  // 選字紀錄：LLM、評分、校正都沒開時也要查到整句候選（訓練排序器要用），且不進預測模式
   {
     RimeConfig config = {0};
     CHECK(api->config_load_string(&config,
@@ -1151,6 +1154,40 @@ int main(int argc, char** argv) {
                   U8(ss.shown_sentences[0]).c_str());
     t.Key(key::kEscape);
     CHECK(!t.Composing());
+
+    // 打完馬上送出（背景還沒查）：送出前當場查，紀錄的最後一筆有整句候選
+    const fs::path log = fs::path(user) / "personal" / "choice_log.dat";
+    fs::remove(log);
+    t.commits.clear();
+    t.Type("rupwu0wu0fu4cp3cl3");
+    t.Key(key::kReturn);
+    CHECK(t.commits.size() == 1 && t.commits.back() == L"今天天氣很好");
+    std::ifstream in(log, std::ios::binary);
+    const std::string data((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    std::string last;
+    for (size_t pos = 0; pos + 4 <= data.size();) {
+      uint32_t len = 0;
+      std::memcpy(&len, data.data() + pos, 4);
+      pos += 4;
+      if (pos + len > data.size() ||
+          !personal_crypto::Unprotect(data.substr(pos, len), &last))
+        last.clear();
+      pos += len;
+    }
+    // 時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換 \t 送出 \t
+    // 整句（\x1e 分隔）…
+    std::vector<std::string> fields(1);
+    for (char ch : last) {
+      if (ch == '\t')
+        fields.emplace_back();
+      else
+        fields.back() += ch;
+    }
+    CHECK(fields.size() > 7 && fields[7].find('\x1e') != std::string::npos);
+    if (fields.size() > 7)
+      std::printf("  choice log on Enter: %s\n",
+                  fields[7].substr(0, fields[7].find('\x1e')).c_str());
   }
 
   {
