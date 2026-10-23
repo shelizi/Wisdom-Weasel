@@ -84,7 +84,9 @@ struct Fingerprint {
     h ^= 0x9f;
     h *= 1099511628211ULL;
   }
-  void Wide(const std::wstring& s) { Bytes(s.data(), s.size() * sizeof(wchar_t)); }
+  void Wide(const std::wstring& s) {
+    Bytes(s.data(), s.size() * sizeof(wchar_t));
+  }
 };
 
 RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
@@ -365,7 +367,8 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   key_stats.Add(base::KeyStats::kRespond, t2 - t1);
   key_stats.Add(base::KeyStats::kTotal, t2 - t0);
   // 每 512 鍵在開發終端報一次 p50/p95（沒開就不組字串）
-  if (key_stats.Count() % 512 == 0 && m_dev_console && m_dev_console->IsEnabled())
+  if (key_stats.Count() % 512 == 0 && m_dev_console &&
+      m_dev_console->IsEnabled())
     m_dev_console->WriteLine(key_stats.Report());
   return (BOOL)result.handled;
 }
@@ -562,7 +565,8 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
   fp.Int(ctx.menu.page_no);
   fp.Int(ctx.menu.highlighted_candidate_index);
   fp.Int(ctx.menu.is_last_page);
-  const bool has_labels = RIME_STRUCT_HAS_MEMBER(ctx, ctx.select_labels) && ctx.select_labels;
+  const bool has_labels =
+      RIME_STRUCT_HAS_MEMBER(ctx, ctx.select_labels) && ctx.select_labels;
   for (int i = 0; i < ctx.menu.num_candidates; ++i) {
     fp.U8(ctx.menu.candidates[i].text);
     fp.U8(ctx.menu.candidates[i].comment);
@@ -1153,10 +1157,10 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
                                         : wtou8(session_status.style.mark_text);
             std::string prefix =
                 (i != ctx.menu.highlighted_candidate_index) ? "" : mark_text;
-            const std::string cand = taiwan_forms
-                                          ? wtou8(ime::PreferTaiwanForms(
-                                                u8tow(ctx.menu.candidates[i].text)))
-                                          : ctx.menu.candidates[i].text;
+            const std::string cand =
+                taiwan_forms ? wtou8(ime::PreferTaiwanForms(
+                                   u8tow(ctx.menu.candidates[i].text)))
+                             : ctx.menu.candidates[i].text;
             text += " " + prefix + label + cand + " " + comment;
           }
           preedit.text = u8tow(text + " ]");
@@ -1880,7 +1884,8 @@ void RimeWithWeaselHandler::ShowTip(uint64_t id, const std::wstring& text) {
   ctx.aux.str = text;
   status.type = SCHEMA;
   m_ui->Update(ctx, status);
-  m_ui->ShowWithTimeout(m_show_notifications_time > 0 ? m_show_notifications_time : 1200);
+  m_ui->ShowWithTimeout(
+      m_show_notifications_time > 0 ? m_show_notifications_time : 1200);
 }
 
 void RimeWithWeaselHandler::PersonalCommand(DWORD command) {
@@ -1920,8 +1925,8 @@ std::wstring RimeWithWeaselHandler::ContextKey(uint64_t id) {
     if (root)
       hwnd = root;
   }
-  // 每個按鍵都會查：同個視窗短時間內標題不會變，重用上一份（視窗換了 hwnd 就不同，
-  // 標題裡的未讀數等變化本來就會濾掉）
+  // 每個按鍵都會查：同個視窗短時間內標題不會變，重用上一份（視窗換了 hwnd
+  // 就不同， 標題裡的未讀數等變化本來就會濾掉）
   const ULONGLONG now = GetTickCount64();
   if (hwnd == m_ctx_key_hwnd && (WeaselSessionId)id == m_ctx_key_session &&
       now - m_ctx_key_ms < 300)

@@ -69,7 +69,9 @@ class FakeLocalizer : public LLMProvider {
   int delay_ms = 0;
   std::atomic<int> calls{0};
   bool LoadConfig(const std::string&) override { return true; }
-  std::vector<std::wstring> PredictCandidates(const std::wstring&, const std::wstring&, size_t) override {
+  std::vector<std::wstring> PredictCandidates(const std::wstring&,
+                                              const std::wstring&,
+                                              size_t) override {
     return {};
   }
   std::wstring LocalizeText(const std::wstring&, const std::wstring&) override {
@@ -201,7 +203,8 @@ int main(int argc, char** argv) {
   // 只部署注音方案，第一次跑比較快（之後沿用 build 資料夾）
   {
     std::ofstream out(fs::path(user) / "default.custom.yaml", std::ios::binary);
-    out << "patch:\n  schema_list:\n    - schema: bopomofo\n    - schema: bopomofo_express\n";
+    out << "patch:\n  schema_list:\n    - schema: bopomofo\n    - schema: "
+           "bopomofo_express\n";
   }
   // 標點測試用的鍵：各版注音方案的標點設定不同（3.1 版起 Shift+數字是選字鍵），
   // 固定讓 ~ 直接送出「～」
@@ -305,14 +308,16 @@ int main(int argc, char** argv) {
     t.Key(key::kBackSpace);
     CHECK(t.Input() == "suc" && t.preedit.text == first + L"ㄏ");
     t.Key(key::kBackSpace);
-    CHECK(t.Input() == "su" && t.preedit.text.size() == 1 && IsCJK(t.preedit.text.front()));
+    CHECK(t.Input() == "su" && t.preedit.text.size() == 1 &&
+          IsCJK(t.preedit.text.front()));
     CHECK(t.preedit.cursor == 1);
     t.Respond();  // 重畫組字區也必須保留成字狀態。
     CHECK(t.preedit.text.size() == 1 && IsCJK(t.preedit.text.front()));
     t.Type("cl3");
     CHECK(t.preedit.text.size() == 2 && IsCJK(t.preedit.text.back()));
     t.Key(key::kBackSpace);
-    CHECK(t.Input() == "su" && t.preedit.text.size() == 1 && IsCJK(t.preedit.text.front()));
+    CHECK(t.Input() == "su" && t.preedit.text.size() == 1 &&
+          IsCJK(t.preedit.text.front()));
     t.Key(key::kBackSpace);
     CHECK(t.Input().empty() && !t.Composing());
     t.Type("su");  // 全新輸入仍是尚未完成的注音。
@@ -411,10 +416,12 @@ int main(int argc, char** argv) {
     std::printf("  rup wu0 -> %s\n", U8(t.preedit.text).c_str());
     t.Key(key::kLeft);
     CHECK(ss.focus == 1);
-    CHECK(t.preedit.cursor == 1 && t.preedit.sel_start == 1 && t.preedit.sel_end == 2);
+    CHECK(t.preedit.cursor == 1 && t.preedit.sel_start == 1 &&
+          t.preedit.sel_end == 2);
     t.Key(key::kLeft);
     CHECK(ss.focus == 0);
-    CHECK(t.preedit.cursor == 0 && t.preedit.sel_start == 0 && t.preedit.sel_end == 1);
+    CHECK(t.preedit.cursor == 0 && t.preedit.sel_start == 0 &&
+          t.preedit.sel_end == 1);
     t.Key(key::kEnd);
     CHECK(ss.focus == -1);
     t.Key(key::kEscape);
@@ -436,12 +443,14 @@ int main(int argc, char** argv) {
         CHECK(ss.focus == (cursor == 3 ? -1 : cursor));
         CHECK(t.preedit.cursor == cursor);
         if (cursor < 3)
-          CHECK(t.preedit.sel_start == cursor && t.preedit.sel_end == cursor + 1);
+          CHECK(t.preedit.sel_start == cursor &&
+                t.preedit.sel_end == cursor + 1);
         const std::string expected[] = {"up 2j/4", "5j42j/4", "5j4up "};
         t.Key(erase_key);
         CHECK(t.Input() == expected[index]);
         CHECK(t.commits.empty());
-        CHECK(t.preedit.text == shown.substr(0, index) + shown.substr(index + 1));
+        CHECK(t.preedit.text ==
+              shown.substr(0, index) + shown.substr(index + 1));
         CHECK(t.preedit.cursor == index);
         if (index < 2) {
           CHECK(ss.focus == index);
@@ -541,11 +550,13 @@ int main(int argc, char** argv) {
       CHECK(t.preedit.cursor == 1 && ss.focus == 1);
       t.Type("s");
       CHECK(t.Input() == "5j4sup 2j/4");
-      CHECK(IsCJK(t.preedit.text.front()) && t.preedit.text.substr(1) == L"ㄋ" + shown.substr(1));
+      CHECK(IsCJK(t.preedit.text.front()) &&
+            t.preedit.text.substr(1) == L"ㄋ" + shown.substr(1));
       CHECK(t.preedit.cursor == 2);
       t.Type("u");
       CHECK(t.Input() == "5j4suup 2j/4");
-      CHECK(IsCJK(t.preedit.text.front()) && t.preedit.text.substr(1) == L"ㄋㄧ" + shown.substr(1));
+      CHECK(IsCJK(t.preedit.text.front()) &&
+            t.preedit.text.substr(1) == L"ㄋㄧ" + shown.substr(1));
       CHECK(t.preedit.cursor == 3);
       t.Type("3");
       CHECK(t.Input() == "5j4su3up 2j/4");
@@ -585,10 +596,13 @@ int main(int argc, char** argv) {
         const std::string inserted = cursor == 0 ? "1j4" : "su3";
         const std::wstring pending = cursor == 0 ? L"ㄅ" : L"ㄋ";
         t.Type(inserted.substr(0, 1));
-        CHECK(t.Input() == original.substr(0, start) + inserted.substr(0, 1) + original.substr(start));
-        CHECK(t.preedit.text.substr(cursor) == pending + original_text.substr(cursor));
+        CHECK(t.Input() == original.substr(0, start) + inserted.substr(0, 1) +
+                               original.substr(start));
+        CHECK(t.preedit.text.substr(cursor) ==
+              pending + original_text.substr(cursor));
         t.Type(inserted.substr(1));
-        CHECK(t.Input() == original.substr(0, start) + inserted + original.substr(start));
+        CHECK(t.Input() ==
+              original.substr(0, start) + inserted + original.substr(start));
         CHECK(t.preedit.text.size() == 4 && t.preedit.cursor == cursor + 1);
         t.Key(key::kLeft);
         CHECK(t.preedit.cursor == cursor && ss.focus == cursor);
@@ -605,7 +619,8 @@ int main(int argc, char** argv) {
       t.Type("s");
       CHECK(t.Input() == "suscl3" && t.preedit.text.substr(1, 1) == L"ㄋ");
       t.Key(key::kBackSpace);
-      CHECK(t.Input() == "sucl3" && t.preedit.text.size() == 2 && IsCJK(t.preedit.text.front()));
+      CHECK(t.Input() == "sucl3" && t.preedit.text.size() == 2 &&
+            IsCJK(t.preedit.text.front()));
       CHECK(t.preedit.cursor == 1);
       t.Key(key::kEnd);
       for (int i = 0; i < 5 && t.Composing(); ++i)
@@ -670,7 +685,8 @@ int main(int argc, char** argv) {
     t.Respond();
     const std::wstring changed = t.preedit.text;
     CHECK(changed != framed && changed.size() == framed.size());
-    CHECK(changed.substr(4, 1) != framed.substr(4, 1));  // 未手動確認的前後字可以重新造句。
+    CHECK(changed.substr(4, 1) !=
+          framed.substr(4, 1));  // 未手動確認的前後字可以重新造句。
     t.Key(key::kLeft);
     t.Key(key::kEnd);
     CHECK(ss.focus == -1);
@@ -730,35 +746,44 @@ int main(int argc, char** argv) {
         // 再改同一個前字：替換它的鎖定，不增加鎖數，也不影響後字。
         const std::wstring replacement = choose_other(0);
         CHECK(ss.manual_choices.size() == 2);
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(4, 1) == later);
         t.Key(key::kHome);
         t.Key(key::kEnd);
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(4, 1) == later);
         t.Type("su3");
         CHECK(ss.manual_choices.size() == 2);
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(4, 1) == later);
         // 刪掉中間一個未鎖字，後方鎖定跟著位移。
         t.Key(key::kHome);
         t.Key(key::kRight);
         t.Key(key::kDelete);
         CHECK(ss.manual_choices.size() == 2);
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(3, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(3, 1) == later);
         // 在鎖定字前插入音節，鎖定回到第四字的位置。
         size_t insert_caret = 0;
         for (int i = 0; i < ss.focus; ++i)
           insert_caret += ss.preview_lens[i];
         const std::string before_insert = t.Input();
         t.Type("w");
-        CHECK(t.Input() == before_insert.substr(0, insert_caret) + "w" + before_insert.substr(insert_caret));
+        CHECK(t.Input() == before_insert.substr(0, insert_caret) + "w" +
+                               before_insert.substr(insert_caret));
         CHECK(t.preedit.text.substr(1, 1) == L"ㄊ");
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(4, 1) == later);
         t.Type("u");
         CHECK(t.preedit.text.substr(1, 2) == L"ㄊㄧ");
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(5, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(5, 1) == later);
         t.Type("0 ");
-        CHECK(t.Input() == before_insert.substr(0, insert_caret) + "wu0 " + before_insert.substr(insert_caret));
+        CHECK(t.Input() == before_insert.substr(0, insert_caret) + "wu0 " +
+                               before_insert.substr(insert_caret));
         CHECK(ss.manual_choices.size() == 2);
-        CHECK(t.preedit.text.substr(0, 1) == replacement && t.preedit.text.substr(4, 1) == later);
+        CHECK(t.preedit.text.substr(0, 1) == replacement &&
+              t.preedit.text.substr(4, 1) == later);
         t.Key(key::kHome);
         t.Key(key::kRight);
         t.Key(key::kBackSpace);  // 刪掉第一個鎖定字，只解除那個鎖。
@@ -795,7 +820,8 @@ int main(int argc, char** argv) {
         CHECK(keyboard_word.size() == 1);
         t.Key(key::kReturn);
         CHECK(t.commits.empty() && ss.manual_choices.size() == 2);
-        CHECK(t.preedit.text.substr(3, 1) == keyboard_word && t.preedit.text.substr(4, 1) == keyboard_later);
+        CHECK(t.preedit.text.substr(3, 1) == keyboard_word &&
+              t.preedit.text.substr(4, 1) == keyboard_later);
         t.Key(key::kEnd);
         const std::wstring mixed_shown = t.preedit.text;
         t.Key(key::kHome);
@@ -803,7 +829,8 @@ int main(int argc, char** argv) {
         CHECK(ss.mixed_text == mixed_shown);
         t.Type("abc");
         t.Key(key::kReturn);
-        CHECK(t.commits.size() == 1 && t.commits.back() == mixed_shown + L"abc");
+        CHECK(t.commits.size() == 1 &&
+              t.commits.back() == mixed_shown + L"abc");
         CHECK(ss.manual_choices.empty());
         t.commits.clear();
         // 一般整句候選的滑鼠選字，逐字記住使用者確認的字詞。
@@ -823,7 +850,8 @@ int main(int argc, char** argv) {
           controller.CommitComposition(1);
         }
         t.Respond();
-        CHECK(t.commits.size() == 1 && t.commits.back() == new_first + sentence.substr(1));
+        CHECK(t.commits.size() == 1 &&
+              t.commits.back() == new_first + sentence.substr(1));
         CHECK(ss.manual_choices.empty());
         t.commits.clear();
         // 在相同按鍵的鎖定音節前插入相同音節，不能誤認成修改鎖定音節。
@@ -844,9 +872,13 @@ int main(int argc, char** argv) {
   }
 
   // 簡體輸出：模型的輸出檢查
-  CHECK(LLMCheckLocalized(L"我的滑鼠壞了", L"我的鼠标坏了\n（把滑鼠改成鼠标）") == L"我的鼠标坏了");
-  CHECK(LLMCheckLocalized(L"我的滑鼠壞了", L"「我的鼠标坏了」") == L"我的鼠标坏了");
-  CHECK(LLMCheckLocalized(L"今天天氣很好", L"今天天气很好，我们一起去爬山吧，好不好呢") == L"");
+  CHECK(
+      LLMCheckLocalized(L"我的滑鼠壞了", L"我的鼠标坏了\n（把滑鼠改成鼠标）") ==
+      L"我的鼠标坏了");
+  CHECK(LLMCheckLocalized(L"我的滑鼠壞了", L"「我的鼠标坏了」") ==
+        L"我的鼠标坏了");
+  CHECK(LLMCheckLocalized(L"今天天氣很好",
+                          L"今天天气很好，我们一起去爬山吧，好不好呢") == L"");
   CHECK(LLMCheckLocalized(L"今天天氣很好", L"  ") == L"");
 
   // 簡體輸出：送出時用在地化模型的結果（停頓時先改好）；模型太慢就用 OpenCC
@@ -856,11 +888,13 @@ int main(int argc, char** argv) {
     fast->output = L"今天天气真好";
     {
       std::lock_guard<std::mutex> lock(frontend.mutex);
-      CHECK(controller.SetSimplifiedConversion(fs::path(shared) / "opencc" / "tw2sp.json", std::move(fast_owned), 1500));
+      CHECK(controller.SetSimplifiedConversion(
+          fs::path(shared) / "opencc" / "tw2sp.json", std::move(fast_owned),
+          1500));
       CHECK(controller.SetSimplifiedOutput(true));
     }
     t.commits.clear();
-    t.Type("rup wu0 wu0 fu4cp3cl3");  // 今天天氣很好
+    t.Type("rup wu0 wu0 fu4cp3cl3");                  // 今天天氣很好
     CHECK(WaitFor([&] { return fast->calls > 0; }));  // 停頓後在背景改寫
     {
       std::lock_guard<std::mutex> lock(frontend.mutex);
@@ -876,7 +910,9 @@ int main(int argc, char** argv) {
     slow->delay_ms = 1500;
     {
       std::lock_guard<std::mutex> lock(frontend.mutex);
-      CHECK(controller.SetSimplifiedConversion(fs::path(shared) / "opencc" / "tw2sp.json", std::move(slow_owned), 200));
+      CHECK(controller.SetSimplifiedConversion(
+          fs::path(shared) / "opencc" / "tw2sp.json", std::move(slow_owned),
+          200));
     }
     t.commits.clear();
     t.Type("rup wu0 wu0 fu4cp3cl3");
@@ -891,8 +927,12 @@ int main(int argc, char** argv) {
       controller.CommitComposition(1);
     }
     t.Respond();
-    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("  simplified fallback after %lld ms -> %s\n", (long long)waited, U8(t.commits.empty() ? L"" : t.commits.back()).c_str());
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+    std::printf("  simplified fallback after %lld ms -> %s\n",
+                (long long)waited,
+                U8(t.commits.empty() ? L"" : t.commits.back()).c_str());
     CHECK(t.commits.size() == 1 && t.commits.back() == expected_fallback);
     CHECK(waited < 1200);
     {
@@ -900,7 +940,8 @@ int main(int argc, char** argv) {
       controller.SetSimplifiedOutput(false);
     }
     CHECK(WaitFor([&] { return slow->calls > 0; }));
-    std::this_thread::sleep_for(std::chrono::milliseconds(1600));  // 讓慢模型跑完，不影響後面的測試
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1600));  // 讓慢模型跑完，不影響後面的測試
     t.commits.clear();
   }
 

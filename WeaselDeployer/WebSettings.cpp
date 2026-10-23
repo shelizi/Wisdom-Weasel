@@ -251,10 +251,11 @@ class WebSettingsWindow {
 
   void FailWebView(HRESULT hr) {
     wchar_t text[256];
-    swprintf_s(text,
-               L"無法開啟設定視窗（WebView2 錯誤 0x%08X）。\n\n"
-               L"設定視窗需要 Microsoft Edge WebView2 Runtime，要開啟下載頁嗎？",
-               (unsigned)hr);
+    swprintf_s(
+        text,
+        L"無法開啟設定視窗（WebView2 錯誤 0x%08X）。\n\n"
+        L"設定視窗需要 Microsoft Edge WebView2 Runtime，要開啟下載頁嗎？",
+        (unsigned)hr);
     if (MessageBoxW(hwnd_, text, L"小狼毫設定", MB_YESNO | MB_ICONERROR) ==
         IDYES)
       ShellExecuteW(nullptr, L"open",
@@ -585,9 +586,10 @@ int RunAutoTune(Configurator* configurator) {
     write("result " + r.dump());
     const std::string action = r.value("action", "");
     if (action == "apply" || action == "rollback") {
-      const json applied =
-          backend.Call("rerank.apply",
-                       {{"top", r.value("top", 0)}, {"margin", r.value("margin", 0.0)}}, nullptr);
+      const json applied = backend.Call(
+          "rerank.apply",
+          {{"top", r.value("top", 0)}, {"margin", r.value("margin", 0.0)}},
+          nullptr);
       write("applied " + applied.dump());
     }
     // 順便重訓學習式排序器：驗證贏過現行設定才會匯出，沒贏就維持現狀

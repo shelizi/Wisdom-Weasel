@@ -40,13 +40,19 @@ int main() {
   const std::filesystem::path dir = std::filesystem::temp_directory_path();
   // 線性：分數只看 lm_gap（第 3 個特徵）
   const auto lin_path = dir / "ranker_lin.json";
-  { std::ofstream o(lin_path); o << kLinearJson; }
+  {
+    std::ofstream o(lin_path);
+    o << kLinearJson;
+  }
   ime::RankerModel lin;
   Check(lin.Load(lin_path), "linear load");
   Check(lin.type() == "linear" && lin.margin() == 0.5, "linear fields");
 
   const auto gbdt_path = dir / "ranker_gbdt.json";
-  { std::ofstream o(gbdt_path); o << kGbdtJson; }
+  {
+    std::ofstream o(gbdt_path);
+    o << kGbdtJson;
+  }
   ime::RankerModel gbdt;
   Check(gbdt.Load(gbdt_path), "gbdt load");
 
@@ -81,8 +87,8 @@ int main() {
   Check(r.index == 1 && r.text == L"今天天汽", "ranker recommends");
   Check(std::abs(r.scores[1] - 1.0) < 1e-9, "scores replaced");
 
-  // 門檻沒過：gbdt margin 0.3，分數差 0.1-(-0.2)... 第二句 lm_gap=1 → 0.9 vs 0.1 → 0.8 > 0.3 也推薦
-  // 換個不過門檻的：lm 分數一樣 → gap 0 → 不推薦
+  // 門檻沒過：gbdt margin 0.3，分數差 0.1-(-0.2)... 第二句 lm_gap=1 → 0.9 vs
+  // 0.1 → 0.8 > 0.3 也推薦 換個不過門檻的：lm 分數一樣 → gap 0 → 不推薦
   r = ime::RerankResult();
   r.texts = {L"今天天氣", L"今天天汽"};
   r.lm_scores = {-10.0, -10.0};
