@@ -68,11 +68,29 @@ add_library(wisdom_core STATIC
 )
 target_include_directories(wisdom_core PUBLIC ${COMMON_INCLUDES})
 target_link_libraries(wisdom_core PUBLIC CURL::libcurl ${SECURITY} ${COREFOUNDATION})
-# 送出時的繁轉簡（core/ime/script_convert.cpp）：OpenCC（brew install opencc）；字典用 Rime 共用資料的 opencc
-find_path(OPENCC_INCLUDE opencc/opencc.h HINTS "${RIME_ROOT}/include" /opt/homebrew/include /usr/local/include REQUIRED)
-find_library(OPENCC_LIB opencc HINTS "${RIME_ROOT}/lib" /opt/homebrew/lib /usr/local/lib REQUIRED)
-target_include_directories(wisdom_core PRIVATE "${OPENCC_INCLUDE}")
-target_link_libraries(wisdom_core PUBLIC ${OPENCC_LIB})
+# 送出時的繁轉簡（core/ime/script_convert.cpp）：OpenCC；字典用 Rime 共用資料的 opencc。
+# 與小狼毫相同，用 librime 發行的 rime-deps（OpenCC、marisa 的靜態庫，與 librime 內建的同版本）：
+# 鼠鬚管的 action-install.sh 解到 squirrel/download；自己建 librime 時在 squirrel/librime。
+# 都沒有時用 Homebrew 的（brew install opencc），只能在本機執行，不能打包。
+set(OPENCC_HINTS "${OPENCC_ROOT}" "${ROOT}/squirrel/download" "${ROOT}/squirrel/librime")
+find_path(OPENCC_STATIC_INCLUDE opencc/opencc.h HINTS ${OPENCC_HINTS} PATH_SUFFIXES include NO_DEFAULT_PATH)
+find_library(OPENCC_STATIC_LIB NAMES libopencc.a HINTS ${OPENCC_HINTS} PATH_SUFFIXES lib NO_DEFAULT_PATH)
+find_library(MARISA_STATIC_LIB NAMES libmarisa.a HINTS ${OPENCC_HINTS} PATH_SUFFIXES lib NO_DEFAULT_PATH)
+if(OPENCC_STATIC_INCLUDE AND OPENCC_STATIC_LIB AND MARISA_STATIC_LIB)
+  target_include_directories(wisdom_core PRIVATE "${OPENCC_STATIC_INCLUDE}")
+  # 鼠鬚管的 Xcode 專案只連結 libwisdom_core.a：把 OpenCC 與 marisa 併進去
+  add_custom_command(TARGET wisdom_core POST_BUILD
+    COMMAND libtool -static -no_warning_for_no_symbols -o $<TARGET_FILE:wisdom_core>
+            $<TARGET_FILE:wisdom_core> "${OPENCC_STATIC_LIB}" "${MARISA_STATIC_LIB}"
+    VERBATIM)
+  message(STATUS "OpenCC: ${OPENCC_STATIC_LIB}（併進 wisdom_core）")
+else()
+  find_path(OPENCC_INCLUDE opencc/opencc.h HINTS "${RIME_ROOT}/include" /opt/homebrew/include /usr/local/include REQUIRED)
+  find_library(OPENCC_LIB opencc HINTS "${RIME_ROOT}/lib" /opt/homebrew/lib /usr/local/lib REQUIRED)
+  target_include_directories(wisdom_core PRIVATE "${OPENCC_INCLUDE}")
+  target_link_libraries(wisdom_core PUBLIC ${OPENCC_LIB})
+  message(STATUS "OpenCC: ${OPENCC_LIB}")
+endif()
 if(RIME_LIB)
   target_link_libraries(wisdom_core PUBLIC ${RIME_LIB})
 endif()
@@ -136,6 +154,8 @@ add_executable(TestIme
   ${CORE}/ime/ranker.cpp
   ${CORE}/ime/choice_stats.cpp
   ${CORE}/ime/choice_log.cpp
+  ${CORE}/personal/PersonalLexicon.cpp
+  ${CORE}/personal/LearnFilter.cpp
   ${CORE}/crypto/personal_crypto.cpp
   ${CORE}/platform/mac/key_store_mac.cpp
   ${CORE}/third_party/monocypher/monocypher.c

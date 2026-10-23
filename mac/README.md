@@ -29,6 +29,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+送出時的繁轉簡用 OpenCC：有 `squirrel/download`（鼠鬚管的 `action-install.sh` 下載的 rime-deps）時用裡面的靜態庫，
+與 librime 內建的同版本，併進 `libwisdom_core.a` 打包進鼠鬚管；沒有時用 Homebrew 的（`brew install librime` 會一起裝），
+只能在本機執行。也可以用 `-DOPENCC_ROOT=<含 include/opencc 與 lib/libopencc.a、libmarisa.a 的資料夾>` 指定。
+
 測試：`TestIme`（規則、預測引擎、推薦、統計、加密紀錄）、`TestLLMHost`（推理行程的管道與重新啟動，對 `FakeHost`）、
 `TestLLMHttp`（libcurl 對 `mock_server.py`）。
 `TestController` 需要注音方案資料：加上 `-DRIME_SHARED=<含 bopomofo.schema.yaml、terra_pinyin.dict.yaml 的資料夾>`。
