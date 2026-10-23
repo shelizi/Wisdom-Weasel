@@ -93,6 +93,12 @@ jobs:
             if (-not (Test-Path $f)) { throw "get-rime.ps1 did not provide $f" }
           }
 
+      - name: Get OpenCC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-opencc.ps1
+
       - name: Get WebView2 SDK
         shell: pwsh
         run: |
@@ -242,6 +248,12 @@ jobs:
           foreach ($f in 'lib/rime.lib', 'lib64/rime.lib', 'output/rime.dll') {
             if (-not (Test-Path $f)) { throw "get-rime.ps1 did not provide $f" }
           }
+
+      - name: Get OpenCC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-opencc.ps1
 
       - name: Get WebView2 SDK
         shell: pwsh

@@ -10,6 +10,9 @@ target("WeaselServer")
             "$(projectdir)/core/net/win/http_win.cpp")
   add_rules("add_rcfiles", "subwin")
   add_links("imm32", "kernel32", "rime")
+  -- 送出時的繁轉簡：OpenCC 與 marisa 的靜態庫（get-opencc.ps1 解到 deps\opencc）
+  add_links("opencc", "marisa")
+  add_linkdirs(is_arch("x86") and "$(projectdir)/deps/opencc/Win32" or "$(projectdir)/deps/opencc/x64")
   add_deps("WeaselUI", "WeaselIPC", "RimeWithWeasel", "WeaselIPCServer")
 
   add_files("$(projectdir)/PerMonitorHighDPIAware.manifest")
