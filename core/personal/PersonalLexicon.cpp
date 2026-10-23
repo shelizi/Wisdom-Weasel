@@ -821,6 +821,11 @@ std::vector<fs::path> PersonalLexicon::ArchivedLogs() const {
   return files;
 }
 
+void PersonalLexicon::FlushRawLog() {
+  std::lock_guard<std::mutex> lock(log_mutex_);
+  DrainLogQueueLocked();
+}
+
 bool PersonalLexicon::ArchiveActiveLog(fs::path* archived) {
   // 持 log_mutex_：先讓佇列的紀錄進檔案，封存才完整；寫入中的批次也等它結束
   std::lock_guard<std::mutex> lock(log_mutex_);

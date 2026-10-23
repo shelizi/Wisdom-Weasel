@@ -328,6 +328,7 @@ void PersonalRefiner::Run(bool full) {
   try {
     // 原始紀錄：重新精煉全部要全部（重建用）；一般精煉只需要最近的一部分（挑例句用）
     std::vector<PersonalLexicon::RawRecord> records;
+    lexicon_->FlushRawLog();
     const auto active = PersonalLexicon::ReadRawLog(lexicon_->ActiveLogPath());
     const auto archives = lexicon_->ArchivedLogs();
     size_t archived_files = 0;

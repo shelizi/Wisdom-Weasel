@@ -77,6 +77,7 @@ class PersonalLexicon {
   std::filesystem::path ArchiveDir() const { return dir_ / L"archive"; }
   std::vector<std::filesystem::path> ArchivedLogs() const;  // 依時間排序
   static std::vector<RawRecord> ReadRawLog(const std::filesystem::path& path);
+  void FlushRawLog();  // 佇列中的原始紀錄寫進 ActiveLogPath()：讀它之前呼叫
   static size_t CountRawRecords(const std::filesystem::path& path);  // 不解密，只數筆數
   // 把累積中的紀錄移到 archive/（檔名含時間），之後重新累積；沒有紀錄時不做事
   bool ArchiveActiveLog(std::filesystem::path* archived = nullptr);

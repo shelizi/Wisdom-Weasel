@@ -127,22 +127,27 @@ static void TestTextRules() {
   // 注音預覽的臺灣常用字：一字換一字，再套一次不變。週、面維持原字。
   const std::wstring raw =
       L"\u7232\u88CF\u55AB\u8988\u4F48\u7740\u9EAA\u81FA\u3007"
-      L"\u6211\u9580\u4F60\u9580\u4ED6\u9580\u5979\u9580\u5B83\u9580\u7260\u9580"
+      L"\u6211\u9580\u4F60\u9580\u4ED6\u9580\u5979\u9580\u5B83\u9580\u7260"
+      L"\u9580"
       L"\u597D\u4E86\u5ABD";
   const std::wstring preferred = ime::PreferTaiwanForms(raw);
   CHECK(preferred.size() == raw.size());
   CHECK(preferred ==
         L"\u70BA\u88E1\u5403\u6838\u5E03\u8457\u9EB5\u53F0\u96F6"
-        L"\u6211\u5011\u4F60\u5011\u4ED6\u5011\u5979\u5011\u5B83\u5011\u7260\u5011"
+        L"\u6211\u5011\u4F60\u5011\u4ED6\u5011\u5979\u5011\u5B83\u5011\u7260"
+        L"\u5011"
         L"\u597D\u4E86\u55CE");
   CHECK(ime::PreferTaiwanForms(preferred) == preferred);
-  CHECK(ime::PreferTaiwanForms(L"\u5927\u9580") == L"\u5927\u9580");          // 大門
-  CHECK(ime::PreferTaiwanForms(L"\u5ABD\u5ABD") == L"\u5ABD\u5ABD");          // 媽媽
-  CHECK(ime::PreferTaiwanForms(L"\u4ED6\u5ABD\u5ABD") == L"\u4ED6\u5ABD\u5ABD");  // 他媽媽
-  CHECK(ime::PreferTaiwanForms(L"\u597D\u5ABD") == L"\u597D\u5ABD");          // 兩個字不改句尾
-  CHECK(ime::PreferTaiwanForms(L"\u9031\u672B") == L"\u9031\u672B");          // 週末
-  CHECK(ime::PreferTaiwanForms(L"\u4E0B\u9762") == L"\u4E0B\u9762");          // 下面
-  CHECK(ime::PreferTaiwanForms(L"\u7232\u4E86\u3113") == L"\u70BA\u4E86\u3113");  // 句尾注音留著
+  CHECK(ime::PreferTaiwanForms(L"\u5927\u9580") == L"\u5927\u9580");  // 大門
+  CHECK(ime::PreferTaiwanForms(L"\u5ABD\u5ABD") == L"\u5ABD\u5ABD");  // 媽媽
+  CHECK(ime::PreferTaiwanForms(L"\u4ED6\u5ABD\u5ABD") ==
+        L"\u4ED6\u5ABD\u5ABD");  // 他媽媽
+  CHECK(ime::PreferTaiwanForms(L"\u597D\u5ABD") ==
+        L"\u597D\u5ABD");  // 兩個字不改句尾
+  CHECK(ime::PreferTaiwanForms(L"\u9031\u672B") == L"\u9031\u672B");  // 週末
+  CHECK(ime::PreferTaiwanForms(L"\u4E0B\u9762") == L"\u4E0B\u9762");  // 下面
+  CHECK(ime::PreferTaiwanForms(L"\u7232\u4E86\u3113") ==
+        L"\u70BA\u4E86\u3113");  // 句尾注音留著
 }
 
 static void TestZhuyin() {
@@ -163,10 +168,11 @@ static void TestZhuyin() {
   // ㄎㄨˋㄚ 後面還有別的音：聲調移回韻母後，前面的鍵不動
   CHECK(RepairEarlyTone("rup wu0 dj481j4") == "rup wu0 dj841j4");
   CHECK(RepairEarlyTone("2u032k7dj481j4ap6") == "2u032k7dj841j4ap6");
-  CHECK(RepairEarlyTone("dj48 ") == "dj48 ");          // 褲啊：韻母自己有聲調
-  CHECK(RepairEarlyTone("1840q9 ") == "1840q9 ");      // 爸安：前面的音節已經有韻母
-  CHECK(RepairEarlyTone("d4j81j4") == "d4j81j4");      // 聲調接在第一個符號後，方案已認得
-  CHECK(RepairEarlyTone("4dj81j4") == "4dj81j4");      // 聲調打在音節最前
+  CHECK(RepairEarlyTone("dj48 ") == "dj48 ");  // 褲啊：韻母自己有聲調
+  CHECK(RepairEarlyTone("1840q9 ") == "1840q9 ");  // 爸安：前面的音節已經有韻母
+  CHECK(RepairEarlyTone("d4j81j4") ==
+        "d4j81j4");  // 聲調接在第一個符號後，方案已認得
+  CHECK(RepairEarlyTone("4dj81j4") == "4dj81j4");  // 聲調打在音節最前
   CHECK(RepairEarlyTone("dj841j4") == "dj841j4");
   CHECK(UnconvertedTail("\xe4\xbb\x8a\xe5\xa4\xa9vu84", "rup vu84") == 4);
   CHECK(UnconvertedTail("\xe4\xbb\x8a\xe5\xa4\xa9", "rup wu0") == 0);
@@ -174,21 +180,25 @@ static void TestZhuyin() {
   std::string cached_input = "rupw";
   Strings cached_units = {L"今", L"ㄊ"};
   std::vector<size_t> cached_lens = {3, 1};
-  auto preview = BuildZhuyinPreview(utf8::FromWide(L"金"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0,
-                                   sp, cached_input, cached_units, cached_lens);
+  auto preview = BuildZhuyinPreview(
+      utf8::FromWide(L"金"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0, sp,
+      cached_input, cached_units, cached_lens);
   CHECK(preview.text == L"金" && preview.cursor == 1);
-  preview = BuildZhuyinPreview(utf8::FromWide(L"今"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0,
-                              sp, cached_input, cached_units, cached_lens);
+  preview = BuildZhuyinPreview(utf8::FromWide(L"今"), utf8::FromWide(L"ㄐㄧㄣ"),
+                               "rup", 3, "", 0, sp, cached_input, cached_units,
+                               cached_lens);
   CHECK(preview.text == L"今");
   // 音節本身被改動就不能沿用成字狀態。
-  preview = BuildZhuyinPreview(utf8::FromWide(L"機"), utf8::FromWide(L"ㄐㄧ"), "ru", 2, "", 0,
-                              sp, cached_input, cached_units, cached_lens);
+  preview =
+      BuildZhuyinPreview(utf8::FromWide(L"機"), utf8::FromWide(L"ㄐㄧ"), "ru",
+                         2, "", 0, sp, cached_input, cached_units, cached_lens);
   CHECK(preview.text == L"ㄐㄧ");
   cached_input.clear();
   cached_units.clear();
   cached_lens.clear();
-  preview = BuildZhuyinPreview(utf8::FromWide(L"今"), utf8::FromWide(L"ㄐㄧㄣ"), "rup", 3, "", 0,
-                              sp, cached_input, cached_units, cached_lens);
+  preview = BuildZhuyinPreview(utf8::FromWide(L"今"), utf8::FromWide(L"ㄐㄧㄣ"),
+                               "rup", 3, "", 0, sp, cached_input, cached_units,
+                               cached_lens);
   CHECK(preview.text == L"ㄐㄧㄣ");
 }
 
@@ -232,12 +242,15 @@ static void TestRescoreBatch() {
     int single_calls = 0, batch_calls = 0;
     Strings batched;
     bool malformed = false;
-    bool ScoreText(const std::wstring& context, const std::wstring& text, double* total,
+    bool ScoreText(const std::wstring& context,
+                   const std::wstring& text,
+                   double* total,
                    std::vector<double>* per_char) override {
       ++single_calls;
       return FakeScorer::ScoreText(context, text, total, per_char);
     }
-    bool ScoreBatch(const std::wstring& context, const Strings& texts,
+    bool ScoreBatch(const std::wstring& context,
+                    const Strings& texts,
                     std::vector<double>* totals) override {
       ++batch_calls;
       batched = texts;
@@ -253,21 +266,26 @@ static void TestRescoreBatch() {
     }
   } scorer;
   scorer.score = {{L'甲', -10}, {L'乙', -10}, {L'丙', -10}, {L'丁', -10},
-                  {L'好', -1}, {L'佳', -2}, {L'優', -3}};
+                  {L'好', -1},  {L'佳', -2},  {L'優', -3}};
   const Strings units = {L"甲", L"乙", L"丙", L"丁"};
-  const std::vector<Strings> homophones = {
-      {L"甲", L"好", L"佳", L"優"}, {L"乙", L"好", L"佳", L"優"},
-      {L"丙", L"好", L"佳", L"優"}, {L"丁", L"好", L"佳", L"優"}};
+  const std::vector<Strings> homophones = {{L"甲", L"好", L"佳", L"優"},
+                                           {L"乙", L"好", L"佳", L"優"},
+                                           {L"丙", L"好", L"佳", L"優"},
+                                           {L"丁", L"好", L"佳", L"優"}};
   double gain = 0;
-  CHECK(ime::RescoreSentence(&scorer, L"前文", units, homophones, &gain) == L"好好好好");
+  CHECK(ime::RescoreSentence(&scorer, L"前文", units, homophones, &gain) ==
+        L"好好好好");
   CHECK(gain == 36);
-  // 保留原本 12 個單點候選；從最多 16 次 provider 呼叫降為 1 次批次 + 4 次單句。
-  CHECK(scorer.batch_calls == 1 && scorer.batched.size() == 12 && scorer.single_calls == 4);
+  // 保留原本 12 個單點候選；從最多 16 次 provider 呼叫降為 1 次批次 + 4
+  // 次單句。
+  CHECK(scorer.batch_calls == 1 && scorer.batched.size() == 12 &&
+        scorer.single_calls == 4);
   CHECK(scorer.calls == 16);
 
   // 重複候選不浪費評分額度，也不擠掉後面的有效候選。
   CHECK(ime::RescoreSentence(&scorer, L"", {L"甲", L"乙"},
-                             {{L"甲", L"好", L"好", L"佳"}, {L"乙"}}) == L"好乙");
+                             {{L"甲", L"好", L"好", L"佳"}, {L"乙"}}) ==
+        L"好乙");
   CHECK(scorer.batched.size() == 2);
   scorer.malformed = true;
   CHECK(ime::RescoreSentence(&scorer, L"", units, homophones).empty());
@@ -286,7 +304,8 @@ static void TestRescoreBatch() {
   FakeScorer interrupted;
   interrupted.score = scorer.score;
   {
-    // baseline + 12 個單點候選後，在第一個組合替換時取消，不得繼續評剩下的組合。
+    // baseline + 12
+    // 個單點候選後，在第一個組合替換時取消，不得繼續評剩下的組合。
     LLMCancelScope cancel([&] { return interrupted.calls >= 14; });
     CHECK(ime::RescoreSentence(&interrupted, L"", units, homophones).empty());
   }
@@ -376,7 +395,8 @@ static void TestChoiceLog(const fs::path& dir) {
   r.text = L"今天\n";
   const std::string plain = ime::FormatChoiceRecord(r);
   CHECK(plain ==
-        "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 \t\t\t\t\t\t");
+        "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 "
+        "\t\t\t\t\t\t");
   {
     // 整句候選（U+001E 分隔；句子裡的分隔字元換成空白）、分數與新欄位
     ime::ChoiceRecord shown = r;
@@ -387,7 +407,10 @@ static void TestChoiceLog(const fs::path& dir) {
     shown.took = "rerank";
     shown.context_key = L"notepad.exe|標題";
     CHECK(ime::FormatChoiceRecord(shown) ==
-          "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 \t金天\x1E今 天\t-12.5000,-8.2500\t0.5000,1.2500\trerank:3.75\trerank\tnotepad.exe|標題");
+          "1700000000\tnotepad.exe\tchanged\t前 文\tㄐㄧㄣ ㄊㄧㄢ\t金天\t今天 "
+          "\t金天\x1E今 "
+          "天\t-12.5000,-8.2500\t0.5000,1.2500\trerank:3.75\trerank\tnotepad."
+          "exe|標題");
   }
 
   // 加密附加兩筆，讀回來逐筆解開
@@ -575,7 +598,9 @@ static void TestPredictionConsumptionAndDuplicates() {
     std::condition_variable cv;
     std::atomic<bool> entered{false}, finished{false};
     bool released = false;
-    Strings PredictCandidates(const std::wstring&, const std::wstring&, size_t) override {
+    Strings PredictCandidates(const std::wstring&,
+                              const std::wstring&,
+                              size_t) override {
       std::unique_lock<std::mutex> lock(gate);
       entered = true;
       cv.wait(lock, [&] { return released; });
@@ -591,7 +616,9 @@ static void TestPredictionConsumptionAndDuplicates() {
     m.predict = &model;
     return m;
   };
-  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) { ++updates; };
+  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) {
+    ++updates;
+  };
   ime::PredictionEngine engine(hooks);
   ime::PredictionRequest request;
   request.personal = {L"先選這個"};
@@ -601,7 +628,8 @@ static void TestPredictionConsumptionAndDuplicates() {
   std::wstring text;
   bool recommend = false, correction = false;
   // 無效的選取不應取消請求。
-  CHECK(!engine.Take(9, &text, &recommend, &correction) && engine.IsCurrent(seq));
+  CHECK(!engine.Take(9, &text, &recommend, &correction) &&
+        engine.IsCurrent(seq));
   CHECK(engine.Take(0, &text, &recommend, &correction) && text == L"先選這個");
   CHECK(!engine.IsCurrent(seq));
   {
@@ -804,11 +832,14 @@ static void TestConfidenceOrdering() {
     return true;
   };
   hooks.confidence = [&](ime::SuggestionKind kind, double) {
-    return kind == ime::SuggestionKind::kRerank ? ime::NoConfidence()
-           : kind == ime::SuggestionKind::kRecommend ? 0.3 : 0.9;
+    return kind == ime::SuggestionKind::kRerank      ? ime::NoConfidence()
+           : kind == ime::SuggestionKind::kRecommend ? 0.3
+                                                     : 0.9;
   };
   std::atomic<int> mixed_updates{0};
-  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) { ++mixed_updates; };
+  hooks.on_update = [&](uint64_t, uint64_t, const ime::PredictionSet&) {
+    ++mixed_updates;
+  };
   ime::PredictionEngine mixed(hooks);
   typing.prefix = L"今天汽";
   typing.rescore = typing.rerank = true;
@@ -818,7 +849,8 @@ static void TestConfidenceOrdering() {
   set = mixed.Snapshot();
   CHECK(set.candidates.size() >= 3);
   if (set.candidates.size() >= 3) {
-    CHECK(set.IsCorrection(0) && set.Kind(1) == ime::CandidateKind::kRecommend &&
+    CHECK(set.IsCorrection(0) &&
+          set.Kind(1) == ime::CandidateKind::kRecommend &&
           set.Kind(2) == ime::CandidateKind::kRerank);
     CHECK(set.candidates[0] == L"今天天氣" && set.candidates[1] == L"今天氣" &&
           set.candidates[2] == L"金天氣");
@@ -974,6 +1006,7 @@ static void TestLearnFilter(const fs::path& dir) {
     CHECK(lexicon.WordScore(L"碼亂") > 0);
   }
   // 原始紀錄標記了擋下的片段，重建時一樣不學
+  lexicon.FlushRawLog();
   auto records = PersonalLexicon::ReadRawLog(lexicon.ActiveLogPath());
   CHECK(records.size() == 4);
   if (records.size() == 4) {
