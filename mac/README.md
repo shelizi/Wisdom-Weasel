@@ -112,6 +112,9 @@ if rimeAPI.start_maintenance(fullCheck || vocabularyChanged) {
 
 選單加一項「網頁版設定」呼叫 `WisdomBridge.shared.showSettings()`。
 
+`mac/prepare-squirrel.py` 也把內建 `data/squirrel.yaml` 的 `style/inline_candidate` 預設改成 `true`：
+打字時組字區直接顯示轉好的字（像新注音），而不是一串注音。不要的話在 `squirrel.custom.yaml` 設成 `false`。
+
 **2. session**（`SquirrelInputController`）
 
 ```swift

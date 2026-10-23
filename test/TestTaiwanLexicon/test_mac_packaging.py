@@ -21,6 +21,12 @@ ORIGINAL = '''// local application customization
     return false
   }
 '''
+STYLE = '''style:
+  inline_preedit: true
+  # Whether to embed selected candidate as text in input field
+  inline_candidate: false
+  memorize_size: true
+'''
 
 
 class MacPackagingTest(unittest.TestCase):
@@ -31,6 +37,9 @@ class MacPackagingTest(unittest.TestCase):
         self.delegate = self.source / 'sources/SquirrelApplicationDelegate.swift'
         self.delegate.parent.mkdir(parents=True)
         self.delegate.write_text(ORIGINAL, encoding='utf-8')
+        self.style = self.source / 'data/squirrel.yaml'
+        self.style.parent.mkdir()
+        self.style.write_text(STYLE, encoding='utf-8')
         subprocess.run(['git', 'init', '-q', str(self.source)], check=True)
         # git apply does not require a commit, and these tests do not use user identity.
         subprocess.run(['git', '-C', str(self.source), 'add', '.'], check=True,
@@ -48,13 +57,30 @@ class MacPackagingTest(unittest.TestCase):
             self.assertEqual((ROOT / 'resource/lexicons/taiwan' / name).read_bytes(),
                              (self.source / 'data/plum' / name).read_bytes())
 
+    def test_inline_candidate_is_on_by_default(self):
+        packaging.prepare(self.source)
+        expected = STYLE.replace('inline_candidate: false', 'inline_candidate: true')
+        self.assertEqual(expected, self.style.read_text(encoding='utf-8'))
+        packaging.prepare(self.source)
+        self.assertEqual(expected, self.style.read_text(encoding='utf-8'))
+
+    def test_missing_inline_candidate_does_not_patch_or_stage(self):
+        style = STYLE.replace('  inline_candidate: false\n', '')
+        self.style.write_text(style, encoding='utf-8')
+        with self.assertRaisesRegex(RuntimeError, 'inline_candidate'):
+            packaging.prepare(self.source)
+        self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
+        self.assertEqual(style, self.style.read_text(encoding='utf-8'))
+        self.assertFalse((self.source / 'data/plum').exists())
+
     def test_incompatible_deployment_hook_is_preserved(self):
         original = ORIGINAL.replace('rimeAPI.initialize(nil)', 'customInitialize()')
         self.delegate.write_text(original, encoding='utf-8')
         with self.assertRaisesRegex(RuntimeError, 'differs from the pinned version'):
             packaging.prepare(self.source)
         self.assertEqual(original, self.delegate.read_text(encoding='utf-8'))
-        self.assertFalse((self.source / 'data').exists())
+        self.assertFalse((self.source / 'data/plum').exists())
+        self.assertEqual(STYLE, self.style.read_text(encoding='utf-8'))
 
     def test_bad_checksum_does_not_patch_or_stage(self):
         resource = Path(self.tmp.name) / 'resource'
@@ -63,7 +89,8 @@ class MacPackagingTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
             packaging.prepare(self.source, resource)
         self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
-        self.assertFalse((self.source / 'data').exists())
+        self.assertFalse((self.source / 'data/plum').exists())
+        self.assertEqual(STYLE, self.style.read_text(encoding='utf-8'))
 
     def test_missing_license_does_not_patch_or_stage(self):
         resource = Path(self.tmp.name) / 'resource'
@@ -72,7 +99,8 @@ class MacPackagingTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Missing bundled vocabulary resource'):
             packaging.prepare(self.source, resource)
         self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
-        self.assertFalse((self.source / 'data').exists())
+        self.assertFalse((self.source / 'data/plum').exists())
+        self.assertEqual(STYLE, self.style.read_text(encoding='utf-8'))
 
     def test_bad_source_archive_does_not_patch_or_stage(self):
         resource = Path(self.tmp.name) / 'resource'
@@ -81,7 +109,8 @@ class MacPackagingTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'source checksum mismatch'):
             packaging.prepare(self.source, resource)
         self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
-        self.assertFalse((self.source / 'data').exists())
+        self.assertFalse((self.source / 'data/plum').exists())
+        self.assertEqual(STYLE, self.style.read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':

@@ -15,6 +15,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parent.parent
 FILES = ('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.NOTICE.txt',
          'wisdom_taiwan.manifest.json', 'wisdom_taiwan.sources.zip')
+INLINE_CANDIDATE_OFF = '\n  inline_candidate: false\n'
+INLINE_CANDIDATE_ON = '\n  inline_candidate: true\n'
 
 
 def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
@@ -30,6 +32,13 @@ def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
         raise RuntimeError('Bundled vocabulary checksum mismatch')
     if hashlib.sha256((resource / FILES[3]).read_bytes()).hexdigest() != manifest['sources_sha256']:
         raise RuntimeError('Bundled vocabulary source checksum mismatch')
+    # Show the converted characters while typing (like 新注音), not the zhuyin keys.
+    # Users can still turn it off with style/inline_candidate in squirrel.custom.yaml.
+    style = source / 'data/squirrel.yaml'
+    style_text = style.read_text(encoding='utf-8') if style.is_file() else ''
+    if style_text.count(INLINE_CANDIDATE_OFF) + style_text.count(INLINE_CANDIDATE_ON) != 1:
+        raise RuntimeError("data/squirrel.yaml has no single style/inline_candidate line; "
+                           'default was not changed. Review the pinned Squirrel version.')
 
     patch = ROOT / 'mac/squirrel/taiwan-lexicon.patch'
     def git(*args):
@@ -42,6 +51,9 @@ def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
     elif git('--reverse', '--check').returncode != 0:
         raise RuntimeError('Squirrel deployment hook differs from the pinned version; '
                            'integration patch was not applied. Preserve and review local edits.')
+    if INLINE_CANDIDATE_OFF in style_text:
+        style.write_text(style_text.replace(INLINE_CANDIDATE_OFF, INLINE_CANDIDATE_ON),
+                         encoding='utf-8')
 
     # package/add_data_files registers these in Copy Shared Support Files. This
     # happens before Xcode codesigns the app, so no signed bundle is modified.
@@ -49,7 +61,7 @@ def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
     destination.mkdir(parents=True, exist_ok=True)
     for name in FILES:
         shutil.copyfile(resource / name, destination / name)
-    print('Prepared Taiwan vocabulary and Squirrel deployment hook')
+    print('Prepared Taiwan vocabulary, Squirrel deployment hook and inline candidate default')
 
 
 if __name__ == '__main__':
