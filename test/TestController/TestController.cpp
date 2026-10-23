@@ -204,6 +204,10 @@ int main(int argc, char** argv) {
   }
   const std::string shared = argv[1], user = argv[2];
   fs::create_directories(user);
+  // 每次從空的選字記憶開始：上次跑的送出會讓 Rime 的候選順序與整句數不同
+  for (const auto& entry : fs::directory_iterator(user))
+    if (entry.path().extension() == ".userdb")
+      fs::remove_all(entry.path());
   // 只部署注音方案，第一次跑比較快（之後沿用 build 資料夾）
   {
     std::ofstream out(fs::path(user) / "default.custom.yaml", std::ios::binary);
@@ -1155,39 +1159,101 @@ int main(int argc, char** argv) {
     t.Key(key::kEscape);
     CHECK(!t.Composing());
 
-    // 打完馬上送出（背景還沒查）：送出前當場查，紀錄的最後一筆有整句候選
+    // 送出前當場查（背景還沒查到）：紀錄的最後一筆有整句候選，第一句是 Rime
+    // 的預設轉換
     const fs::path log = fs::path(user) / "personal" / "choice_log.dat";
+    // 最後一筆紀錄的欄位：時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換
+    // \t 送出 \t 整句（\x1e 分隔）…
+    auto last_record = [&] {
+      std::ifstream in(log, std::ios::binary);
+      const std::string data((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+      std::string last;
+      for (size_t pos = 0; pos + 4 <= data.size();) {
+        uint32_t len = 0;
+        std::memcpy(&len, data.data() + pos, 4);
+        pos += 4;
+        if (pos + len > data.size() ||
+            !personal_crypto::Unprotect(data.substr(pos, len), &last))
+          last.clear();
+        pos += len;
+      }
+      std::vector<std::string> fields(1);
+      for (char ch : last) {
+        if (ch == '\t')
+          fields.emplace_back();
+        else
+          fields.back() += ch;
+      }
+      return fields;
+    };
+    auto logged = [&](const char* how, const std::string& committed) {
+      const auto f = last_record();
+      const bool ok = f.size() > 7 && f[6] == committed &&
+                      f[7].find('\x1e') != std::string::npos &&
+                      f[7].compare(0, f[5].size(), f[5]) == 0;
+      std::printf("  choice log (%s): default %s, committed %s\n", how,
+                  f.size() > 5 ? f[5].c_str() : "?",
+                  f.size() > 6 ? f[6].c_str() : "?");
+      return ok;
+    };
     fs::remove(log);
+    const std::string sentence = U8(L"今天天氣很好");
+    // Enter：打完馬上送出
     t.commits.clear();
     t.Type("rupwu0wu0fu4cp3cl3");
     t.Key(key::kReturn);
-    CHECK(t.commits.size() == 1 && t.commits.back() == L"今天天氣很好");
-    std::ifstream in(log, std::ios::binary);
-    const std::string data((std::istreambuf_iterator<char>(in)),
-                           std::istreambuf_iterator<char>());
-    std::string last;
-    for (size_t pos = 0; pos + 4 <= data.size();) {
-      uint32_t len = 0;
-      std::memcpy(&len, data.data() + pos, 4);
-      pos += 4;
-      if (pos + len > data.size() ||
-          !personal_crypto::Unprotect(data.substr(pos, len), &last))
-        last.clear();
-      pos += len;
+    CHECK(t.commits.size() == 1 && U8(t.commits.back()) == sentence);
+    CHECK(logged("Enter", sentence));
+    // 框選換過字再送出：記 Rime 原本的排序，預設轉換仍是換字前的
+    t.commits.clear();
+    t.Type("rupwu0wu0fu4cp3cl3");
+    t.Key(key::kLeft);
+    t.Key(key::kLeft);  // 框住「很」
+    CHECK(ss.focus == 4);
+    int other = -1;
+    {
+      RIME_STRUCT(RimeContext, ctx);
+      if (api->get_context(t.Rime(), &ctx)) {
+        for (int i = 0; i < ctx.menu.num_candidates && other < 0; ++i)
+          if (std::string(ctx.menu.candidates[i].text) != U8(L"很"))
+            other = i;
+        api->free_context(&ctx);
+      }
     }
-    // 時間 \t 應用程式 \t 方式 \t 前文 \t 注音 \t 預設轉換 \t 送出 \t
-    // 整句（\x1e 分隔）…
-    std::vector<std::string> fields(1);
-    for (char ch : last) {
-      if (ch == '\t')
-        fields.emplace_back();
-      else
-        fields.back() += ch;
+    CHECK(other >= 0);
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.SelectCandidate(id, (size_t)other);
     }
-    CHECK(fields.size() > 7 && fields[7].find('\x1e') != std::string::npos);
-    if (fields.size() > 7)
-      std::printf("  choice log on Enter: %s\n",
-                  fields[7].substr(0, fields[7].find('\x1e')).c_str());
+    t.Respond();
+    t.Key(key::kEnd);
+    const std::wstring changed = t.preedit.text;
+    CHECK(changed.size() == 6 && changed != L"今天天氣很好");
+    t.Key(key::kReturn);
+    CHECK(t.commits.size() == 1 && t.commits.back() == changed);
+    CHECK(logged("framed", U8(changed)) && last_record()[5] == sentence);
+    // 應用程式要求送出（失去焦點等）
+    t.commits.clear();
+    t.Type("rupwu0wu0fu4cp3cl3");
+    {
+      std::lock_guard<std::mutex> lock(frontend.mutex);
+      controller.CommitComposition(id);
+    }
+    t.Respond();
+    CHECK(t.commits.size() == 1 && U8(t.commits.back()) == sentence);
+    CHECK(logged("commit_composition", sentence));
+    // 快打模式的 Shift+數字選字（鼠鬚管傳 Shift+!）只確認該段，不送出；之後按
+    // Enter 送出
+    CHECK(api->select_schema(t.Rime(), "bopomofo_express"));
+    t.commits.clear();
+    t.Type("rupwu0wu0fu4cp3cl3");
+    t.Key('!', mod::kShift);
+    CHECK(t.commits.empty() && t.Composing());
+    t.Key(key::kReturn);
+    CHECK(t.commits.size() == 1 && U8(t.commits.back()) == sentence);
+    CHECK(logged("Shift+1, Enter", sentence));
+    CHECK(!t.Composing());
   }
 
   {

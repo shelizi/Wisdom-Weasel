@@ -1164,6 +1164,7 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     }
   }
 
+  // 選字紀錄：Enter 在 Rime 送出前補查整句候選（注音方案選字只確認該段，不會送出）
   if (!release && !deleted_syllable && (keycode == key::kReturn || keycode == key::kKPEnter))
     EnsureLoggedSentences(ss);
 
@@ -2148,6 +2149,7 @@ void Controller::CommitComposition(uint64_t id) {
     ss->mixed_text.clear();
     ss->mixed_english = false;
   } else {
+    EnsureLoggedSentences(*ss);
     api_->commit_composition(ss->session_id);
   }
 }
@@ -2272,6 +2274,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
       ss.shown_scores.clear();
       ss.default_text.clear();
       ss.default_zhuyin.clear();
+      ss.default_input.clear();
     }
     return;
   }
@@ -2294,6 +2297,7 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
       api_->get_current_schema(ss.session_id, schema_id, sizeof(schema_id));
       ss.default_text = TaiwanIfZhuyin(schema_id, std::move(preview));
       ss.default_zhuyin = ComposingZhuyin(ss.session_id, schema_id);
+      ss.default_input = input;
     }
   }
 }
@@ -2576,16 +2580,51 @@ bool Controller::FindSentences(const SessionState& ss, size_t fetch,
   return sentences->size() >= 2;
 }
 
-// 選字紀錄：打完馬上送出（停頓不到補全的延遲）時背景還沒查到這句的整句候選，送出前當場查。
-// 要在 Rime 送出前：送出後選字記憶已經學了這句，查到的順序會偏向送出的句子
+// 選字紀錄：送出前（Enter、應用程式要求送出）背景還沒查到這句的整句候選就當場查。
+// 記的是 Rime 原本的排序：用背景 session 查完整的按鍵，不受框選、手動選字與游標位置影響；
+// 第一句是 Rime 的預設轉換。要在 Rime 送出前：送出後選字記憶已經學了這句，順序會偏向送出的句子
 void Controller::EnsureLoggedSentences(SessionState& ss) {
-  if (!choice_log_ || ss.default_text.empty())
+  if (!choice_log_)
     return;
-  if (!ss.shown_sentences.empty() &&
-      TaiwanIfZhuyin(api_, ss.session_id, ss.shown_sentences[0]) == ss.default_text)
+  const char* raw = api_->get_input(ss.session_id);
+  const std::string input = raw ? raw : "";
+  // 預設轉換要是這串按鍵的（改字後又補打過，原本記的就不對了）
+  const bool default_ok = !ss.default_text.empty() && ss.default_input == input;
+  if (input.empty() || ss.preview_input != input ||
+      (default_ok && !ss.shown_sentences.empty() &&
+       TaiwanIfZhuyin(api_, ss.session_id, ss.shown_sentences[0]) == ss.default_text))
     return;
-  std::vector<std::wstring> sentences;
-  if (!FindSentences(ss, kChoiceLogShown, {}, &sentences))
+  char schema_id[256] = {0};
+  api_->get_current_schema(ss.session_id, schema_id, sizeof(schema_id));
+  if (!IsZhuyinSchema(schema_id))
+    return;
+  // 字數照注音預覽（每個音節一個字；還有沒拼完的注音就不記）
+  const std::vector<std::wstring> units =
+      zhuyin_preview::SplitChars(zhuyin_preview::Join(ss.preview_units));
+  if (units.size() < 2)
+    return;
+  for (const auto& u : units)
+    if (u.empty() || u[0] < 0x3400 || zhuyin_preview::IsBopomofo(u[0]))
+      return;
+  std::vector<std::wstring> sentences =
+      sentences_->Find(schema_id, input, units.size(), kChoiceLogShown);
+  if (sentences.empty())
+    return;
+  if (!default_ok) {
+    ss.default_text = TaiwanIfZhuyin(schema_id, sentences[0]);
+    ss.default_zhuyin = ComposingZhuyin(ss.session_id, schema_id);
+    ss.default_input = input;
+  }
+  // 第一句是預設轉換（比較時兩邊都換成臺灣用字）
+  sentences.erase(std::remove_if(sentences.begin(), sentences.end(),
+                                 [&](const std::wstring& s) {
+                                   return TaiwanIfZhuyin(schema_id, s) == ss.default_text;
+                                 }),
+                  sentences.end());
+  sentences.insert(sentences.begin(), ss.default_text);
+  if (sentences.size() > kChoiceLogShown)
+    sentences.resize(kChoiceLogShown);
+  if (sentences.size() < 2)
     return;
   ss.shown_sentences = std::move(sentences);
   ss.shown_scores.clear();  // 沒有評分
@@ -3031,6 +3070,7 @@ void Controller::CountCommit(SessionState& ss, const std::wstring& text, bool mi
   ss.applied_suggestion.clear();
   ss.default_text.clear();
   ss.default_zhuyin.clear();
+  ss.default_input.clear();
 }
 
 void Controller::LogChoice(SessionState& ss, const std::wstring& text, bool mixed,

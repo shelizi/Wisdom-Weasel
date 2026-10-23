@@ -58,6 +58,7 @@ struct SessionState {
   // 選字紀錄：還沒換字前 Rime 的預設轉換（整句）與對應的注音
   std::wstring default_text;
   std::wstring default_zhuyin;
+  std::string default_input;  // default_text 是哪一串按鍵的轉換（之後又改了輸入就不能用）
   // 注音逐字選字（像新注音）：←/→ 框住的字（音節序號），-1 表示沒有框選
   int focus_hl = 0;  // 框選時反白停的位置（目前顯示的字），換到別的才算換字
   int focus = -1;
