@@ -21,10 +21,26 @@ ORIGINAL = '''// local application customization
     return false
   }
 '''
-# 組字區的 patch 要套在真正固定版本的檔案上
-INPUT_CONTROLLER = subprocess.run(
-    ['git', '-C', str(ROOT / 'squirrel'), 'show', 'HEAD:sources/SquirrelInputController.swift'],
-    check=True, capture_output=True, text=True).stdout
+
+
+def preimage(patch):
+    """Rebuild the hunks' original text from the patch itself.
+
+    The macOS core CI job checks out without submodules; the squirrel job applies
+    the patch to the real pinned file when it builds the app.
+    """
+    lines, in_hunk = [], False
+    for line in patch.read_text(encoding='utf-8').splitlines():
+        if line.startswith('@@'):
+            in_hunk = True
+        elif in_hunk and line[:1] in (' ', '-'):
+            lines.append(line[1:])
+        elif in_hunk and not line.startswith('+'):
+            in_hunk = False
+    return '\n'.join(lines) + '\n'
+
+
+INPUT_CONTROLLER = preimage(ROOT / 'mac/squirrel/preedit-selection.patch')
 STYLE = '''style:
   inline_preedit: true
   # Whether to embed selected candidate as text in input field
