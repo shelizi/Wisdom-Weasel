@@ -1093,9 +1093,9 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
     }
   }
 
-  // 逐字選字框的是游標前的字，內部與畫面游標都在選中字末端。
-  // 開始輸入新音節時先放開框選時選好的前段，再在游標處插入。
-  if ((ss.focus >= 0 || AtStart(ss)) && !release && !(mask & (other_mod_mask | mod::kShift)) &&
+  // 逐字選字的內部游標在選中字末端，但畫面游標在它前面。
+  // 開始輸入新音節時先退出選字，依畫面位置插入，不能沿用選字用的游標。
+  if (ss.focus >= 0 && !release && !(mask & (other_mod_mask | mod::kShift)) &&
       keycode > 0x20 && keycode < 0x7f) {
     char schema[256] = {0};
     api_->get_current_schema(session_id, schema, sizeof(schema));
@@ -1106,14 +1106,13 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
         sp.alphabet.find((char)keycode) != std::string::npos &&
         sp.finals.find((char)keycode) == std::string::npos && keycode != sp.delimiter) {
       size_t caret = 0;
-      for (int i = 0; i <= ss.focus; ++i)
+      for (int i = 0; i < ss.focus; ++i)
         caret += ss.preview_lens[i];
       const std::string input = raw;
       api_->clear_composition(session_id);
       api_->set_input(session_id, input.c_str());
       api_->set_caret_pos(session_id, caret);
       ss.focus = -1;
-      ss.at_start = false;
     }
   }
 
@@ -1250,7 +1249,7 @@ KeyResult Controller::ProcessKey(uint64_t id, int keycode, int mask) {
   // 打字中補全：正在組字時，停頓 300ms 後以 Rime 目前的轉換結果續寫；組字結束則清除補全候選。
   // 開選字紀錄時也要排：查整句候選記下來（只記不評）
   const bool rescore = ScoringWanted();
-  if (handled && !release && (!deleted_syllable || ss.focus < 0) && !AtStart(ss) &&
+  if (handled && !release && (!deleted_syllable || ss.focus < 0) &&
       (PredictionAvailable() || TypoAvailable() || rescore || choice_log_)) {
     bool composing = false;
     char schema_id[256] = {0};
@@ -1473,7 +1472,6 @@ bool Controller::FocusSyllable(SessionState& ss, int index) {
     api_->highlight_candidate(session_id, shown);
   ss.focus_hl = shown > 0 ? shown : 0;
   ss.focus = index;
-  ss.at_start = false;
   ss.focus_input = input;
   ss.focus_caret = end;
   return true;
@@ -1735,8 +1733,8 @@ bool Controller::RestoreManualChoices(SessionState& ss, bool keep_focus) {
   return true;
 }
 
-// 依顯示游標刪字：Backspace 刪游標前的字，Delete 刪游標後的字（框選時框的是游標前的字）。
-// 直接移除原始音節，不重送 Backspace：Rime 的第一下可能只解除前段選字，重送會留下半個音節。
+// 依顯示游標刪整字：Backspace 刪前字，Delete 刪後字。直接移除原始音節，不重送 Backspace：
+// Rime 的第一下可能只解除前段選字，重送會留下半個音節。
 bool Controller::HandleZhuyinDelete(SessionState& ss, int keycode, int mask) {
   if ((keycode != key::kBackSpace && keycode != key::kDelete) ||
       (mask & (mod::kRelease | mod::kControl | mod::kAlt | mod::kSuper | mod::kShift)))
@@ -1759,137 +1757,71 @@ bool Controller::HandleZhuyinDelete(SessionState& ss, int keycode, int mask) {
   if (!zhuyin)
     return false;
   const size_t caret = api_->get_caret_pos(session_id);
-  const int count = (int)ss.preview_lens.size();
-  // 顯示游標前有幾個字。沒框選時 Rime 的游標要落在音節邊界，不然交給 Rime。
-  const bool at_start = AtStart(ss);
-  int cursor = ss.focus >= 0 ? ss.focus + 1 : at_start ? 0 : -1;
-  size_t total = 0;
-  for (int i = 0; i <= count; ++i) {
-    if (cursor < 0 && total == caret)
-      cursor = i;
-    if (i < count)
-      total += ss.preview_lens[i];
+  int index = ss.focus;
+  // Rime 的內部游標在框選音節末端，顯示游標則在音節開頭。
+  // 句首 Backspace 必須吃掉，不能交回 Rime 刪框選音節。
+  if (ss.focus >= 0 && keycode == key::kBackSpace) {
+    if (ss.focus == 0)
+      return true;
+    --index;
   }
-  if (total != input.size() || cursor < 0 || cursor > count)
+  size_t start = 0, total = 0;
+  for (size_t i = 0; i < ss.preview_lens.size(); ++i) {
+    const size_t end = total + ss.preview_lens[i];
+    if (ss.focus < 0 && ((keycode == key::kBackSpace && end == caret) ||
+                         (keycode == key::kDelete && total == caret)))
+      index = (int)i;
+    total = end;
+  }
+  if (total != input.size() || index < 0 || index >= (int)ss.preview_lens.size())
     return false;
-  const bool back = keycode == key::kBackSpace;
-  const int index = back ? cursor - 1 : cursor;
-  // 句首 Backspace、句尾 Delete 沒有字可刪，吃掉按鍵。
-  if (index < 0 || index >= count)
-    return true;
-  size_t start = 0;
   for (int i = 0; i < index; ++i)
     start += ss.preview_lens[i];
+  // 尚未拼完的注音逐符號刪除。框選時內部游標在音節末端，
+  // Delete 要從顯示游標所在的音節開頭刪，不能交給 Rime 刪句尾。
   const auto& unit = ss.preview_units[index];
   if (unit.empty())
     return false;
-  // 尚未拼完的注音逐符號刪：Backspace 刪游標前一鍵，Delete 刪游標後一鍵。
-  // 沒框選時 Rime 的游標就在顯示游標上，直接交給 Rime。
   const bool pending = zhuyin_preview::IsBopomofo(unit.front()) ||
                        zhuyin_preview::IsTone(unit.front());
-  if (pending && ss.focus < 0 && !at_start)
+  if (pending && (ss.focus < 0 || keycode != key::kDelete))
     return false;
   const size_t erased = pending ? 1 : ss.preview_lens[index];
-  const size_t at = pending && back ? start + ss.preview_lens[index] - 1 : start;
-  EditManualChoices(ss, at, erased, 0);
-  input.erase(at, erased);
+  EditManualChoices(ss, start, erased, 0);
+  input.erase(start, erased);
   ss.manual_input = input;
-  bool removed = true;
   if (pending && ss.preview_lens[index] > erased) {
     ss.preview_lens[index] -= erased;
     ss.preview_units[index] = zhuyin_preview::Format(
         Speller(schema.c_str()),
         input.substr(start, ss.preview_lens[index]));
-    removed = false;
   } else {
     ss.preview_units.erase(ss.preview_units.begin() + index);
     ss.preview_lens.erase(ss.preview_lens.begin() + index);
   }
   ss.preview_input = input;
   ss.focus = -1;
-  ss.at_start = false;
-  // 刪完的游標：Backspace 刪掉整字往前一格，Delete 不動。
-  const int next = back && removed ? cursor - 1 : cursor;
-  const int left = (int)ss.preview_lens.size();
   api_->clear_composition(session_id);
   if (!input.empty()) {
     api_->set_input(session_id, input.c_str());
-    if (next >= left) {
-      // 游標在句尾：保留前段換過的字，再回到句尾。
-      FocusSyllable(ss, left - 1);
+    if (index < (int)ss.preview_lens.size()) {
+      // 原位置的下一個字接上來，繼續在游標後選字。
+      if (!FocusSyllable(ss, index))
+        api_->set_caret_pos(session_id, start);
+    } else {
+      // 刪掉末字：保留前段換過的字，再回到句尾。
+      FocusSyllable(ss, (int)ss.preview_lens.size() - 1);
       api_->set_caret_pos(session_id, input.size());
       ss.focus = -1;
-    } else if (next <= 0) {
-      // 游標在句首：剩下的字照原本顯示的樣子選回去，Rime 游標留在句尾
-      FocusSyllable(ss, left - 1);
-      api_->set_caret_pos(session_id, input.size());
-      SetAtStart(ss);
-    } else if (!FocusSyllable(ss, next - 1)) {
-      // 游標前的字接著框起來，繼續選字。
-      size_t end = 0;
-      for (int i = 0; i < next; ++i)
-        end += ss.preview_lens[i];
-      api_->set_caret_pos(session_id, end);
     }
   }
-  if (back) {
+  if (keycode == key::kBackSpace) {
     ++Stats(session_id).backspaces;
     SaveStats();
   }
   return true;
 }
 
-// 放開框選，游標回到句尾（to_start 時畫面游標停在句首）。框選時把前面幾段選好了（Rime 只會給後面的候選）：
-// 有手動選字就照鎖定重放；否則先放開，沒換過字就回到 Rime 原本的整句與候選清單
-// （例如多個整句候選）；換過字（和 Rime 的整句不同）就照框選時的樣子選回去，保留換好的字
-void Controller::ReleaseFocus(SessionState& ss, bool to_start) {
-  const RimeSessionId session_id = ss.session_id;
-  ss.at_start = false;
-  const char* raw = api_->get_input(session_id);
-  const std::string input = raw ? raw : "";
-  if (!ss.manual_choices.empty()) {
-    RestoreManualChoices(ss, false);
-  } else {
-    const int focus = ss.focus;
-    const std::wstring shown = zhuyin_preview::Join(ss.preview_units);
-    api_->clear_composition(session_id);
-    api_->set_input(session_id, input.c_str());
-    std::wstring sentence;
-    RIME_STRUCT(RimeContext, ctx);
-    if (api_->get_context(session_id, &ctx)) {
-      if (ctx.commit_text_preview)
-        sentence = utf8::ToWide(ctx.commit_text_preview);
-      api_->free_context(&ctx);
-    }
-    if (sentence != shown && focus >= 0)
-      FocusSyllable(ss, focus);
-  }
-  api_->set_caret_pos(session_id, input.size());
-  ss.focus = -1;
-  if (to_start)
-    SetAtStart(ss);
-}
-
-bool Controller::AtStart(SessionState& ss) {
-  if (!ss.at_start)
-    return false;
-  const char* raw = api_->get_input(ss.session_id);
-  if (ss.focus < 0 && raw && ss.focus_input == raw &&
-      api_->get_caret_pos(ss.session_id) == ss.focus_caret)
-    return true;
-  ss.at_start = false;
-  return false;
-}
-
-void Controller::SetAtStart(SessionState& ss) {
-  const char* raw = api_->get_input(ss.session_id);
-  ss.focus = -1;
-  ss.at_start = true;
-  ss.focus_input = raw ? raw : "";
-  ss.focus_caret = api_->get_caret_pos(ss.session_id);
-}
-
-// ←/→/Home/End 逐字移動顯示游標，框住游標前的字讓 Rime 只給這個字的候選。
 bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, int mask) {
   const bool nav = keycode == key::kLeft || keycode == key::kRight || keycode == key::kHome ||
                    keycode == key::kEnd;
@@ -1916,11 +1848,8 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
   if (ss.preview_input != input || ss.preview_lens.empty())
     return false;
   const int count = (int)ss.preview_lens.size();
-  // 顯示游標前有幾個字
-  int cursor = ss.focus + 1;
-  if (AtStart(ss)) {
-    cursor = 0;
-  } else if (ss.focus < 0) {
+  int cursor = ss.focus;
+  if (cursor < 0) {
     // 句中輸入完成後沒有框選，內部游標卻仍在句中，不能一律當成句尾。
     const size_t caret = api_->get_caret_pos(session_id);
     size_t start = 0;
@@ -1938,28 +1867,42 @@ bool Controller::HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, i
       start = end;
     }
   }
-  int target;  // 移動後游標前有幾個字
+  int target;
   if (keycode == key::kLeft) {
-    if (cursor <= 0)
-      return true;  // 已在句首
-    target = cursor - 1;
+    target = (std::max)(0, cursor - 1);
   } else if (keycode == key::kHome) {
     target = 0;
-  } else if (cursor >= count && ss.focus < 0) {
+  } else if (cursor >= count) {
     return false;  // 本來就在句尾
-  } else if (keycode == key::kEnd || cursor >= count) {
-    // 回到句尾：取消框選，接著打字
-    ReleaseFocus(ss, false);
+  } else if (keycode == key::kEnd || cursor + 1 >= count) {
+    if (!ss.manual_choices.empty()) {
+      RestoreManualChoices(ss, false);
+      return true;
+    }
+    // 回到句尾：取消框選，接著打字。框選時把前面幾段選好了（Rime 只會給後面的候選）：
+    // 先放開，沒換過字就回到 Rime 原本的整句與候選清單（例如多個整句候選）；
+    // 換過字（和 Rime 的整句不同）就照框選時的樣子選回去，保留換好的字
+    const int focus = ss.focus;
+    const std::wstring shown = zhuyin_preview::Join(ss.preview_units);
+    api_->clear_composition(session_id);
+    api_->set_input(session_id, input.c_str());
+    std::wstring sentence;
+    RIME_STRUCT(RimeContext, ctx);
+    if (api_->get_context(session_id, &ctx)) {
+      if (ctx.commit_text_preview)
+        sentence = utf8::ToWide(ctx.commit_text_preview);
+      api_->free_context(&ctx);
+    }
+    if (sentence != shown && focus >= 0)
+      FocusSyllable(ss, focus);
+    api_->set_caret_pos(session_id, input.size());
+    ss.focus = -1;
     return true;
   } else {
     target = cursor + 1;
   }
-  if (target == 0) {
-    // 句首前面沒有字可框：放開框選，游標停在句首，打字從句首插入
-    ReleaseFocus(ss, true);
-  } else if (!FocusSyllable(ss, target - 1)) {
+  if (!FocusSyllable(ss, target))
     return false;  // 對不上（例如省略聲調的連打），交回 Rime 原本的游標移動
-  }
   // 框字時只換這一個字：整句的 LLM 候選（補全、推薦、校正）不適用，收起來並作廢排隊中的請求。
   // 不然單字候選後面接著整句，候選窗被撐寬，Tab 也會套用整句
   if (prediction_mode_ || completion_active_ || prediction_->HasCandidates()) {
@@ -2321,7 +2264,6 @@ void Controller::UpdateComposition(uint64_t id, bool composing, const RimeContex
     ss.preview_units.clear();
     ss.preview_lens.clear();
     ss.focus = -1;
-    ss.at_start = false;
     // 沒送出就結束組字（例如 Esc）：這次不計
     if (!ss.mixed_active()) {
       ss.choice_changed = ss.llm_offered = false;
@@ -2394,12 +2336,10 @@ bool Controller::PreviewPreedit(uint64_t id, const RimeContext& ctx, bool ascii_
     const auto& unit = ss.preview_units[ss.focus];
     if (!unit.empty() && (zhuyin_preview::IsBopomofo(unit.front()) ||
                           zhuyin_preview::IsTone(unit.front()))) {
-      pv.sel_start = (int)zhuyin_preview::Join(ss.preview_units, 0, ss.focus).size();
-      pv.cursor = pv.sel_end = pv.sel_start + (int)unit.size();
+      pv.cursor = pv.sel_start = (int)zhuyin_preview::Join(ss.preview_units, 0, ss.focus).size();
+      pv.sel_end = pv.sel_start + (int)unit.size();
     }
   }
-  if (AtStart(ss))
-    pv.cursor = pv.sel_start = pv.sel_end = 0;
   // without a chosen word the whole preedit is the selection
   if (pv.sel_start == pv.sel_end) {
     pv.sel_start = 0;
