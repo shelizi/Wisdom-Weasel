@@ -116,6 +116,9 @@ if rimeAPI.start_maintenance(fullCheck || vocabularyChanged) {
 
 選單加一項「網頁版設定」呼叫 `WisdomBridge.shared.showSettings()`。
 
+`mac/prepare-squirrel.py` 也套用 `mac/squirrel/preedit-selection.patch`：注音預覽框選單字時，
+組字區只把框住的字標成選取（和小狼毫一致），不再從框選處一路標到句尾。
+
 `mac/prepare-squirrel.py` 也把內建 `data/squirrel.yaml` 的 `style/inline_candidate` 預設改成 `true`：
 打字時組字區直接顯示轉好的字（像新注音），而不是一串注音。不要的話在 `squirrel.custom.yaml` 設成 `false`。
 

@@ -17,6 +17,8 @@ FILES = ('wisdom_taiwan.dict.yaml', 'wisdom_taiwan.NOTICE.txt',
          'wisdom_taiwan.manifest.json', 'wisdom_taiwan.sources.zip')
 INLINE_CANDIDATE_OFF = '\n  inline_candidate: false\n'
 INLINE_CANDIDATE_ON = '\n  inline_candidate: true\n'
+# Integration patches for the pinned Squirrel, applied in order.
+PATCHES = ('taiwan-lexicon.patch', 'preedit-selection.patch')
 
 
 def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
@@ -40,17 +42,22 @@ def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
         raise RuntimeError("data/squirrel.yaml has no single style/inline_candidate line; "
                            'default was not changed. Review the pinned Squirrel version.')
 
-    patch = ROOT / 'mac/squirrel/taiwan-lexicon.patch'
-    def git(*args):
+    def git(patch, *args):
         return subprocess.run(['git', '-C', str(source), 'apply', *args, str(patch)],
                               capture_output=True, text=True)
-    if git('--check').returncode == 0:
-        result = git()
+    # Check every patch before applying any, so a mismatch leaves the source untouched.
+    pending = []
+    for name in PATCHES:
+        patch = ROOT / 'mac/squirrel' / name
+        if git(patch, '--check').returncode == 0:
+            pending.append(patch)
+        elif git(patch, '--reverse', '--check').returncode != 0:
+            raise RuntimeError('Squirrel source differs from the pinned version (' + name + '); '
+                               'integration patches were not applied. Preserve and review local edits.')
+    for patch in pending:
+        result = git(patch)
         if result.returncode:
             raise RuntimeError(result.stderr)
-    elif git('--reverse', '--check').returncode != 0:
-        raise RuntimeError('Squirrel deployment hook differs from the pinned version; '
-                           'integration patch was not applied. Preserve and review local edits.')
     if INLINE_CANDIDATE_OFF in style_text:
         style.write_text(style_text.replace(INLINE_CANDIDATE_OFF, INLINE_CANDIDATE_ON),
                          encoding='utf-8')
@@ -61,7 +68,7 @@ def prepare(source, resource=ROOT / 'resource/lexicons/taiwan'):
     destination.mkdir(parents=True, exist_ok=True)
     for name in FILES:
         shutil.copyfile(resource / name, destination / name)
-    print('Prepared Taiwan vocabulary, Squirrel deployment hook and inline candidate default')
+    print('Prepared Taiwan vocabulary, Squirrel integration patches and inline candidate default')
 
 
 if __name__ == '__main__':

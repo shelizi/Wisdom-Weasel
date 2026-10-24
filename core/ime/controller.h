@@ -194,6 +194,9 @@ class Controller {
   bool HandleZhuyinFocus(uint64_t id, SessionState& ss, int keycode, int mask);
   bool HandleZhuyinDelete(SessionState& ss, int keycode, int mask);
   bool FocusSyllable(SessionState& ss, int index);
+  void ReleaseFocus(SessionState& ss, bool to_start);
+  bool AtStart(SessionState& ss);
+  void SetAtStart(SessionState& ss);
   void LockFocusedChoice(SessionState& ss, int index, const std::wstring& text);
   size_t ConfirmedPrefix(SessionState& ss);
   bool CaptureManualChoice(SessionState& ss, int index, const std::string& input, bool focused);

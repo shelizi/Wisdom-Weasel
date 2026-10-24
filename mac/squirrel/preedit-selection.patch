@@ -1,0 +1,42 @@
+diff --git a/sources/SquirrelInputController.swift b/sources/SquirrelInputController.swift
+index 0f6ecb2..ee54b3e 100644
+--- a/sources/SquirrelInputController.swift
++++ b/sources/SquirrelInputController.swift
+@@ -504,7 +504,7 @@ private extension SquirrelInputController {
+         let range = NSRange(location: selStart, length: selEnd - selStart)
+         let caret = wisdomPreedit.cursor >= 0 ? min(wisdomPreedit.cursor, length) : length
+         if inlinePreedit || inlineCandidate {
+-          show(preedit: text, selRange: range, caretPos: caret)
++          show(preedit: text, selRange: range, caretPos: caret, exactSelection: true)
+         } else {
+           show(preedit: text.isEmpty ? "" : "　", selRange: NSRange(location: 0, length: 0), caretPos: 0)
+         }
+@@ -633,7 +633,9 @@ private extension SquirrelInputController {
+     hidePalettes()
+   }
+ 
+-  func show(preedit: String, selRange: NSRange, caretPos: Int) {
++  // exactSelection：只把 selRange 標成選取（框選單字），後面的字仍是已轉換的樣子，和小狼毫一致；
++  // 否則照鼠鬚管原本的做法，從選取起點一路標到句尾（Rime 的未轉換按鍵）
++  func show(preedit: String, selRange: NSRange, caretPos: Int, exactSelection: Bool = false) {
+     guard let client = client else { return }
+     if self.preedit == preedit && self.caretPos == caretPos && self.selRange == selRange {
+       return
+@@ -649,9 +651,16 @@ private extension SquirrelInputController {
+       let attrs = mark(forStyle: kTSMHiliteConvertedText, at: NSRange(location: 0, length: start))! as! [NSAttributedString.Key: Any]
+       attrString.setAttributes(attrs, range: NSRange(location: 0, length: start))
+     }
+-    let remainingRange = NSRange(location: start, length: preedit.utf16.count - start)
++    let length = preedit.utf16.count
++    let end = exactSelection ? min(max(NSMaxRange(selRange), start), length) : length
++    let remainingRange = NSRange(location: start, length: end - start)
+     let attrs = mark(forStyle: kTSMHiliteSelectedRawText, at: remainingRange)! as! [NSAttributedString.Key: Any]
+     attrString.setAttributes(attrs, range: remainingRange)
++    if end < length {
++      let tailRange = NSRange(location: end, length: length - end)
++      let tailAttrs = mark(forStyle: kTSMHiliteConvertedText, at: tailRange)! as! [NSAttributedString.Key: Any]
++      attrString.setAttributes(tailAttrs, range: tailRange)
++    }
+     client.setMarkedText(attrString, selectionRange: NSRange(location: caretPos, length: 0), replacementRange: .empty)
+   }
+ 

@@ -21,6 +21,10 @@ ORIGINAL = '''// local application customization
     return false
   }
 '''
+# 組字區的 patch 要套在真正固定版本的檔案上
+INPUT_CONTROLLER = subprocess.run(
+    ['git', '-C', str(ROOT / 'squirrel'), 'show', 'HEAD:sources/SquirrelInputController.swift'],
+    check=True, capture_output=True, text=True).stdout
 STYLE = '''style:
   inline_preedit: true
   # Whether to embed selected candidate as text in input field
@@ -37,6 +41,8 @@ class MacPackagingTest(unittest.TestCase):
         self.delegate = self.source / 'sources/SquirrelApplicationDelegate.swift'
         self.delegate.parent.mkdir(parents=True)
         self.delegate.write_text(ORIGINAL, encoding='utf-8')
+        self.controller = self.source / 'sources/SquirrelInputController.swift'
+        self.controller.write_text(INPUT_CONTROLLER, encoding='utf-8')
         self.style = self.source / 'data/squirrel.yaml'
         self.style.parent.mkdir()
         self.style.write_text(STYLE, encoding='utf-8')
@@ -51,8 +57,11 @@ class MacPackagingTest(unittest.TestCase):
         self.assertIn(b'// local application customization', first)
         self.assertLess(first.index(b'prepareTaiwanLexicon('), first.index(b'start_maintenance('))
         self.assertIn(b'fullCheck || vocabularyChanged', first)
+        controller = self.controller.read_bytes()
+        self.assertIn(b'exactSelection: true', controller)
         packaging.prepare(self.source)
         self.assertEqual(first, self.delegate.read_bytes())
+        self.assertEqual(controller, self.controller.read_bytes())
         for name in packaging.FILES:
             self.assertEqual((ROOT / 'resource/lexicons/taiwan' / name).read_bytes(),
                              (self.source / 'data/plum' / name).read_bytes())
@@ -79,8 +88,18 @@ class MacPackagingTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'differs from the pinned version'):
             packaging.prepare(self.source)
         self.assertEqual(original, self.delegate.read_text(encoding='utf-8'))
+        self.assertEqual(INPUT_CONTROLLER, self.controller.read_text(encoding='utf-8'))
         self.assertFalse((self.source / 'data/plum').exists())
         self.assertEqual(STYLE, self.style.read_text(encoding='utf-8'))
+
+    def test_incompatible_input_controller_leaves_hook_unpatched(self):
+        changed = INPUT_CONTROLLER.replace('func show(preedit: String', 'func showMarked(preedit: String')
+        self.controller.write_text(changed, encoding='utf-8')
+        with self.assertRaisesRegex(RuntimeError, 'preedit-selection.patch'):
+            packaging.prepare(self.source)
+        self.assertEqual(ORIGINAL, self.delegate.read_text(encoding='utf-8'))
+        self.assertEqual(changed, self.controller.read_text(encoding='utf-8'))
+        self.assertFalse((self.source / 'data/plum').exists())
 
     def test_bad_checksum_does_not_patch_or_stage(self):
         resource = Path(self.tmp.name) / 'resource'

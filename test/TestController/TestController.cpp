@@ -417,19 +417,22 @@ int main(int argc, char** argv) {
     t.commits.clear();
   }
 
-  // 逐字選字：←/→ 框住音節
+  // 逐字選字：←/→ 移動游標，框住游標前的字
   {
     t.Type("rup wu0 ");  // ㄐㄧㄣ ㄊㄧㄢ
     CHECK(t.preedit.text.size() == 2);
     std::printf("  rup wu0 -> %s\n", U8(t.preedit.text).c_str());
     t.Key(key::kLeft);
-    CHECK(ss.focus == 1);
-    CHECK(t.preedit.cursor == 1 && t.preedit.sel_start == 1 &&
-          t.preedit.sel_end == 2);
-    t.Key(key::kLeft);
     CHECK(ss.focus == 0);
-    CHECK(t.preedit.cursor == 0 && t.preedit.sel_start == 0 &&
+    CHECK(t.preedit.cursor == 1 && t.preedit.sel_start == 0 &&
           t.preedit.sel_end == 1);
+    t.Key(key::kLeft);  // 句首：前面沒有字可框
+    CHECK(ss.focus == -1 && t.preedit.cursor == 0);
+    t.Key(key::kRight);
+    t.Key(key::kRight);  // 句尾：框住最後一個字
+    CHECK(ss.focus == 1);
+    CHECK(t.preedit.cursor == 2 && t.preedit.sel_start == 1 &&
+          t.preedit.sel_end == 2);
     t.Key(key::kEnd);
     CHECK(ss.focus == -1);
     t.Key(key::kEscape);
@@ -448,11 +451,11 @@ int main(int argc, char** argv) {
         const int cursor = index + (erase_key == key::kBackSpace ? 1 : 0);
         for (int i = 0; i < cursor; ++i)
           t.Key(key::kRight);
-        CHECK(ss.focus == (cursor == 3 ? -1 : cursor));
+        CHECK(ss.focus == cursor - 1);
         CHECK(t.preedit.cursor == cursor);
-        if (cursor < 3)
-          CHECK(t.preedit.sel_start == cursor &&
-                t.preedit.sel_end == cursor + 1);
+        if (cursor > 0)
+          CHECK(t.preedit.sel_start == cursor - 1 &&
+                t.preedit.sel_end == cursor);
         const std::string expected[] = {"up 2j/4", "5j42j/4", "5j4up "};
         t.Key(erase_key);
         CHECK(t.Input() == expected[index]);
@@ -461,7 +464,7 @@ int main(int argc, char** argv) {
               shown.substr(0, index) + shown.substr(index + 1));
         CHECK(t.preedit.cursor == index);
         if (index < 2) {
-          CHECK(ss.focus == index);
+          CHECK(ss.focus == index - 1);
           t.Key(key::kEnd);
         } else {
           CHECK(ss.focus == -1);
@@ -481,7 +484,7 @@ int main(int argc, char** argv) {
     const std::wstring before = t.preedit.text;
     t.Key(key::kBackSpace);
     CHECK(t.Input() == "5j4up 2j/4" && t.preedit.text == before);
-    CHECK(t.preedit.cursor == 0 && ss.focus == 0);
+    CHECK(t.preedit.cursor == 0 && ss.focus == -1);
     t.Key(key::kEnd);
     t.Key(key::kDelete);
     CHECK(t.Input() == "5j4up 2j/4" && t.preedit.text == before);
@@ -501,7 +504,7 @@ int main(int argc, char** argv) {
     t.Key(key::kRight);
     t.Key(key::kBackSpace);
     CHECK(t.Input() == "wu0wu0fu4cp3cl3");
-    CHECK(t.preedit.cursor == 0 && ss.focus == 0);
+    CHECK(t.preedit.cursor == 0 && ss.focus == -1);
     for (int i = 0; i < 5 && t.Composing(); ++i)
       t.Key(key::kEscape);
     CHECK(!t.Composing());
@@ -555,7 +558,7 @@ int main(int argc, char** argv) {
       const std::wstring shown = t.preedit.text;
       t.Key(key::kLeft);
       t.Key(key::kLeft);
-      CHECK(t.preedit.cursor == 1 && ss.focus == 1);
+      CHECK(t.preedit.cursor == 1 && ss.focus == 0);
       t.Type("s");
       CHECK(t.Input() == "5j4sup 2j/4");
       CHECK(IsCJK(t.preedit.text.front()) &&
@@ -572,9 +575,9 @@ int main(int argc, char** argv) {
       CHECK(ss.preview_input == t.Input() && ss.preview_lens.size() == 4);
       CHECK(t.commits.empty());
       t.Key(key::kLeft);
-      CHECK(ss.focus == 1 && t.preedit.cursor == 1);
+      CHECK(ss.focus == 0 && t.preedit.cursor == 1);
       t.Key(key::kRight);
-      CHECK(ss.focus == 2 && t.preedit.cursor == 2);
+      CHECK(ss.focus == 1 && t.preedit.cursor == 2);
       // 再插一次、刪光這次未完成的注音，後面的字仍保持完整。
       const std::wstring before_pending = t.preedit.text;
       t.Type("su");
@@ -585,7 +588,7 @@ int main(int argc, char** argv) {
       CHECK(t.Input() == "5j4su3up 2j/4");
       CHECK(t.preedit.text.size() == 4 && t.preedit.cursor == 2);
       t.Key(key::kRight);
-      CHECK(ss.focus == 3 && t.preedit.cursor == 3);
+      CHECK(ss.focus == 2 && t.preedit.cursor == 3);
       t.Key(key::kEnd);
       const std::wstring completed = t.preedit.text;
       t.Key(key::kReturn);
@@ -613,7 +616,7 @@ int main(int argc, char** argv) {
               original.substr(0, start) + inserted + original.substr(start));
         CHECK(t.preedit.text.size() == 4 && t.preedit.cursor == cursor + 1);
         t.Key(key::kLeft);
-        CHECK(t.preedit.cursor == cursor && ss.focus == cursor);
+        CHECK(t.preedit.cursor == cursor && ss.focus == cursor - 1);
         t.Key(key::kDelete);
         CHECK(t.Input() == original && t.preedit.cursor == cursor);
         t.Key(key::kEnd);
@@ -658,7 +661,7 @@ int main(int argc, char** argv) {
     t.Key(key::kLeft);
     t.Key(key::kLeft);
     t.Key(key::kLeft);
-    CHECK(ss.focus == 3);
+    CHECK(ss.focus == 2);
     t.Key(key::kEnd);
     CHECK(ss.focus == -1);
     CHECK(t.preedit.text == before);
@@ -668,10 +671,11 @@ int main(int argc, char** argv) {
     t.Key(key::kLeft);
     t.Key(key::kRight);
     t.Key(key::kRight);
+    CHECK(ss.focus == 5);  // 句尾框住最後一個字，再 → 才放開
+    t.Key(key::kRight);
     CHECK(ss.focus == -1);
     CHECK(candidates() == list);
     // 框選時換過字：回到句尾後保留換好的字
-    t.Key(key::kLeft);
     t.Key(key::kLeft);  // 框住「很」
     CHECK(ss.focus == 4);
     const std::wstring framed = t.preedit.text;
@@ -712,7 +716,7 @@ int main(int argc, char** argv) {
   {
     auto choose_other = [&](int index) {
       t.Key(key::kHome);
-      for (int i = 0; i < index; ++i)
+      for (int i = 0; i <= index; ++i)
         t.Key(key::kRight);
       CHECK(ss.focus == index);
       int pick = -1;
@@ -773,7 +777,7 @@ int main(int argc, char** argv) {
               t.preedit.text.substr(3, 1) == later);
         // 在鎖定字前插入音節，鎖定回到第四字的位置。
         size_t insert_caret = 0;
-        for (int i = 0; i < ss.focus; ++i)
+        for (int i = 0; i <= ss.focus; ++i)
           insert_caret += ss.preview_lens[i];
         const std::string before_insert = t.Input();
         t.Type("w");
@@ -814,7 +818,7 @@ int main(int argc, char** argv) {
         t.Type("rup wu0 wu0 fu4cp3cl3");
         const std::wstring keyboard_later = choose_other(4);
         t.Key(key::kHome);
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
           t.Key(key::kRight);
         t.Key(key::kDown);
         std::wstring keyboard_word;
@@ -1008,10 +1012,10 @@ int main(int argc, char** argv) {
       return controller.ShowingPredictions();
     }));
     t.Key(key::kLeft);
-    CHECK(ss.focus == 1);
+    CHECK(ss.focus == 0);
     t.Key(key::kHome);
     t.Key(key::kDelete);
-    CHECK(ss.focus == 0 && t.Input() == "wu0 ");
+    CHECK(ss.focus == -1 && t.Input() == "wu0 ");
     std::this_thread::sleep_for(
         std::chrono::milliseconds(400));  // 排隊中的補全也不會再出現
     {
@@ -1208,7 +1212,6 @@ int main(int argc, char** argv) {
     // 框選換過字再送出：記 Rime 原本的排序，預設轉換仍是換字前的
     t.commits.clear();
     t.Type("rupwu0wu0fu4cp3cl3");
-    t.Key(key::kLeft);
     t.Key(key::kLeft);  // 框住「很」
     CHECK(ss.focus == 4);
     int other = -1;

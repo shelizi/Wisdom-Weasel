@@ -64,6 +64,9 @@ struct SessionState {
   int focus = -1;
   std::string focus_input;  // 框選時的輸入與游標，改變了就取消框選
   size_t focus_caret = 0;
+  // 沒有框選、游標停在句首。Rime 的游標放在句首會整句重新轉換，所以仍留在句尾，
+  // 真的在句首打字時才移過去；輸入或游標變了（focus_input／focus_caret）就取消
+  bool at_start = false;
 };
 
 }  // namespace ime
